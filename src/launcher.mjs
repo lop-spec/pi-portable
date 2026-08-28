@@ -52,6 +52,34 @@ function resolvePiWebEntry() {
   return { entry, version: pkg.version || "未知" };
 }
 
+function portableizeModelAuth() {
+  const modelsFile = path.join(DATA, ".pi", "agent", "models.json");
+  const authFile = path.join(DATA, "auth.json");
+  if (!fs.existsSync(modelsFile) || !fs.existsSync(authFile)) return 0;
+  const auth = JSON.parse(fs.readFileSync(authFile, "utf8"));
+  const models = JSON.parse(fs.readFileSync(modelsFile, "utf8"));
+  let changed = 0;
+  function rewriteCommands(value) {
+    if (!value || typeof value !== "object") return;
+    for (const [key, current] of Object.entries(value)) {
+      if (typeof current === "object") { rewriteCommands(current); continue; }
+      if (typeof current !== "string" || !current.startsWith("!node -p")) continue;
+      if (!current.includes("readFileSync") || !current.includes("auth.json")) continue;
+      const token = current.match(/\.tokens\.(access_token|account_id)\b/)?.[1];
+      if (!token || !auth?.tokens?.[token]) throw new Error(`便携 auth.json 缺少 tokens.${token || "?"}:${authFile}`);
+      const portableCommand = `!node -p "JSON.parse(require('fs').readFileSync(require('path').join(process.env.PI_PORTABLE_DATA,'auth.json'),'utf8')).tokens.${token}"`;
+      if (current !== portableCommand) { value[key] = portableCommand; changed++; }
+    }
+  }
+  rewriteCommands(models.providers || {});
+  if (changed) {
+    const tmp = modelsFile + ".portable.tmp";
+    fs.writeFileSync(tmp, JSON.stringify(models, null, 2) + "\n");
+    fs.renameSync(tmp, modelsFile);
+  }
+  return changed;
+}
+
 function portAlive(port, timeout = 1200) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -120,6 +148,11 @@ async function main() {
       process.exit(2);
     }
   } else log("无加密资产段(base 版):使用本机已有配置");
+
+  try {
+    const changed = portableizeModelAuth();
+    if (changed) log(`模型鉴权已便携化(${changed} 个 provider → data\\auth.json)`);
+  } catch (e) { log(`模型鉴权便携化失败:${e.message}`); }
 
   // 3 出口自适应
   const egress = await detectEgress(DATA);
