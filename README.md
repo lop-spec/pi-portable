@@ -23,8 +23,18 @@ pi-web + 规则执行链 + codex 代理桥的便携发行版工程。目标:另�
 | S5 安装面 | ✅ 13/13 | `test/s5-real-exe.mjs`(真实 Release exe):解压完整包 → 包内 node v22.19.0 自足 → 解密 859ms → 出口自适应 → 双服务 → **真实工具回显 exe-ok** → 关闭双端口释放 → 复活零口令 |
 | S6 执行链 | ✅ 9/9 | `test/s6-chain-coldstart.mjs`(空账本冷启):INJECT 生效 → S8 落账建库 → **第二遍 exact 命中(冷启→热账本闭环)** → 历史注入 630B |
 | S7 代理桥 | ✅ | 含于 S2/S5/S6:出口自适应命中、/health 版本正确、真实模型请求 200 |
-| S8 机器2 终验 | ☐ **待用户执行** | 需真实异机(Administrator/D 盘):下载 Release exe → 双击 → 重跑 S5/S6 口径 |
-| S9 交付 | ☐ | S8 通过后:去 rc 正式 tag + README 补机器2 记录 |
+| S8 预演(本机) | ✅ 13/13 | `test/s8-fresh-machine-sim.mjs`(纯下载 v0.0.2-rc2 全含版,零注入):自带 938KB 加密段 → 仅输一次口令 881ms → 出口自适应 → 双服务 → **零配置直接对话+工具执行 fresh-machine-ok** → 执行链 INJECT 生效 → 关闭端口全释放 → 复活零口令 |
+| S8 机器2 终验 | ☐ **待异机执行** | 需真实异机:下载 Release exe → 双击 → 输口令 → 同 13 项断言。本机无法代验 |
+| S9 交付 | ☐ | S8 异机通过后:去 rc 正式 tag + README 补机器2 记录 |
+
+## 使用方式(机器2)
+
+1. 从 [Releases](https://github.com/lop-spec/pi-portable/releases) 下载 `pi-portable-<版本>.exe`
+2. 双击 → 解压 → 首次启动输一次解密口令(之后本机免输)
+3. 自动完成:出口探测 → 起桥 → 起 pi-web → 打开独立窗口
+4. 关闭窗口 = 彻底退出(整棵进程树被回收);再双击即复活
+
+无凭证的 base 版:删掉仓库根的 `assets.enc` 重新构建即可,首启会用本机已有的 codex 登录态。
 
 ## 关键实测结论
 
