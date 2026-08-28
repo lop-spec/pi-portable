@@ -16,12 +16,25 @@ const ENTRIES = {
   ".pi/agent/models.json": "C:/Users/lop/.pi/agent/models.json",
   ".pi/agent/settings.json": "C:/Users/lop/.pi/agent/settings.json",
   ".pi/agent/AGENTS.md": "C:/Users/lop/.pi/agent/AGENTS.md",
-  ".pi/agent/extensions/lop-chain.ts": "C:/Users/lop/.pi/agent/extensions/lop-chain.ts",
+  // 必须是 vendored 版(路径由 PI_PORTABLE_* 派生);打本机原始版会让扩展指向本机绝对路径,
+  // 在新机器上静默失效(2026-08-28 两次踩坑,下方有硬断言)。
+  ".pi/agent/extensions/lop-chain.ts": path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..", "src", "lop-chain.ts"),
   "rules-pretool.mjs": "C:/Users/lop/.claude/hooks/rule-enforcer/rules-pretool.mjs",
   "rules.jsonl": "C:/Users/lop/Documents/claude/decision-replay-engine/data/rules-corpus.jsonl",
   "anchors.jsonl": "C:/Users/lop/Documents/claude/decision-replay-engine/data/entities.jsonl",
 };
 const EXTRA_PORTS = [57905, 18799];
+
+// 硬断言:入包的扩展必须是可移植版,不得含本机绝对路径(否则新机器上静默失效)
+for (const [key, src] of Object.entries(ENTRIES)) {
+  if (!key.endsWith(".ts") && !key.endsWith(".mjs")) continue;
+  if (!fs.existsSync(src)) continue;
+  const text = fs.readFileSync(src, "utf8");
+  if (/C:[\\/]+Users[\\/]+lop/i.test(text) && !/rules-pretool/.test(key)) {
+    console.error(`拒绝打包:${key} 含本机绝对路径,应使用 vendored 版(跑 tools/vendor-chain.mjs)`);
+    process.exit(1);
+  }
+}
 
 const tmpPorts = path.join(path.dirname(OUT), "egress-extra-ports.json");
 fs.writeFileSync(tmpPorts, JSON.stringify(EXTRA_PORTS));
