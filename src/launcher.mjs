@@ -17,7 +17,7 @@ const PORTS = { bridge: Number(process.env.PI_BRIDGE_PORT || 8794), web: Number(
 const NODE = process.env.PI_NODE_EXE || path.join(HOME, "runtime", "node.exe");
 // 加密资产段的布局契约(打包器必须按这些键写入,launcher 依赖它们):
 //   .pi/agent/models.json|settings.json|AGENTS.md  pi 配置(HOME 被指向 DATA,故需前导点)
-//   auth.json                                      codex 登录态
+//   auth.json  codex 登录态文件(仅键名约定,不含内容) scan-allow: 布局契约键名,非凭证
 //   rules-pretool.mjs                              S7 工具门私有规则(可选)
 //   egress-extra-ports.json                        个人出口端口(可选,自适应优先探测)
 //   rules.jsonl / anchors.jsonl / profile-anchors.json  执行链数据面(可选)
