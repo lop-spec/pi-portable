@@ -6,7 +6,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { packAssets } from "../src/assets-crypto.mjs";
-import sodium from "node:crypto";
 
 const OUT = path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..", "assets.enc");
 const REPO = "lop-spec/pi-portable";
@@ -38,18 +37,3 @@ if (!process.env.PI_ASSETS_PASSWORD) {
   console.log("===============================================\n");
 }
 
-if (process.argv.includes("--upload")) {
-  const cred = execFileSync("git", ["credential", "fill"], { input: "protocol=https\nhost=github.com\n\n", encoding: "utf8" });
-  const tk = Object.fromEntries(cred.trim().split("\n").map((l) => l.split("=", 2))).password;
-  const H = { Authorization: "Bearer " + tk, Accept: "application/vnd.github+json", "User-Agent": "pi-portable" };
-  const key = await (await fetch(`https://api.github.com/repos/${REPO}/actions/secrets/public-key`, { headers: H })).json();
-  if (!key.key) { console.error("取公钥失败: " + JSON.stringify(key).slice(0, 200)); process.exit(1); }
-  // libsodium sealed box:Node 22 无内置,用 tweetnacl 兼容实现(纯 JS,见 sealbox.mjs)
-  const { seal } = await import("./sealbox.mjs");
-  const encrypted = seal(Buffer.from(blob.toString("base64")), Buffer.from(key.key, "base64"));
-  const res = await fetch(`https://api.github.com/repos/${REPO}/actions/secrets/ASSETS_ENC_B64`, {
-    method: "PUT", headers: { ...H, "Content-Type": "application/json" },
-    body: JSON.stringify({ encrypted_value: encrypted.toString("base64"), key_id: key.key_id }),
-  });
-  console.log(res.status === 201 || res.status === 204 ? "Secret ASSETS_ENC_B64 已写入" : "写入失败 " + res.status + " " + (await res.text()).slice(0, 200));
-}

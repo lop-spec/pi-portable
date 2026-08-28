@@ -56,16 +56,21 @@ jobs:
           Copy-Item packaging/pi-portable.cmd stage/pi-portable.cmd
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
 
-      - name: Inject encrypted assets (optional)
+      - name: Inject encrypted assets
         shell: pwsh
         env:
           ASSETS_ENC_B64: ${{ secrets.ASSETS_ENC_B64 }}
         run: |
-          if ([string]::IsNullOrEmpty($env:ASSETS_ENC_B64)) {
-            Write-Host "no ASSETS_ENC_B64 secret; building base exe"
-          } else {
+          # 优先用仓库内密文(AES-256-GCM + scrypt,设计上可公开,靠口令保护);
+          # 若配置了 Secret 则以 Secret 覆盖(便于不入仓的私有构建)。
+          if (-not [string]::IsNullOrEmpty($env:ASSETS_ENC_B64)) {
             [IO.File]::WriteAllBytes("stage/assets.enc", [Convert]::FromBase64String($env:ASSETS_ENC_B64))
-            Write-Host "assets.enc injected ($((Get-Item stage/assets.enc).Length) bytes)"
+            Write-Host "assets.enc from secret ($((Get-Item stage/assets.enc).Length) bytes)"
+          } elseif (Test-Path assets.enc) {
+            Copy-Item assets.enc stage/assets.enc
+            Write-Host "assets.enc from repo ($((Get-Item stage/assets.enc).Length) bytes)"
+          } else {
+            Write-Host "no assets.enc; building base exe (bring your own account)"
           }
 
       - name: Build single-file exe (7z SFX)
