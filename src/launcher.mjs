@@ -30,6 +30,28 @@ const log = (m) => {
   try { fs.appendFileSync(path.join(DATA, "launcher.log"), line + "\n"); } catch {}
 };
 
+function withPortableNode(env, nodeExe) {
+  const inheritedPath = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] || "";
+  const withoutPath = Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "PATH"));
+  return { ...withoutPath, PATH: [path.dirname(nodeExe), inheritedPath].filter(Boolean).join(path.delimiter) };
+}
+
+function resolvePiWebEntry() {
+  const packageRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
+  const packageFile = path.join(packageRoot, "package.json");
+  let pkg;
+  try { pkg = JSON.parse(fs.readFileSync(packageFile, "utf8")); }
+  catch (e) { throw new Error(`pi-web 包清单不可读(${packageFile}):${e.message}`); }
+  const declaredBin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.["pi-web"];
+  const candidates = [
+    declaredBin && path.resolve(packageRoot, declaredBin),
+    path.join(packageRoot, "dist", "server.js"), // 兼容早期发行布局
+  ].filter(Boolean);
+  const entry = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!entry) throw new Error(`pi-web JS 入口缺失(版本 ${pkg.version || "未知"}):${candidates.join(",")}`);
+  return { entry, version: pkg.version || "未知" };
+}
+
 function portAlive(port, timeout = 1200) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -78,6 +100,7 @@ async function main() {
   // 1 自检
   if (!fs.existsSync(NODE) && !process.env.PI_NODE_EXE) log(`警告:未找到便携 node(${NODE}),将使用当前 node`);
   const nodeExe = fs.existsSync(NODE) ? NODE : process.execPath;
+  const portableEnv = withPortableNode(process.env, nodeExe);
   if (await portAlive(PORTS.web)) { log(`端口 ${PORTS.web} 已被占用——可能已有实例在跑,直接开窗口`); await openWindow(); return; }
 
   // 2 解密资产(若有加密段)
@@ -108,7 +131,7 @@ async function main() {
   log(`出口:${egress.mode}${egress.port ? " :" + egress.port : ""}`);
 
   // 4 起桥
-  const bridgeEnv = { ...process.env, PI_PORTABLE_DATA: DATA, CODEX_PROXY_PORT: String(PORTS.bridge) };
+  const bridgeEnv = { ...portableEnv, PI_PORTABLE_DATA: DATA, CODEX_PROXY_PORT: String(PORTS.bridge) };
   if (egress.mode === "proxy") { bridgeEnv.CODEX_UPSTREAM_PROXY_HOST = egress.host || "127.0.0.1"; bridgeEnv.CODEX_UPSTREAM_PROXY_PORT = String(egress.port); }
   else delete bridgeEnv.CODEX_UPSTREAM_PROXY_PORT;
   if (!(await portAlive(PORTS.bridge))) {
@@ -120,18 +143,32 @@ async function main() {
 
   // 5 起 pi-web
   const webEnv = {
-    ...process.env, PI_PORTABLE_DATA: DATA, PI_PORTABLE_HOME: HOME,
+    ...portableEnv, PI_PORTABLE_DATA: DATA, PI_PORTABLE_HOME: HOME,
     HOME: DATA, USERPROFILE: DATA, // pi 配置落在数据根(解密出的 pi/ 目录)
     PORT: String(PORTS.web), NO_PROXY: "localhost,127.0.0.1",
   };
-  const webEntry = path.join(HOME, "app", "node_modules", "@agegr", "pi-web", "dist", "server.js");
-  const webCli = path.join(HOME, "app", "node_modules", ".bin", "pi-web.cmd");
-  const web = fs.existsSync(webEntry)
-    ? spawn(nodeExe, [webEntry, "--no-open"], { env: webEnv, stdio: "ignore", windowsHide: true })
-    : spawn("cmd.exe", ["/c", fs.existsSync(webCli) ? webCli : "pi-web", "--no-open"], { env: webEnv, stdio: "ignore", windowsHide: true });
+  const webLog = path.join(DATA, "pi-web.log");
+  const { entry: webEntry, version: webVersion } = resolvePiWebEntry();
+  const webLogFd = fs.openSync(webLog, "w");
+  let web;
+  try {
+    web = spawn(nodeExe, [webEntry, "--no-open"], {
+      env: webEnv, stdio: ["ignore", webLogFd, webLogFd], windowsHide: true,
+    });
+  } finally { fs.closeSync(webLogFd); }
   children.push(web);
-  for (let i = 0; i < 40 && !(await httpOk(`http://127.0.0.1:${PORTS.web}/`)); i++) await new Promise((r) => setTimeout(r, 500));
-  if (!(await httpOk(`http://127.0.0.1:${PORTS.web}/`))) { log("pi-web 20 秒内未就绪,见 " + path.join(DATA, "launcher.log")); shutdown(3); }
+  let webExit = "";
+  web.once("error", (e) => { webExit = `启动错误:${e.message}`; log(`pi-web ${webExit}`); });
+  web.once("exit", (code, signal) => {
+    webExit = `进程退出 code=${code ?? "-"} signal=${signal ?? "-"}`;
+    if (!shuttingDown) log(`pi-web ${webExit}`);
+  });
+  log(`pi-web 启动 @agegr/pi-web@${webVersion} (${path.relative(HOME, webEntry)})`);
+  for (let i = 0; i < 40 && !webExit && !(await httpOk(`http://127.0.0.1:${PORTS.web}/`)); i++) await new Promise((r) => setTimeout(r, 500));
+  if (!(await httpOk(`http://127.0.0.1:${PORTS.web}/`))) {
+    log(`pi-web 未就绪(${webExit || "20 秒超时"}),详见 ${webLog}`);
+    shutdown(3);
+  }
   log(`pi-web 就绪 :${PORTS.web}`);
 
   // 6 开窗口并守护:窗口关闭 = 整体退出。PI_HEADLESS=1 时不开窗(自动化/无头场景),常驻至信号
