@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 // 数据面(语料/实体/账本)首启为空,可由用户自行导入;缺失时对应能力自动降级 fail-open。
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(new URL(import.meta.url).pathname.slice(1));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
-const CHAIN_DIR = path.join(HOME, "chain");
+const CHAIN_DIR = path.join(HOME, "src", "chain");
 const MEMORY_MJS = path.join(CHAIN_DIR, "lop-memory.mjs");
 // S7 工具门规则集属私有数据面(个人环境标识密集),不随公开包分发。
 // 数据根有 rules-pretool.mjs 才启用工具门,否则该步跳过(fail-open,不阻断执行)。

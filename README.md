@@ -15,15 +15,16 @@ pi-web + 规则执行链 + codex 代理桥的便携发行版工程。目标:另�
 
 | 步骤 | 状态 | 证据 |
 |---|---|---|
-| S1 脱敏基线 | ✅ | scan-secrets 对 `src/bridge` 0 命中 |
-| S2 可移植化 | ✅ 6/6 | `node test/s2-full.mjs`:出口自适应 4.4s → 桥就绪 v7.8.5 → 写点全在数据根 → 真实请求 200 → 零污染本机 |
-| S3 公有仓 | ☐ | |
-| S4 云 CI | ☐ | |
-| S5 安装面 | ☐ | |
-| S6 执行链 | ☐ | |
-| S7 代理桥 | ☐ | |
-| S8 机器2 终验 | ☐ | |
-| S9 交付 | ☐ | |
+| S1 脱敏基线 | ✅ | scan-secrets 0 命中(1 例外带书面理由) |
+| S2 可移植化 | ✅ 6/6 | `test/s2-full.mjs`:出口自适应 4.4s → 桥 v7.8.5 就绪 → 写点全在数据根 → 真实请求 200 → 零污染本机 |
+| 加密资产层 | ✅ 8/8 | `test/s2-assets-crypto.mjs`:6 项 128KB,纯解密 0.64ms,首启 867ms,源零改动,错口令/篡改被拒 |
+| S3 公有仓 | ✅ | 已推 https://github.com/lop-spec/pi-portable(MIT);匿名克隆 + 全历史扫描 0 泄漏 |
+| S4 云 CI | ✅ | Actions 绿 → Release `v0.0.1-rc2` 出 **82.9MB 单 exe** + SHA256;匿名下载校验 MATCH、PE 头 OK |
+| S5 安装面 | ✅ 13/13 | `test/s5-real-exe.mjs`(真实 Release exe):解压完整包 → 包内 node v22.19.0 自足 → 解密 859ms → 出口自适应 → 双服务 → **真实工具回显 exe-ok** → 关闭双端口释放 → 复活零口令 |
+| S6 执行链 | ✅ 9/9 | `test/s6-chain-coldstart.mjs`(空账本冷启):INJECT 生效 → S8 落账建库 → **第二遍 exact 命中(冷启→热账本闭环)** → 历史注入 630B |
+| S7 代理桥 | ✅ | 含于 S2/S5/S6:出口自适应命中、/health 版本正确、真实模型请求 200 |
+| S8 机器2 终验 | ☐ **待用户执行** | 需真实异机(Administrator/D 盘):下载 Release exe → 双击 → 重跑 S5/S6 口径 |
+| S9 交付 | ☐ | S8 通过后:去 rc 正式 tag + README 补机器2 记录 |
 
 ## 关键实测结论
 
