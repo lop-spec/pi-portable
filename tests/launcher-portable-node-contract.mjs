@@ -13,5 +13,7 @@ assert.match(source, /PATH: \[path\.dirname\(nodeExe\), inheritedPath\]/, "子�
 assert.match(source, /path\.join\(DATA, "pi-web\.log"\)/, "pi-web stdout/stderr 必须持久化");
 assert.match(source, /function portableizeModelAuth\(\)/, "便携启动时必须迁移模型鉴权命令");
 assert.match(source, /process\.env\.PI_PORTABLE_DATA,'auth\.json'/, "模型鉴权必须读取便携 data/auth.json");
+assert.match(source, /function configurePortableBash\(\)/, "启动器必须配置非标准安装位置的 Git Bash");
+assert.match(source, /"Programs", "Git", "bin", "bash\.exe"/, "启动器必须识别 Git for Windows 当前用户安装路径");
 
-console.log("PASS launcher portable-node/auth contract");
+console.log("PASS launcher portable-node/auth/bash contract");

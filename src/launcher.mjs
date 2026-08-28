@@ -80,6 +80,26 @@ function portableizeModelAuth() {
   return changed;
 }
 
+function configurePortableBash() {
+  const settingsFile = path.join(DATA, ".pi", "agent", "settings.json");
+  if (!fs.existsSync(settingsFile)) return null;
+  const candidates = [
+    process.env.PI_BASH_EXE,
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "Git", "bin", "bash.exe"),
+    process.env["ProgramFiles(x86)"] && path.join(process.env["ProgramFiles(x86)"], "Git", "bin", "bash.exe"),
+  ].filter(Boolean);
+  const bash = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!bash) return null;
+  const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+  if (settings.shellPath && fs.existsSync(settings.shellPath)) return null;
+  settings.shellPath = bash.replaceAll("\\", "/");
+  const tmp = settingsFile + ".portable.tmp";
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
+  fs.renameSync(tmp, settingsFile);
+  return settings.shellPath;
+}
+
 function portAlive(port, timeout = 1200) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -153,6 +173,10 @@ async function main() {
     const changed = portableizeModelAuth();
     if (changed) log(`模型鉴权已便携化(${changed} 个 provider → data\\auth.json)`);
   } catch (e) { log(`模型鉴权便携化失败:${e.message}`); }
+  try {
+    const shellPath = configurePortableBash();
+    if (shellPath) log(`Bash 已配置:${shellPath}`);
+  } catch (e) { log(`Bash 配置失败:${e.message}`); }
 
   // 3 出口自适应
   const egress = await detectEgress(DATA);
