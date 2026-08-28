@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "手动构建的版本标签"
+        description: "Version label for manual builds"
         required: false
         default: "dev"
 
@@ -24,82 +24,68 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: "22.19.0"
 
-      - name: 组装:便携 node runtime
+      - name: Stage portable node runtime
         shell: pwsh
         run: |
           $ver = "v$env:NODE_VERSION"
           $url = "https://nodejs.org/dist/$ver/node-$ver-win-x64.zip"
-          Write-Host "downloading $url"
           Invoke-WebRequest -Uri $url -OutFile node.zip
           Expand-Archive node.zip -DestinationPath nodedist
           New-Item -ItemType Directory -Force -Path stage/runtime | Out-Null
           Copy-Item "nodedist/node-$ver-win-x64/node.exe" stage/runtime/node.exe
-          if (-not (Test-Path stage/runtime/node.exe)) { throw "便携 node 未就位" }
+          if (-not (Test-Path stage/runtime/node.exe)) { throw "portable node missing" }
 
-      - name: 组装:应用层(pi-web + pi,生产依赖)
+      - name: Stage app layer (pi-web + pi)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path stage/app | Out-Null
           Push-Location stage/app
           npm init -y | Out-Null
-          npm install --omit=dev --no-audit --no-fund @agegr/pi-web@latest @earendil-works/pi-coding-agent@latest
+          npm install --omit=dev --no-audit --no-fund "@agegr/pi-web@latest" "@earendil-works/pi-coding-agent@latest"
           Pop-Location
-          if (-not (Test-Path stage/app/node_modules/@agegr/pi-web/package.json)) { throw "pi-web 未安装" }
+          if (-not (Test-Path stage/app/node_modules/@agegr/pi-web/package.json)) { throw "pi-web not installed" }
 
-      - name: 组装:定制层(桥 + 执行链 + launcher)
+      - name: Stage custom layer (bridge + chain + launcher)
         shell: pwsh
         run: |
           Copy-Item -Recurse src stage/src
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
-          if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher 未就位" }
+          Copy-Item packaging/pi-portable.cmd stage/pi-portable.cmd
+          if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
 
-      - name: 注入加密资产段(可选,来自 Secret)
-        if: ${{ env.ASSETS_ENC_B64 != '' }}
+      - name: Inject encrypted assets (optional)
         shell: pwsh
         env:
           ASSETS_ENC_B64: ${{ secrets.ASSETS_ENC_B64 }}
         run: |
-          [IO.File]::WriteAllBytes("stage/assets.enc", [Convert]::FromBase64String($env:ASSETS_ENC_B64))
-          Write-Host "assets.enc 已注入 ($((Get-Item stage/assets.enc).Length) bytes)"
+          if ([string]::IsNullOrEmpty($env:ASSETS_ENC_B64)) {
+            Write-Host "no ASSETS_ENC_B64 secret; building base exe"
+          } else {
+            [IO.File]::WriteAllBytes("stage/assets.enc", [Convert]::FromBase64String($env:ASSETS_ENC_B64))
+            Write-Host "assets.enc injected ($((Get-Item stage/assets.enc).Length) bytes)"
+          }
 
-      - name: 生成启动入口
-        shell: pwsh
-        run: |
-          @'
-@echo off
-setlocal
-set "PI_PORTABLE_HOME=%~dp0"
-"%~dp0runtime\node.exe" "%~dp0src\launcher.mjs" %*
-'@ | Set-Content -Encoding ASCII stage/pi-portable.cmd
-
-      - name: 打包单文件 exe(7z SFX 自解压 + 自动启动)
+      - name: Build single-file exe (7z SFX)
         shell: pwsh
         run: |
           $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "${{ inputs.tag }}" }
+          if ([string]::IsNullOrEmpty($tag)) { $tag = "dev" }
           $out = "pi-portable-$tag.exe"
-          @'
-;!@Install@!UTF-8!
-Title="pi-portable"
-BeginPrompt="解压并启动 pi-portable?"
-RunProgram="pi-portable.cmd"
-GUIMode="2"
-;!@InstallEnd@!
-'@ | Set-Content -Encoding UTF8 config.txt
-          7z a -t7z -mx=5 payload.7z .\stage\* | Out-Null
+          7z a -t7z -mx=5 payload.7z ./stage/* | Out-Null
+          if (-not (Test-Path payload.7z)) { throw "payload not built" }
           $sfx = "$env:ProgramFiles\7-Zip\7z.sfx"
-          if (-not (Test-Path $sfx)) { $sfx = "C:\Program Files\7-Zip\7zCon.sfx" }
-          if (-not (Test-Path $sfx)) { throw "未找到 7z SFX 模块" }
-          cmd /c copy /b "$sfx" + config.txt + payload.7z "$out"
-          if (-not (Test-Path $out)) { throw "exe 未生成" }
+          if (-not (Test-Path $sfx)) { $sfx = "$env:ProgramFiles\7-Zip\7zCon.sfx" }
+          if (-not (Test-Path $sfx)) { throw "7z SFX module not found" }
+          cmd /c copy /b "$sfx" + packaging\sfx-config.txt + payload.7z "$out"
+          if (-not (Test-Path $out)) { throw "exe not produced" }
           $size = [math]::Round((Get-Item $out).Length / 1MB, 1)
-          Write-Host "生成 $out ($size MB)"
+          Write-Host "built $out ($size MB)"
           (Get-FileHash $out -Algorithm SHA256).Hash | Set-Content "$out.sha256"
-          "EXE_NAME=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: 上传构建产物
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pi-portable-exe
@@ -107,7 +93,7 @@ GUIMode="2"
             pi-portable-*.exe
             pi-portable-*.exe.sha256
 
-      - name: 发布 Release(仅 tag 触发)
+      - name: Publish release (tag only)
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
