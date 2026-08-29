@@ -159,6 +159,15 @@ export function claimBackgroundReview(ev) {
   return { status: "ready", context: render(job.result), review: job.result };
 }
 
+export function shutdownBackgroundReviews() {
+  let canceled = 0;
+  for (const job of jobs.values()) {
+    try { job.cancel?.(); canceled += 1; } catch {}
+  }
+  jobs.clear();
+  return { canceled };
+}
+
 export function consumeBackgroundReview(ev) {
   const key = String(ev?.session_id || "");
   const job = jobs.get(key);

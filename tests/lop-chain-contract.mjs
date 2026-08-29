@@ -263,5 +263,7 @@ assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
 assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /windowsHide:\s*true/u);
+const adversary = await import(pathToFileURL(path.join(root, "src", "chain", "portable-adversary.mjs")).href);
+adversary.shutdownBackgroundReviews();
 
 console.log("PASS lop-chain S2/S3/S4 hard gates, turn scope, completion and goal gates contract");
