@@ -172,7 +172,11 @@ export function consumeBackgroundReview(ev) {
   const key = String(ev?.session_id || "");
   const job = jobs.get(key);
   if (!job) return { status: "skip", reason: "本轮没有后台审查任务" };
-  if (!job.done) { jobs.delete(key); return { status: "failed", reason: "后台审查仍在运行,按 fail-open 放行" }; }
+  if (!job.done) {
+    try { job.cancel?.(); } catch {}
+    jobs.delete(key);
+    return { status: "failed", reason: "后台审查仍在运行,已取消并按 fail-open 放行" };
+  }
   const result = job.result;
   jobs.delete(key);
   if (!result?.ok) return { status: "failed", reason: result?.reason || "后台审查没有有效结果" };
