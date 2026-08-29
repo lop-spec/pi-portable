@@ -2,6 +2,7 @@
 // 进程内 import rule-enforcer 核心,单源三宿主(claude/codex/pi)。全步骤 fail-open。
 // S2 扩写(硬门3) S3 历史召回(硬门1) S4 规则路由(硬门2) S6 对抗预审 S7 工具门 S8 落账+耗时埋点。
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { exec } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -83,7 +84,15 @@ function expandPrompt(prompt: string): { forRules: string; forHistory: string; a
 }
 
 const COMPLETION_GUARD_TYPE = "lop-completion-guard";
-const TURN_SCOPED_CUSTOM_TYPES = new Set(["lop-chain", COMPLETION_GUARD_TYPE]);
+const GOAL_GATE_TYPE = "lop-goal-gate";
+const TURN_SCOPED_CUSTOM_TYPES = new Set(["lop-chain", COMPLETION_GUARD_TYPE, GOAL_GATE_TYPE]);
+// 目标门:用户在消息里显式声明一条可执行校验命令,agent_end 时 exit!=0 就自动续跑。
+// 只认显式声明(【目标门】/[goal-gate] 行),不做任何语义猜测——"不达标不许交付"类
+// 隐含目标由 completion guard 之外的这条确定性通道承接(2026-08-29 抖音回测复盘:
+// 模型如实汇报"100倍门槛未通过"后停轮,guard 因 runHadTool=true 按设计放行)。
+const GOAL_GATE_MAX = Number(process.env.LOP_GOAL_GATE_MAX || 3);
+const GOAL_GATE_TIMEOUT_MS = Number(process.env.LOP_GOAL_GATE_TIMEOUT_MS || 120000);
+const GOAL_GATE_LINE = /^\s*(?:【目标门】|\[goal-gate\])\s*(.*?)\s*$/miu;
 const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
 const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
 const CONTEXT_REFERENCE = /(?:这个|那个|这些|那些|上面|前面|刚才|其余|剩下|第\s*\d+\s*项|不做\s*\d+)/u;
@@ -171,6 +180,40 @@ export function completionGuardAlreadyQueued(entries: any[]): boolean {
   );
 }
 
+export function parseGoalGateDirective(prompt: unknown):
+  { action: "set"; command: string } | { action: "clear" } | { action: "none" } {
+  const match = String(prompt || "").match(GOAL_GATE_LINE);
+  if (!match) return { action: "none" };
+  const value = match[1];
+  if (!value || /^(?:关闭|清除|取消|off)$/iu.test(value)) return { action: "clear" };
+  return { action: "set", command: value };
+}
+
+// 判定纯函数:数值非零 exit 一律 retry(校验脚本被删/命令不存在时 shell 也返回非零,
+// 不给"弄坏校验器"留 fail-open 逃逸口);仅超时/无法取得 exit code 视为校验器自身
+// 故障,fail-open 不续跑。attempts 为已自动续跑次数,达上限后 exhausted 停止干预。
+export function goalGateVerdict(input: {
+  exitCode: number | null; timedOut?: boolean; attempts: number; max: number;
+}): "pass" | "retry" | "exhausted" | "fail-open" {
+  if (input.timedOut || input.exitCode === null) return "fail-open";
+  if (input.exitCode === 0) return "pass";
+  return input.attempts >= input.max ? "exhausted" : "retry";
+}
+
+function execGoalGate(command: string): Promise<{ code: number | null; output: string; timedOut: boolean }> {
+  return new Promise((resolve) => {
+    exec(command, {
+      windowsHide: true, timeout: GOAL_GATE_TIMEOUT_MS, maxBuffer: 1024 * 1024, encoding: "utf8",
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        code: error ? (typeof error.code === "number" ? error.code : null) : 0,
+        output: `${stdout || ""}\n${stderr || ""}`.trim(),
+        timedOut: Boolean(error?.killed),
+      });
+    });
+  });
+}
+
 function latestUserTurn(entries: any[]): { id: string; text: string } {
   const branch = Array.isArray(entries) ? entries : [];
   for (let index = branch.length - 1; index >= 0; index -= 1) {
@@ -196,6 +239,8 @@ export default function (pi: ExtensionAPI) {
   let lastPrompt = "";
   let lastPhase: Record<string, unknown> = {};
   let runHadTool = false;
+  // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
+  let goalGate: { command: string; attempts: number } | null = null;
   // S6 打回轮标记:等价 Claude 侧 stop_hook_active,防预审递归打回。
   let advRedelivery = false;
   let advDeliveredTurn = false; // 本轮已投递过预审 context,防每次 tool_call 重复注入
@@ -313,6 +358,18 @@ export default function (pi: ExtensionAPI) {
     if (advRedelivery) { log("S6 REDELIVERY TURN skip inject"); return; }
     advDeliveredTurn = false;
     lastPrompt = prompt;
+    // 目标门声明/关闭只认真实用户消息;续跑注入轮 prompt 为空,走不到这里,
+    // 因此 attempts 预算只被新的人工消息重置。
+    const gateDirective = parseGoalGateDirective(prompt);
+    if (gateDirective.action === "set") {
+      goalGate = { command: gateDirective.command, attempts: 0 };
+      log(`GOAL_GATE SET cmd=${gateDirective.command.slice(0, 160)}`);
+    } else if (gateDirective.action === "clear") {
+      if (goalGate) log("GOAL_GATE CLEAR");
+      goalGate = null;
+    } else if (goalGate) {
+      goalGate.attempts = 0;
+    }
     const contexts: string[] = [];
     const phase: Record<string, unknown> = {};
 
@@ -484,6 +541,32 @@ export default function (pi: ExtensionAPI) {
     try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
     const userTurn = latestUserTurn(branch);
     const prompt = lastPrompt || userTurn.text;
+    // 目标门先于 completion guard:门存在时它就是完成判据,与 guard 的"承诺未执行"
+    // 检测互不依赖(guard 管零工具假完成,门管"如实汇报未达标后停轮")。
+    if (goalGate && lastAssistant?.stopReason === "stop" && !ctx?.hasPendingMessages?.()) {
+      const gate = goalGate;
+      const t9 = performance.now();
+      const result = await execGoalGate(gate.command).catch(() => ({ code: null, output: "", timedOut: false }));
+      const verdict = goalGateVerdict({
+        exitCode: result.code, timedOut: result.timedOut, attempts: gate.attempts, max: GOAL_GATE_MAX,
+      });
+      log(`GOAL_GATE ${verdict.toUpperCase()} code=${result.code ?? "-"} attempts=${gate.attempts}/${GOAL_GATE_MAX} ms=${+(performance.now() - t9).toFixed(0)} cmd=${gate.command.slice(0, 120)}`);
+      if (verdict === "retry") {
+        gate.attempts += 1;
+        metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
+        try {
+          pi.sendMessage({
+            customType: GOAL_GATE_TYPE,
+            content: `目标门命令未通过(exit=${result.code},自动续跑 ${gate.attempts}/${GOAL_GATE_MAX})。命令输出尾部:\n${result.output.slice(-600)}\n\n继续执行原始任务,直到目标门命令通过。禁止修改校验命令、其判定逻辑或伪造其输入数据。若有证据表明目标在当前约束下不可达,停止尝试并给出量化差距与原因,由用户决定是否放宽。`,
+            display: false,
+            details: { command: gate.command, attempts: gate.attempts, exitCode: result.code },
+          }, { deliverAs: "followUp", triggerTurn: true });
+          return;
+        } catch (e) { log(`GOAL_GATE FAIL_OPEN ${String(e).slice(0, 160)}`); }
+      } else if (verdict === "exhausted") {
+        metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
+      }
+    }
     const guard = completionGuardDecision({
       prompt,
       assistantText: text,

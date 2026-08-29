@@ -10,7 +10,9 @@ const {
   default: lopChainExtension,
   completionGuardAlreadyQueued,
   completionGuardDecision,
+  goalGateVerdict,
   isContextDependentHistoryPrompt,
+  parseGoalGateDirective,
   scopeLopChainContext,
 } = policy;
 
@@ -23,6 +25,7 @@ assert.equal(isContextDependentHistoryPrompt("确认 30141 端口是否监听"),
 
 const oldChain = { role: "custom", customType: "lop-chain", content: "old" };
 const oldGuard = { role: "custom", customType: "lop-completion-guard", content: "old guard" };
+const oldGate = { role: "custom", customType: "lop-goal-gate", content: "old gate" };
 const currentChain = { role: "custom", customType: "lop-chain", content: "current" };
 const unrelated = { role: "custom", customType: "other-extension", content: "keep" };
 const oldSummary = {
@@ -33,6 +36,7 @@ const scoped = scopeLopChainContext([
   { role: "user", content: "first" },
   oldChain,
   oldGuard,
+  oldGate,
   unrelated,
   oldSummary,
   { role: "assistant", content: [] },
@@ -42,6 +46,7 @@ const scoped = scopeLopChainContext([
 ]);
 assert.equal(scoped.includes(oldChain), false);
 assert.equal(scoped.includes(oldGuard), false);
+assert.equal(scoped.includes(oldGate), false);
 assert.equal(scoped.includes(unrelated), true);
 assert.equal(scoped.includes(currentChain), true);
 const scopedSummary = scoped.find((message) => message.role === "compactionSummary");
@@ -125,9 +130,74 @@ assert.equal(sent.length, 1);
 assert.equal(sent[0].message.customType, "lop-completion-guard");
 assert.deepEqual(sent[0].options, { deliverAs: "followUp", triggerTurn: true });
 
+// 目标门:显式声明解析
+assert.deepEqual(
+  parseGoalGateDirective("跑回测直到达标\n【目标门】node verify.mjs --min 100\n其余照旧"),
+  { action: "set", command: "node verify.mjs --min 100" },
+);
+assert.deepEqual(parseGoalGateDirective("[goal-gate] node check.mjs"), { action: "set", command: "node check.mjs" });
+assert.deepEqual(parseGoalGateDirective("【目标门】关闭"), { action: "clear" });
+assert.deepEqual(parseGoalGateDirective("[goal-gate] off"), { action: "clear" });
+assert.deepEqual(parseGoalGateDirective("不达目标不允许交付"), { action: "none" });
+
+// 目标门:判定纯函数
+assert.equal(goalGateVerdict({ exitCode: 0, attempts: 0, max: 3 }), "pass");
+assert.equal(goalGateVerdict({ exitCode: 9009, attempts: 0, max: 3 }), "retry");
+assert.equal(goalGateVerdict({ exitCode: 1, attempts: 2, max: 3 }), "retry");
+assert.equal(goalGateVerdict({ exitCode: 1, attempts: 3, max: 3 }), "exhausted");
+assert.equal(goalGateVerdict({ exitCode: null, timedOut: true, attempts: 0, max: 3 }), "fail-open");
+assert.equal(goalGateVerdict({ exitCode: null, attempts: 0, max: 3 }), "fail-open");
+
+// 目标门:真实命令集成(exit 3 → 连续续跑至上限;exit 0 → 放行;关闭 → 不再校验)
+const gateHandlers = new Map();
+const gateSent = [];
+const gatePi = {
+  on(name, handler) {
+    const list = gateHandlers.get(name) || [];
+    list.push(handler);
+    gateHandlers.set(name, list);
+  },
+  sendMessage(message, options) { gateSent.push({ message, options }); },
+  sendUserMessage() { throw new Error("unexpected user-message fallback"); },
+};
+lopChainExtension(gatePi);
+const failPrompt = "跑回测直到达标\n【目标门】node -e \"process.exit(3)\"";
+const gateCtx = {
+  hasPendingMessages: () => false,
+  sessionManager: { getBranch: () => [{
+    type: "message", id: "gate-user", message: { role: "user", content: failPrompt },
+  }] },
+};
+const gateEnd = () => gateHandlers.get("agent_end")[0]({
+  messages: [{
+    role: "assistant",
+    content: [{ type: "text", text: "已执行,门槛未通过,未生成交割单。" }],
+    stopReason: "stop",
+  }],
+}, gateCtx);
+const gateMessages = () => gateSent.filter((s) => s.message.customType === "lop-goal-gate");
+await gateHandlers.get("before_agent_start")[0]({ prompt: failPrompt });
+await gateEnd();
+await gateEnd();
+await gateEnd();
+assert.equal(gateMessages().length, 3);
+assert.deepEqual(gateMessages()[0].options, { deliverAs: "followUp", triggerTurn: true });
+assert.match(gateMessages()[0].message.content, /目标门命令未通过/u);
+assert.match(gateMessages()[0].message.content, /禁止修改校验命令/u);
+await gateEnd(); // attempts=3 达上限 → exhausted,不再续跑
+assert.equal(gateMessages().length, 3);
+await gateHandlers.get("before_agent_start")[0]({ prompt: "继续\n【目标门】node -e \"process.exit(0)\"" });
+await gateEnd(); // 门通过 → 不续跑
+assert.equal(gateMessages().length, 3);
+await gateHandlers.get("before_agent_start")[0]({ prompt: "【目标门】关闭" });
+await gateEnd();
+assert.equal(gateMessages().length, 3);
+
 const source = fs.readFileSync(sourcePath, "utf8");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
+assert.match(source, /GOAL_GATE SET/u);
+assert.match(source, /windowsHide:\s*true/u);
 
-console.log("PASS lop-chain turn scope/history gate/completion guard contract");
+console.log("PASS lop-chain turn scope/history gate/completion guard/goal gate contract");
