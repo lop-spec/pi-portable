@@ -9,7 +9,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 ## 目录
 
 - `src/bridge/` — 受版本控制的便携桥层；随生产桥同步升级，并在本仓维护 Pi user-role 历史与 exact response memo 适配。
-- `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；直接以 `CREATE_NO_WINDOW` 拉起便携 Node，监督重启并用 Job Object 兜底清理进程树。
+- `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；以 `DETACHED_PROCESS` 和显式 NUL 标准流拉起便携 Node，监督重启并用 Job Object 兜底清理进程树。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。
 - `src/rules-snapshot.mjs` — 规则单向生成器；bootstrap/受管源经校验后原子生成 `data/rules.jsonl`。
 - `tests/` — 可在 CI 运行的契约与隔离记忆测试。

@@ -128,6 +128,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
         return Fail(root, L"SetEnvironmentVariableW", GetLastError());
     }
 
+    SECURITY_ATTRIBUTES inherited{};
+    inherited.nLength = sizeof(inherited);
+    inherited.bInheritHandle = TRUE;
+    HANDLE null_input = CreateFileW(L"NUL", GENERIC_READ,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (null_input == INVALID_HANDLE_VALUE) return Fail(root, L"open NUL stdin", GetLastError());
+    HANDLE null_output = CreateFileW(L"NUL", GENERIC_WRITE,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited,
+                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (null_output == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        CloseHandle(null_input);
+        return Fail(root, L"open NUL stdout", error);
+    }
+
     std::wstring child_command = Quoted(node) + L" " + Quoted(script);
     if (command_line && *command_line) child_command += L" " + std::wstring(command_line);
 
@@ -137,12 +153,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
         mutable_command.push_back(L'\0');
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = null_input;
+        startup.hStdOutput = null_output;
+        startup.hStdError = null_output;
         PROCESS_INFORMATION process{};
-        const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
-        if (!CreateProcessW(node.c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+        const DWORD flags = DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+        if (!CreateProcessW(node.c_str(), mutable_command.data(), nullptr, nullptr, TRUE,
                             flags, nullptr, root.c_str(), &startup, &process)) {
             const DWORD error = GetLastError();
             if (job) CloseHandle(job);
+            CloseHandle(null_input);
+            CloseHandle(null_output);
             return Fail(root, L"CreateProcessW", error);
         }
 
@@ -156,6 +178,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
             CloseHandle(process.hThread);
             CloseHandle(process.hProcess);
             if (job) CloseHandle(job);
+            CloseHandle(null_input);
+            CloseHandle(null_output);
             return Fail(root, L"ResumeThread", error);
         }
         CloseHandle(process.hThread);
@@ -168,6 +192,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
             const DWORD error = GetLastError();
             CloseHandle(process.hProcess);
             if (job) CloseHandle(job);
+            CloseHandle(null_input);
+            CloseHandle(null_output);
             return Fail(root, L"WaitForSingleObject/GetExitCodeProcess", error);
         }
         CloseHandle(process.hProcess);
@@ -179,6 +205,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
             continue;
         }
         if (job) CloseHandle(job);
+        CloseHandle(null_input);
+        CloseHandle(null_output);
         return exit_code <= static_cast<DWORD>(INT_MAX) ? static_cast<int>(exit_code) : 1;
     }
 }
