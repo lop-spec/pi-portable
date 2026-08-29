@@ -130,6 +130,24 @@ test('SSH history-reference paraphrase hits highly relevant summary20+full, unre
   assert.match(constrainedHit.full, /双向 SSH 免密已实测成功/iu);
   assert.doesNotMatch(constrainedHit.full, /无法确认|Permission denied/iu);
 
+  const recursiveFactsWrong = await recordStop({
+    session_id: 'recursive-history-facts-answer',
+    turn_id: 'recursive-facts-wrong-turn',
+    prompt: 'SSH 双向免密是否成功？请只根据相关历史事实与结论回答。',
+    last_assistant_message: '仅根据当前相关历史事实与结论，无法确认 SSH 双向免密已成功。',
+    transcript_path: '',
+  }, { dataRoot: fx.dataRoot, config: fx.config });
+  const factsHit = await resolveHistory(
+    'SSH 双向免密是否成功？请只根据相关历史事实与结论回答。',
+    { dataRoot: fx.dataRoot, config: fx.config, refresh: false, sessionId: 'new-session' },
+  );
+  assert.equal(factsHit.hit, true, JSON.stringify(factsHit));
+  assert.equal(factsHit.eventId, constrainedHit.eventId);
+  assert.notEqual(factsHit.eventId, recursiveFactsWrong.canonical.eventId);
+  assert.ok(factsHit.relevance >= 0.82);
+  assert.match(factsHit.full, /双向 SSH 免密已实测成功/iu);
+  assert.doesNotMatch(factsHit.full, /无法确认|Permission denied/iu);
+
   const hit = await resolveHistory('刚刚的 SSH 双向免密对话是否成功？', {
     dataRoot: fx.dataRoot,
     config: fx.config,

@@ -1214,7 +1214,7 @@ const ASCII_ANCHOR_STOP = new Set([
   'memory', 'history', 'please', 'explain', 'inspect', 'execute',
 ]);
 const HISTORY_REFERENCE_RE = /历史|记忆|之前|上次|刚刚|前面|对话|记录|回忆|history|memory/iu;
-const HISTORY_ANSWER_DIRECTIVE_RE = /(?:请)?(?:只)?根据(?:当前|相关|已有|上述)*?(?:历史|记忆|记录)(?:记录|结论|内容|信息|事实|证据)*?(?:进行)?(?:回答|作答|判断|说明)/iu;
+const HISTORY_ANSWER_DIRECTIVE_RE = /(?:请)?(?:只)?根据(?:(?:当前|相关|已有|上述)\s*)*?(?:历史|记忆|记录)(?:(?:相关|已有|上述|当前|记录|结论|内容|信息|事实|证据|与|和|及|、)\s*)*?(?:进行\s*)?(?:回答|作答|判断|说明)/iu;
 
 function isHistoryWrapperPrompt(value) {
   const text = sanitizeText(value).normalize('NFKC');
