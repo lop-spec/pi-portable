@@ -60,7 +60,7 @@ node tools/pi-five-chain-benchmark.mjs `
   --portable-home D:\Downloads\pi-protable `
   --data D:\Downloads\pi-protable\data `
   --workspace D:\Downloads\codex-lite\workspace\code-lite-src\code-lite\config `
-  --cycles 2 --thinking low `
+  --cycles 2 --thinking max `
   --bridge-port 18833 --upstream-proxy-port 18799 `
   --output D:\Downloads\pi-protable\data\validation\pi-five-chain
 ```

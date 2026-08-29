@@ -199,6 +199,23 @@ function applyHistoryReplayEffort(payload, effort) {
   return result;
 }
 
+function applyForcedReasoningEffort(payload, effort) {
+  const from = String(payload?.reasoning?.effort || '');
+  const result = { applied: false, reason: 'disabled', from, to: from };
+  if (!effort || effort === 'off') return result;
+  if (!GPT56_MODEL.test(String(payload?.model || ''))) {
+    result.reason = 'unsupported-model';
+    return result;
+  }
+  payload.reasoning = { ...(payload.reasoning || {}), effort };
+  Object.assign(result, {
+    applied: from !== effort,
+    reason: from === effort ? 'already-forced' : 'forced',
+    to: effort,
+  });
+  return result;
+}
+
 function findStableBreakpoint(input) {
   let candidate = null;
   for (let itemIndex = 0; itemIndex < input.length; itemIndex += 1) {
@@ -326,7 +343,12 @@ function removeHeader(headers, name) {
 export function rewriteCodexRequestBody(
   body,
   headers,
-  { tier = 'off', explicitBreakpoint = true, historyReplayEffort = 'off' } = {},
+  {
+    tier = 'off',
+    explicitBreakpoint = true,
+    historyReplayEffort = 'off',
+    forceReasoningEffort = 'off',
+  } = {},
 ) {
   try {
     const encoding = String(headerValue(headers, 'content-encoding') || '').toLowerCase();
@@ -338,6 +360,7 @@ export function rewriteCodexRequestBody(
       explicitBreakpoint,
       historyReplayEffort,
     });
+    const forcedReasoning = applyForcedReasoningEffort(payload, forceReasoningEffort);
     let tierApplied = false;
     const hasRequestTier = Object.prototype.hasOwnProperty.call(payload, 'service_tier');
     if (tier !== 'off' && !hasRequestTier) {
@@ -349,7 +372,7 @@ export function rewriteCodexRequestBody(
       ? payload.service_tier
       : null;
     const replay = responseReplayIdentity(payload);
-    if (!cache.applied && !tierApplied && !reasoning.applied) {
+    if (!cache.applied && !tierApplied && !reasoning.applied && !forcedReasoning.applied) {
       return {
         body,
         headers,
@@ -360,8 +383,10 @@ export function rewriteCodexRequestBody(
           tierSource,
           effectiveTier,
           reasoningApplied: false,
+          forcedReasoningApplied: false,
           cache,
           reasoning,
+          forcedReasoning,
           replay,
         },
       };
@@ -376,8 +401,10 @@ export function rewriteCodexRequestBody(
         tierSource,
         effectiveTier,
         reasoningApplied: reasoning.applied,
+        forcedReasoningApplied: forcedReasoning.applied,
         cache,
         reasoning,
+        forcedReasoning,
         replay,
       },
     };
@@ -392,8 +419,10 @@ export function rewriteCodexRequestBody(
         tierSource: 'unknown',
         effectiveTier: null,
         reasoningApplied: false,
+        forcedReasoningApplied: false,
         cache: null,
         reasoning: null,
+        forcedReasoning: null,
         replay: null,
       },
     };

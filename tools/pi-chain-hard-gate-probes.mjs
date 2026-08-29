@@ -125,7 +125,7 @@ async function modelProbe(label, memoryRoot) {
   const result = await run(nodeExe, [
     cli, '--print', '--mode', 'text', '--no-session', '--no-extensions',
     '--extension', extension,
-    '--provider', 'codex-bridge', '--model', 'gpt-5.6-sol', '--thinking', 'low',
+    '--provider', 'codex-bridge', '--model', 'gpt-5.6-sol', '--thinking', 'max',
     '--', recallPrompt,
   ], { cwd: workspace, env });
   const finalMetric = [...metrics(metricFile)].reverse().find((item) => item.s8Pass === true) || null;

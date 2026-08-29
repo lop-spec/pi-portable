@@ -8,7 +8,7 @@ import path from "node:path";
 const DATA = process.env.PI_PORTABLE_DATA || "";
 const PORT = Number(process.env.PI_BRIDGE_PORT || 8794);
 const MODEL = process.env.PI_ADVERSARY_MODEL || "gpt-5.6-sol";
-const TIMEOUT_MS = Number(process.env.PI_ADVERSARY_TIMEOUT_MS || 10000);
+const TIMEOUT_MS = Number(process.env.PI_ADVERSARY_TIMEOUT_MS || 30000);
 const MIN_CHARS = 12;
 
 // 判据与本机 SYSTEM_PREFLIGHT 同源(rule-enforcer/adversary.mjs),保持双机行为一致。
@@ -53,7 +53,7 @@ function callBridge(prompt, job) {
       store: false,
       instructions: SYSTEM_PREFLIGHT,
       input: [{ role: "user", content: [{ type: "input_text", text: String(prompt).slice(0, 4000) }] }],
-      reasoning: { effort: "low" },
+      reasoning: { effort: "max" },
       max_output_tokens: 1200,
     }), "utf8");
     const req = http.request({
@@ -107,7 +107,7 @@ function parseReview(text, t0, status) {
     }));
     return {
       ok: true, kind: "preflight", topMiss: String(j.top || "").slice(0, 80), verdicts,
-      ms: Date.now() - t0, provider: "pi-bridge", providerLabel: `桥 ${MODEL} low`,
+      ms: Date.now() - t0, provider: "pi-bridge", providerLabel: `桥 ${MODEL} max`,
     };
   } catch { return { ok: false, reason: "审查输出不是合法 JSON" }; }
 }

@@ -32,9 +32,10 @@ const UPSTREAM_PATH = "/backend-api/codex/responses";
 const UPSTREAM_PROXY_HOST = process.env.CODEX_UPSTREAM_PROXY_HOST || "127.0.0.1";
 const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); // [portable] 0=直连
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
-const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "low";
+const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
+const FORCE_REASONING_EFFORT = process.env.CODEX_FORCE_REASONING_EFFORT || "max";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.9.2";
+const POLICY_VERSION = "gpt56-chain-replay-v7.9.3";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 // persistence 注入:Codex 官方 prompt(codex-rs/core/gpt_5_2_prompt.md)的 Autonomy and
 // Persistence 段原文。gpt-5.x 按这份提示训练对齐"不提前收尾";pi 等 responses 方言
@@ -275,6 +276,7 @@ async function handleResponses(req, res) {
     tier: TIER,
     explicitBreakpoint: EXPLICIT_BREAKPOINT,
     historyReplayEffort: HISTORY_REPLAY_EFFORT,
+    forceReasoningEffort: FORCE_REASONING_EFFORT,
   });
   ({ body, headers: fwdHeaders } = rewritten);
   // 兼容剥离：ChatGPT codex 上游不认 max_output_tokens（"Unsupported parameter"，2026-08-28 实测），
@@ -302,12 +304,15 @@ async function handleResponses(req, res) {
   } else if (rewritten.meta.tierSource === "request") {
     log(`tier 透传：service_tier=${rewritten.meta.effectiveTier} originator=${req.headers.originator || "-"}`);
   }
+  if (rewritten.meta.forcedReasoningApplied) {
+    log(`推理强度强制：reasoning ${rewritten.meta.forcedReasoning.from || "default"}→${rewritten.meta.forcedReasoning.to}`);
+  }
   if (rewritten.meta.reasoningApplied) {
     log(`history 快路：reasoning ${rewritten.meta.reasoning.from || "default"}→${rewritten.meta.reasoning.to}`);
   } else if (rewritten.meta.reasoning?.reason === "tool-failure-escalation") {
     log(`history 快路升级：检测到工具失败，保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
   } else if (rewritten.meta.reasoning?.reason === "history-first-request-complete") {
-    log(`history 快路结束：仅首个模型请求使用 low，后续保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
+    log(`history 快路结束：仅首个模型请求使用 ${HISTORY_REPLAY_EFFORT}，后续保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
   }
   const replay = rewritten.meta.replay;
   if (replay?.enabled) {
@@ -442,6 +447,7 @@ const server = http.createServer(async (req, res) => {
       tierFallback: TIER,
       explicitBreakpoint: EXPLICIT_BREAKPOINT,
       historyReplayEffort: HISTORY_REPLAY_EFFORT,
+      forceReasoningEffort: FORCE_REASONING_EFFORT,
       responseMemoTtlMs: RESPONSE_MEMO_TTL_MS,
       responseMemoEntries: responseMemo.size,
       authMode: "codex-login-pass-through",
@@ -496,6 +502,7 @@ server.listen(PORT, HOST, () => {
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
   log(`Tier 兜底：${TIER === "off" ? "off（请求未指定时交给上游）" : TIER}；请求显式 service_tier 始终优先`);
   log(`历史快路：exact relevance=1 使用 reasoning=${HISTORY_REPLAY_EFFORT}，工具失败自动保持原强度`);
+  log(`推理强度：GPT-5.6 全请求强制 reasoning=${FORCE_REASONING_EFFORT}`);
   log(`响应复用：严格 exact 全语义键，TTL=${RESPONSE_MEMO_TTL_MS}ms，最多 64 条/512KiB 每条`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
   const bootEgress = currentEgress();

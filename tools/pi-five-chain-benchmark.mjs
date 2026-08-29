@@ -139,7 +139,7 @@ const selectedTasks = taskFilter
   ? baseline.tasks.filter((task) => task.id === taskFilter)
   : baseline.tasks;
 if (!selectedTasks.length) throw new Error(`unknown --task ${taskFilter}`);
-const thinking = arg('--thinking', 'low');
+const thinking = arg('--thinking', 'max');
 const bridgePort = Math.max(0, Number(arg('--bridge-port', '0')) || 0);
 const upstreamProxyPort = Math.max(0, Number(arg('--upstream-proxy-port', process.env.CODEX_UPSTREAM_PROXY_PORT || '0')) || 0);
 const outputRoot = path.resolve(arg('--output', path.join(portableData, 'validation', `${stamp()}-pi-five-chain`)));
@@ -178,7 +178,8 @@ if (bridgePort > 0) {
       ...process.env,
       PI_PORTABLE_DATA: bridgeData,
       CODEX_PROXY_PORT: String(bridgePort),
-      CODEX_HISTORY_REPLAY_EFFORT: 'low',
+      CODEX_HISTORY_REPLAY_EFFORT: 'max',
+      CODEX_FORCE_REASONING_EFFORT: 'max',
       ...(upstreamProxyPort ? {
         CODEX_UPSTREAM_PROXY_HOST: '127.0.0.1',
         CODEX_UPSTREAM_PROXY_PORT: String(upstreamProxyPort),
@@ -230,7 +231,7 @@ const env = {
   ...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
   PI_CHAIN_METRICS: metricsFile,
   PI_CHAIN_LOG: logFile,
-  PI_ADVERSARY_TIMEOUT_MS: '10000',
+  PI_ADVERSARY_TIMEOUT_MS: '30000',
   NO_COLOR: '1',
 };
 Object.assign(process.env, env);

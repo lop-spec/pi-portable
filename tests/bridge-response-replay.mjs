@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
-import { responseReplayIdentity } from '../src/bridge/codex-cache-policy.mjs';
+import { responseReplayIdentity, rewriteCodexRequestBody } from '../src/bridge/codex-cache-policy.mjs';
 import { ExactResponseMemo } from '../src/bridge/codex-response-memo.mjs';
 
 function payload(token) {
@@ -34,9 +34,34 @@ test('Pi user-role exact history participates in stable response replay identity
   assert.equal(second.usageToken, 'h_abcdef123456');
 });
 
+test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
+  const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
+  const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
+  assert.match(source, /gpt56-chain-replay-v7\.9\.3/u);
+  assert.match(source, /CODEX_HISTORY_REPLAY_EFFORT \|\| "max"/u);
+  assert.match(source, /CODEX_FORCE_REASONING_EFFORT \|\| "max"/u);
+  assert.match(adversary, /reasoning: \{ effort: "max" \}/u);
+  assert.doesNotMatch(adversary, /reasoning: \{ effort: "low" \}/u);
+
+  const rewritten = rewriteCodexRequestBody(Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol',
+    reasoning: { effort: 'low', summary: 'auto' },
+    input: [{ role: 'user', content: [{ type: 'input_text', text: 'probe' }] }],
+  })), { 'content-type': 'application/json' }, { forceReasoningEffort: 'max' });
+  const payload = JSON.parse(rewritten.body.toString('utf8'));
+  assert.equal(payload.reasoning.effort, 'max');
+  assert.equal(payload.reasoning.summary, 'auto');
+  assert.equal(rewritten.meta.forcedReasoningApplied, true);
+  assert.deepEqual(rewritten.meta.forcedReasoning, {
+    applied: true,
+    reason: 'forced',
+    from: 'low',
+    to: 'max',
+  });
+});
+
 test('persistence prompt yields to host-verified deterministic final drafts', () => {
   const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.9\.2/u);
   assert.match(source, /both <deterministic-current-evidence> and <deterministic-final-draft/u);
   assert.match(source, /Do not call any tool, do not emit an acceptance checklist/u);
 });
