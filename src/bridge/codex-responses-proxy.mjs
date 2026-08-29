@@ -49,6 +49,11 @@ function log(...args) {
   try { fs.appendFileSync(LOG_FILE, line + "\n", "utf8"); } catch {}
 }
 
+// 进程级兜底：单条流的意外异常不许击穿整个桥（无状态转发器，活着永远比死了强；
+// 2026-08-29 异机实测：客户端中断触发未监听 error → 进程静默退出 → pi 全线 Connection error）。
+process.on("uncaughtException", (e) => log(`未捕获异常(进程保留)：${String(e?.stack || e).slice(0, 300)}`));
+process.on("unhandledRejection", (e) => log(`未处理 rejection(进程保留)：${String(e?.stack || e).slice(0, 300)}`));
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -318,6 +323,9 @@ async function handleResponses(req, res) {
   delete out["content-length"];
   delete out["transfer-encoding"];
   res.writeHead(upRes.statusCode, out);
+  // 客户端半途断开（pi 中止/页面刷新）：吞掉 error 防击穿，并停止继续拉上游流。
+  res.on("error", (error) => log(`客户端响应流失败：${String(error?.message || error).slice(0, 120)}`));
+  res.on("close", () => { if (!upRes.readableEnded) upRes.destroy(); });
   const chunks = [];
   const tail = createTailRing();
   upRes.on("data", (chunk) => {
@@ -410,6 +418,7 @@ const server = http.createServer(async (req, res) => {
       delete out["content-encoding"];
       delete out["transfer-encoding"];
       res.writeHead(upRes.statusCode, out);
+      res.on("error", (error) => log(`models 响应流失败：${String(error?.message || error).slice(0, 120)}`));
       return upRes.pipe(res);
     } catch (e) {
       log("models 转发失败：" + String(e.message).slice(0, 80));

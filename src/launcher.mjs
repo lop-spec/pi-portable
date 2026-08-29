@@ -217,9 +217,36 @@ async function main() {
   const bridgeEnv = { ...portableEnv, PI_PORTABLE_DATA: DATA, CODEX_PROXY_PORT: String(PORTS.bridge) };
   if (egress.mode === "proxy") { bridgeEnv.CODEX_UPSTREAM_PROXY_HOST = egress.host || "127.0.0.1"; bridgeEnv.CODEX_UPSTREAM_PROXY_PORT = String(egress.port); }
   else delete bridgeEnv.CODEX_UPSTREAM_PROXY_PORT;
-  if (!(await portAlive(PORTS.bridge))) {
-    const bridge = spawn(nodeExe, [path.join(HOME, "src", "bridge", "codex-responses-proxy.mjs")], { env: bridgeEnv, stdio: "ignore", windowsHide: true });
+  // 桥守护:stderr 落盘留崩因证据;桥退出(非收尾)自动重启,崩溃循环时熔断防空转。
+  // 2026-08-29 异机实测:桥静默崩溃后 pi-web 独活,pi 全线 Connection error 且零日志——两个缺口都在这里补。
+  const bridgeErrLog = path.join(DATA, "bridge-stderr.log");
+  const bridgeRestarts = [];
+  function startBridge() {
+    const errFd = fs.openSync(bridgeErrLog, "a");
+    let bridge;
+    try {
+      bridge = spawn(nodeExe, [path.join(HOME, "src", "bridge", "codex-responses-proxy.mjs")], { env: bridgeEnv, stdio: ["ignore", "ignore", errFd], windowsHide: true });
+    } finally { fs.closeSync(errFd); }
     children.push(bridge);
+    bridge.once("exit", (code, signal) => {
+      if (shuttingDown) return;
+      const at = children.indexOf(bridge);
+      if (at >= 0) children.splice(at, 1);
+      log(`桥进程退出 code=${code ?? "-"} signal=${signal ?? "-"}(崩因见 ${bridgeErrLog})`);
+      const now = Date.now();
+      bridgeRestarts.push(now);
+      while (bridgeRestarts.length && now - bridgeRestarts[0] > 60000) bridgeRestarts.shift();
+      if (bridgeRestarts.length > 5) { log("桥 60s 内退出超 5 次,熔断自动重启(pi 可用其它 provider)"); return; }
+      setTimeout(() => {
+        if (shuttingDown) return;
+        log("桥自动重启…");
+        startBridge();
+      }, 1000);
+    });
+    return bridge;
+  }
+  if (!(await portAlive(PORTS.bridge))) {
+    startBridge();
     for (let i = 0; i < 20 && !(await httpOk(`http://127.0.0.1:${PORTS.bridge}/health`)); i++) await new Promise((r) => setTimeout(r, 500));
   }
   log(await httpOk(`http://127.0.0.1:${PORTS.bridge}/health`) ? `桥就绪 :${PORTS.bridge}` : `桥未就绪(继续,pi 可用其它 provider)`);
