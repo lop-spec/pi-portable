@@ -12,6 +12,7 @@ const launcher = fs.readFileSync(path.join(root, "src", "launcher.mjs"), "utf8")
 const baseline = JSON.parse(fs.readFileSync(path.join(root, "benchmarks", "windows-launcher-baseline.json"), "utf8"));
 
 assert.match(cpp, /wWinMain\(/, "native entry must use the Windows GUI subsystem entry point");
+assert.match(cpp, /#pragma comment\(lib, "user32\.lib"\)/, "GUI error reporting must declare its User32 linker dependency");
 assert.match(cpp, /CREATE_NO_WINDOW/, "node child must be created without a console");
 assert.match(cpp, /CreateProcessW\(node\.c_str\(\)/, "portable node must be launched directly by exact path");
 assert.match(cpp, /runtime\\\\node\.exe/, "native entry must resolve bundled node.exe");

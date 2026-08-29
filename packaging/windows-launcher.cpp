@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#pragma comment(lib, "user32.lib")
+
 namespace {
 constexpr DWORD kRestartExitCode = 75;
 constexpr wchar_t kWindowTitle[] = L"Pi Portable";
