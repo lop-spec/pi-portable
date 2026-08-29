@@ -9,6 +9,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { detectEgress } from "./egress-autodetect.mjs";
 import { openAssets } from "./assets-crypto.mjs";
+import { RULES_ASSET_LAYOUT, syncRulesSnapshot } from "./rules-snapshot.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -20,7 +21,9 @@ const NODE = process.env.PI_NODE_EXE || path.join(HOME, "runtime", "node.exe");
 //   auth.json  codex 登录态文件(仅键名约定,不含内容) scan-allow: 布局契约键名,非凭证
 //   rules-pretool.mjs                              S7 工具门私有规则(可选)
 //   egress-extra-ports.json                        个人出口端口(可选,自适应优先探测)
-//   rules.jsonl / anchors.jsonl / profile-anchors.json  执行链数据面(可选)
+//   rules.jsonl(旧包兼容键) / registry/bootstrap-rules.jsonl  只作为规则 bootstrap
+//   anchors.jsonl / profile-anchors.json                        其它执行链数据面(可选)
+// data/rules.jsonl 始终由 rules-snapshot 单向生成,不再由加密资产直接覆盖。
 const children = [];
 let shuttingDown = false;
 
@@ -124,6 +127,22 @@ function ask(question, { silent = false } = {}) {
   });
 }
 
+function refreshRulesSnapshot() {
+  try {
+    const rules = syncRulesSnapshot({
+      dataRoot: DATA,
+      upstreamSource: process.env.PI_RULES_SOURCE || null,
+      upstreamLabel: process.env.PI_RULES_SOURCE_LABEL || undefined,
+    });
+    if (rules.skipped) log(`规则快照跳过:${rules.reason}`);
+    else log(`规则快照${rules.changed ? "已生成" : "已是目标态"}(${rules.ruleCount} 条,${rules.sha256.slice(0, 12)},${rules.sourceKind})`);
+    return rules;
+  } catch (e) {
+    log(`规则快照同步失败(保留上次已验证 rules.jsonl):${String(e.message).slice(0, 160)}`);
+    return null;
+  }
+}
+
 // ── 关闭:杀整棵进程树 ─────────────────────────────────────────
 function killTree(pid) {
   try { spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: 8000 }); } catch {}
@@ -149,17 +168,22 @@ async function main() {
   if (!fs.existsSync(NODE) && !process.env.PI_NODE_EXE) log(`警告:未找到便携 node(${NODE}),将使用当前 node`);
   const nodeExe = fs.existsSync(NODE) ? NODE : process.execPath;
   const portableEnv = withPortableNode(process.env, nodeExe);
-  if (await portAlive(PORTS.web)) { log(`端口 ${PORTS.web} 已被占用——可能已有实例在跑,直接开窗口`); await openWindow(); return; }
+  refreshRulesSnapshot(); // 已有实例也先收敛规则；运行中的扩展下一轮直接读取新生成物。
+  if (await portAlive(PORTS.web)) {
+    if (process.env.PI_HEADLESS === "1") log(`端口 ${PORTS.web} 已有实例,无头模式仅同步规则,不打开窗口`);
+    else { log(`端口 ${PORTS.web} 已被占用——可能已有实例在跑,直接开窗口`); await openWindow(); }
+    return;
+  }
 
   // 2 解密资产(若有加密段)
   if (fs.existsSync(BLOB)) {
     try {
       let r;
-      try { r = openAssets(BLOB, DATA, {}); }
+      try { r = openAssets(BLOB, DATA, { layout: RULES_ASSET_LAYOUT }); }
       catch {
         log("首次启动:需要一次解密口令(之后本机免输)");
         const pw = await ask("口令: ", { silent: true });
-        r = openAssets(BLOB, DATA, { password: pw });
+        r = openAssets(BLOB, DATA, { password: pw, layout: RULES_ASSET_LAYOUT });
       }
       log(`资产就绪(${r.source === "cached" ? "本机密钥缓存" : "口令解密"},${r.ms}ms,${r.written.length} 项)`);
     } catch (e) {
@@ -168,6 +192,8 @@ async function main() {
       process.exit(2);
     }
   } else log("无加密资产段(base 版):使用本机已有配置");
+
+  refreshRulesSnapshot(); // 首次从 legacy bootstrap 迁移后再生成一次。
 
   try {
     const changed = portableizeModelAuth();

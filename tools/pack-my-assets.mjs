@@ -1,52 +1,7 @@
-// 私有构建层:把 lop 的全部敏感资产打成加密块,并可直接写入 GitHub Secret(供 CI 注入 exe)。
-// 用法:node pack-my-assets.mjs [--upload]   口令自动生成高熵值并只打印一次。
-// 注意:本脚本读取本机私有路径,不入公开仓(.gitignore)。
-import { execFileSync } from "node:child_process";
-import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { packAssets } from "../src/assets-crypto.mjs";
-
-const OUT = path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..", "assets.enc");
-const REPO = "lop-spec/pi-portable";
-
-// 布局键 → 本机源路径(键名即解密后在数据根的相对路径,见 launcher 布局契约)
-const ENTRIES = {
-  "auth.json": "C:/Users/lop/Documents/claude/vscodium/homes/acct2/auth.json",
-  ".pi/agent/models.json": "C:/Users/lop/.pi/agent/models.json",
-  ".pi/agent/settings.json": "C:/Users/lop/.pi/agent/settings.json",
-  ".pi/agent/AGENTS.md": "C:/Users/lop/.pi/agent/AGENTS.md",
-  // 必须是 vendored 版(路径由 PI_PORTABLE_* 派生);打本机原始版会让扩展指向本机绝对路径,
-  // 在新机器上静默失效(2026-08-28 两次踩坑,下方有硬断言)。
-  ".pi/agent/extensions/lop-chain.ts": path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..", "src", "lop-chain.ts"),
-  "rules-pretool.mjs": "C:/Users/lop/.claude/hooks/rule-enforcer/rules-pretool.mjs",
-  "rules.jsonl": "C:/Users/lop/Documents/claude/decision-replay-engine/data/rules-corpus.jsonl",
-  "anchors.jsonl": "C:/Users/lop/Documents/claude/decision-replay-engine/data/entities.jsonl",
-};
-const EXTRA_PORTS = [57905, 18799];
-
-// 硬断言:入包的扩展必须是可移植版,不得含本机绝对路径(否则新机器上静默失效)
-for (const [key, src] of Object.entries(ENTRIES)) {
-  if (!key.endsWith(".ts") && !key.endsWith(".mjs")) continue;
-  if (!fs.existsSync(src)) continue;
-  const text = fs.readFileSync(src, "utf8");
-  if (/C:[\\/]+Users[\\/]+lop/i.test(text) && !/rules-pretool/.test(key)) {
-    console.error(`拒绝打包:${key} 含本机绝对路径,应使用 vendored 版(跑 tools/vendor-chain.mjs)`);
-    process.exit(1);
-  }
-}
-
-const tmpPorts = path.join(path.dirname(OUT), "egress-extra-ports.json");
-fs.writeFileSync(tmpPorts, JSON.stringify(EXTRA_PORTS));
-const password = process.env.PI_ASSETS_PASSWORD || crypto.randomBytes(24).toString("base64url");
-
-const { blob, count, plainBytes } = packAssets({ ...ENTRIES, "egress-extra-ports.json": tmpPorts }, password);
-fs.rmSync(tmpPorts, { force: true });
-fs.writeFileSync(OUT, blob);
-console.log(`packed ${count} assets, plain ${(plainBytes / 1024).toFixed(0)}KB -> ${OUT} (${(blob.length / 1024).toFixed(0)}KB)`);
-if (!process.env.PI_ASSETS_PASSWORD) {
-  console.log("\n=== 口令(只显示这一次,请立刻存进密码管理器)===");
-  console.log(password);
-  console.log("===============================================\n");
-}
-
+#!/usr/bin/env node
+// 2026-08-29 起发行物只构建脱敏 base.exe；敏感资产与规则不再打进 assets.enc。
+// 规则唯一真值由 vscodium/tools/sync.mjs 单向生成本机 pi 快照，异机通过 SSH
+// 把 canonical corpus 推到 data/registry/rules-corpus.jsonl，再由 src/rules-snapshot.mjs
+// 原子生成 data/rules.jsonl。保留本入口只为明确阻止旧打包链复活。
+console.error("pack-my-assets 已退役：禁止生成或嵌入 assets.enc；请使用 canonical rules 单向同步链。");
+process.exit(1);

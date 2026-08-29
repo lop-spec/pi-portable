@@ -5,7 +5,7 @@ import fs from "node:fs";
 
 const file = process.argv[2];
 if (!file) { console.error("usage: node portableize-models.mjs <models.json>"); process.exit(1); }
-const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+const doc = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
 let changed = 0;
 const portable = (token) =>
   `!node -p "JSON.parse(require('fs').readFileSync(require('path').join(process.env.PI_PORTABLE_DATA,'auth.json'),'utf8')).tokens.${token}"`;
@@ -20,5 +20,8 @@ for (const provider of Object.values(doc.providers || {})) {
     if (value !== next) { holder[key] = next; changed++; }
   }
 }
-fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+const temp = `${file}.${process.pid}-${Date.now()}.tmp`;
+fs.writeFileSync(temp, JSON.stringify(doc, null, 2) + "\n", { flag: "wx" });
+try { fs.renameSync(temp, file); }
+finally { try { fs.unlinkSync(temp); } catch {} }
 console.log(`portableized ${changed} credential refs in ${file}`);

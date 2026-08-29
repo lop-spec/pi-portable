@@ -31,6 +31,7 @@ jobs:
         run: |
           node tests/launcher-portable-node-contract.mjs
           node tests/lop-chain-contract.mjs
+          node tests/rules-snapshot-contract.mjs
 
       - name: Stage portable node runtime
         shell: pwsh
@@ -57,10 +58,13 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse src stage/src
+          New-Item -ItemType Directory -Force -Path stage/tools | Out-Null
+          Copy-Item tools/remote-verify.mjs stage/tools/remote-verify.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
           Copy-Item packaging/pi-portable.cmd stage/pi-portable.cmd
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
+          if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
 
       - name: Assert no embedded assets
         shell: pwsh

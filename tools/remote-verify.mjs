@@ -7,12 +7,18 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectEgress } from "../src/egress-autodetect.mjs";
+import { syncRulesSnapshot } from "../src/rules-snapshot.mjs";
 
 const HOME = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DATA = path.join(HOME, "data");
 const NODE = path.join(HOME, "runtime", "node.exe");
 const BRIDGE_PORT = 8794;
 const log = (m) => console.log(`[verify] ${m}`);
+
+const rules = syncRulesSnapshot({ dataRoot: DATA });
+log(rules.skipped
+  ? `rules: skipped (${rules.reason})`
+  : `rules: ${rules.ruleCount} @ ${rules.sha256.slice(0, 12)} (${rules.sourceKind})`);
 
 function httpOk(url) {
   return new Promise((resolve) => {
