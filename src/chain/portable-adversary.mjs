@@ -37,9 +37,15 @@ function bridgeAuth() {
 }
 
 // SSE 调桥,汇总 output_text;超时/连接失败 resolve 失败对象,绝不抛出。
-function callBridge(prompt) {
+function callBridge(prompt, job) {
   return new Promise((resolve) => {
     const t0 = Date.now();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const { token, account } = bridgeAuth();
     const body = Buffer.from(JSON.stringify({
       model: MODEL,
@@ -76,11 +82,15 @@ function callBridge(prompt) {
           } catch { /* keepalive 等非 JSON 行 */ }
         }
       });
-      res.on("end", () => resolve(parseReview(text, t0, res.statusCode)));
-      res.on("error", () => resolve({ ok: false, reason: "响应流中断" }));
+      res.on("end", () => finish(parseReview(text, t0, res.statusCode)));
+      res.on("error", () => finish({ ok: false, reason: "响应流中断" }));
     });
-    req.on("timeout", () => { req.destroy(); resolve({ ok: false, reason: `桥超时(${TIMEOUT_MS}ms)` }); });
-    req.on("error", (e) => resolve({ ok: false, reason: "桥不可达:" + (e?.code || "ERR") }));
+    job.cancel = () => {
+      req.destroy();
+      finish({ ok: false, canceled: true, reason: "已由确定性当前证据覆盖" });
+    };
+    req.on("timeout", () => { req.destroy(); finish({ ok: false, reason: `桥超时(${TIMEOUT_MS}ms)` }); });
+    req.on("error", (e) => finish({ ok: false, reason: "桥不可达:" + (e?.code || "ERR") }));
     req.write(body); req.end();
   });
 }
@@ -112,12 +122,30 @@ export function startBackgroundReview(ev) {
   const key = String(ev?.session_id || "");
   if (!key) return { status: "skip", reason: "事件里没有 session_id" };
   if (prompt.replace(/\s/g, "").length < MIN_CHARS) return { status: "skip", reason: "请求未达到后台预审门槛" };
-  const job = { startedAt: Date.now(), done: false, result: null, delivered: false };
+  const job = { startedAt: Date.now(), done: false, result: null, delivered: false, cancel: null };
   jobs.set(key, job);
-  callBridge(prompt)
-    .then((r) => { job.result = r; job.done = true; })
-    .catch((e) => { job.result = { ok: false, reason: String(e).slice(0, 120) }; job.done = true; });
+  callBridge(prompt, job)
+    .then((r) => {
+      if (job.acknowledged) return;
+      job.result = r; job.done = true;
+    })
+    .catch((e) => {
+      if (job.acknowledged) return;
+      job.result = { ok: false, reason: String(e).slice(0, 120) }; job.done = true;
+    });
   return { status: "started" };
+}
+
+export function acknowledgeBackgroundReview(ev) {
+  const job = jobs.get(String(ev?.session_id || ""));
+  if (!job) return { status: "skip", reason: "本轮没有后台审查任务" };
+  job.delivered = true;
+  job.acknowledged = true;
+  job.acknowledgedReason = String(ev?.reason || "current-evidence").slice(0, 120);
+  job.result = { ok: true, topMiss: "", verdicts: [], providerLabel: "deterministic-current-evidence" };
+  job.done = true;
+  try { job.cancel?.(); } catch {}
+  return { status: "acknowledged", reason: job.acknowledgedReason };
 }
 
 export function claimBackgroundReview(ev) {

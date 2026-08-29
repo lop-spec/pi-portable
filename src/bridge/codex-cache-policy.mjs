@@ -137,7 +137,7 @@ export function responseReplayIdentity(payload, options = {}) {
 
   let usageToken = '';
   for (const item of payload.input) {
-    if (item?.role !== 'developer') continue;
+    if (item?.role !== 'developer' && item?.role !== 'user') continue;
     const text = developerText(item);
     if (!EXACT_HISTORY.test(text)) continue;
     usageToken = HISTORY_USAGE.exec(text)?.[1] || '';

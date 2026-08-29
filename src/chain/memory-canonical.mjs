@@ -29,6 +29,96 @@ function normalizeSpace(value) {
   return String(value || '').replace(/\s+/gu, ' ').trim();
 }
 
+function limitChars(value, max) {
+  return chars(value).slice(0, Math.max(0, Number(max) || 0)).join('');
+}
+
+function derivedOutcome(answer) {
+  const text = normalizeSpace(answer);
+  if (/Permission denied|尚未|未出现.{0,20}(?:成功|通过)|还需|需要你|请.{0,30}(?:回复|提供|写入|确认)/iu.test(text)) return '待处理';
+  if (/已纠正|更正|修正/u.test(text)) return '已纠正';
+  if (/已采纳|采用/u.test(text)) return '已采纳';
+  if (/已确认|确认|结论/u.test(text)) return '已确认';
+  return '已完成';
+}
+
+function derivedTaskLabel(prompt) {
+  const text = normalizeSpace(prompt).toLowerCase();
+  if (/排查|定位|根因|故障|报错|异常|失败/u.test(text)) return '排查';
+  if (/改为|修改|改动|新增|添加|删除|实现|替换|迁移|接入|配置|写入|重构/u.test(text)) return '改动';
+  if (/执行|运行|启动|停止|重启|--check|\b(?:node|npm|pnpm|yarn|git)\b/iu.test(text)) return '运行';
+  if (/解释|区别|差异|为什么|原理|建议|方案|如何理解/u.test(text)) return '解释';
+  if (/只读|检查|查询|查看|审计|核验|确认|是否|吗[？?]?$/u.test(text)) return '查询';
+  return '处理';
+}
+
+function derivedCategoryPaths(prompt) {
+  const text = normalizeSpace(prompt);
+  const paths = [];
+  if (/\bSSH\b|免密|公钥|Tailscale/iu.test(text)) paths.push(['运维', 'SSH']);
+  else if (/历史|记忆|memory|summary20|semanticFull/iu.test(text)) paths.push(['智能体', '记忆']);
+  else if (/规则|rule|AGENTS|CLAUDE/iu.test(text)) paths.push(['智能体', '规则']);
+  else if (/数据库|mysql|redis|mongo|doris|kafka/iu.test(text)) paths.push(['数据', '数据库']);
+  else if (/浏览器|页面|playwright|CDP/iu.test(text)) paths.push(['工具', '浏览器']);
+  paths.push(['任务', derivedTaskLabel(text)]);
+  return paths.slice(0, 3);
+}
+
+export function deriveMemoryMarker(input = {}) {
+  const prompt = normalizeSpace(input.prompt);
+  const contextPrompt = normalizeSpace(input.contextPrompt);
+  const answer = normalizeSpace(stripMemoryMarker(input.answer || input.lastAssistantMessage));
+  if (!prompt || !answer) return { ok: false, reason: 'insufficient-derived-content' };
+  const outcome = derivedOutcome(answer);
+  let summary20 = normalizeSpace(input.summary20);
+  if (!summary20) {
+    const room = Math.max(2, 20 - charLength(outcome));
+    summary20 = limitChars(prompt, room) + outcome;
+  }
+  summary20 = limitChars(summary20, 20);
+  if (contextPrompt) {
+    const contextAnchor = (contextPrompt.match(
+      /(?:[a-z0-9_.-]+[\\/])+[a-z0-9_.-]+|--[a-z0-9_-]+|\b[A-Z][A-Z0-9_-]{1,}\b|\b[a-z0-9_-]+\.(?:mjs|cjs|js|ts|jsonl?|ya?ml|md|py|ps1)\b/u
+    ) || [])[0] || '';
+    if (contextAnchor && !summary20.toLowerCase().includes(contextAnchor.toLowerCase())) {
+      const suffix = summary20.match(/(?:已验证|已完成|已确认|已处理|待处理|未完成|无需变更)$/u)?.[0] || '';
+      const core = suffix ? summary20.slice(0, -suffix.length).trim() : summary20;
+      const room = Math.max(0, 20 - charLength(`${contextAnchor} ${suffix}`));
+      summary20 = limitChars(`${contextAnchor} ${limitChars(core, room)}${suffix}`, 20);
+    }
+  }
+  if (charLength(summary20) < 2) summary20 = limitChars(prompt + outcome, 20);
+  const prefix = '请求：';
+  const resultPrefix = '；结果：';
+  let request = prompt;
+  if (contextPrompt && contextPrompt !== prompt) {
+    const labels = '背景任务：；本轮请求：';
+    const currentPart = limitChars(prompt, 180);
+    const contextBudget = Math.max(120, 500 - charLength(labels + currentPart));
+    request = `背景任务：${limitChars(contextPrompt, contextBudget)}；本轮请求：${currentPart}`;
+  }
+  const promptPart = limitChars(request, 500);
+  const answerBudget = Math.max(400, 2000 - charLength(prefix + promptPart + resultPrefix));
+  const answerChars = chars(answer);
+  let answerPart = answer;
+  if (answerChars.length > answerBudget) {
+    const headSize = Math.min(300, Math.floor(answerBudget * 0.25));
+    const tailSize = Math.max(1, answerBudget - headSize - 1);
+    answerPart = answerChars.slice(0, headSize).join('') + '…' +
+      answerChars.slice(-tailSize).join('');
+  }
+  const semanticFull = limitChars(prefix + promptPart + resultPrefix + answerPart, 2000);
+  const marker = {
+    semanticFull,
+    summary20,
+    outcome,
+    categoryPaths: derivedCategoryPaths(prompt),
+  };
+  if (charLength(marker.semanticFull) < 4 || charLength(marker.summary20) < 2 ||
+      !marker.categoryPaths.length) return { ok: false, reason: 'invalid-derived-marker' };
+  return { ok: true, ...marker, derived: true };
+}
+
 function begin(db) {
   db.exec('BEGIN IMMEDIATE');
 }
@@ -587,7 +677,7 @@ export function buildTaskRouteContext(options = {}) {
   const profile = normalizeSpace(options.profile || '');
   const sessionId = normalizeSpace(options.sessionId || '') || '<sessionId>';
   const recallCliPath = String(options.recallCliPath || 'lop-memory.mjs');
-  const rulesPath = String(options.rulesPath || 'decision-replay-engine/data/rules.jsonl');
+  const rulesPath = String(options.rulesPath || 'shared/registry/data/rules-corpus.jsonl');
   const recallRun = JSON.stringify({
     allow_mutation: true,
     job: {
@@ -840,7 +930,16 @@ export function recordCanonicalTurn(db, input, options = {}) {
     prompt: String(row?.prompt || ''),
     answer: String(row?.answer || ''),
   })).filter((row) => row.turnKey && row.prompt);
-  const marker = parseMemoryMarker(input.lastAssistantMessage || input.answer);
+  let marker = parseMemoryMarker(input.lastAssistantMessage || input.answer);
+  if (!marker.ok && options.allowDerivedMarker === true) {
+    marker = deriveMemoryMarker({
+      prompt: normalizedInput.prompt,
+      answer: normalizedInput.answer,
+      lastAssistantMessage: input.lastAssistantMessage,
+      summary20: input.summary20,
+      contextPrompt: input.contextPrompt || input.relatedTurns?.at?.(-1)?.prompt || '',
+    });
+  }
   if (!marker.ok) {
     saveInbox(db, normalizedInput, marker.reason);
     return { saved: false, inbox: true, reason: marker.reason, inputId: normalizedInput.inputId };
@@ -860,7 +959,8 @@ export function recordCanonicalTurn(db, input, options = {}) {
       'outcome=excluded.outcome,last_at=excluded.last_at,source=excluded.source,updated_at=excluded.updated_at',
     ].join(' ')).run(
       eventId, normalizedInput.sessionId, marker.semanticFull, marker.summary20, marker.outcome,
-      normalizedInput.timestamp, normalizedInput.timestamp, 'stop-marker', at, at
+      normalizedInput.timestamp, normalizedInput.timestamp,
+      marker.derived ? 'derived-completion' : 'stop-marker', at, at
     );
     db.prepare([
       'INSERT INTO memory_event_inputs(input_id,event_id,session_id,turn_id,selected_turn_key,ordinal)',
@@ -984,12 +1084,157 @@ export function recordCanonicalTurn(db, input, options = {}) {
   }
   return {
     saved: true,
+    derived: Boolean(marker.derived),
     inbox: acceptedCategories.length === 0,
     eventId,
     inputId: normalizedInput.inputId,
     summary20: marker.summary20,
     categories: acceptedCategories.map((item) => item.categoryPath),
   };
+}
+
+function promptNeedsPreviousContext(prompt) {
+  const text = normalizeSpace(prompt);
+  return /^(?:这个|那个|它|这边|那边|两边|双方|现在|刚刚|上次|前面|继续|然后)/u.test(text) ||
+    (charLength(text) <= 32 && /(?:是否|怎么样|了吗|了没|吗[？?]?)$/u.test(text));
+}
+
+function previousCompletedTurn(db, row) {
+  if (!promptNeedsPreviousContext(row.prompt)) return null;
+  const previous = db.prepare([
+    'SELECT turn_key turnKey,source_key sourceKey,session_id sessionId,turn_id turnId,',
+    'timestamp,prompt,answer FROM turns',
+    "WHERE session_id=? AND complete=1 AND answer<>'' AND timestamp<?",
+    'ORDER BY timestamp DESC,turn_key DESC LIMIT 20',
+  ].join(' ')).all(row.sessionId, row.timestamp);
+  const hasObjectAnchor = (value) => {
+    const text = String(value || '');
+    return /(?:[a-z0-9_.-]+[\\/])+[a-z0-9_.-]+|--[a-z0-9_-]+|\b[a-z0-9_-]+\.[a-z0-9_.-]+\b|\b\d{2,}(?:\.\d+)+\b/iu.test(text) ||
+      /\b[A-Z][A-Z0-9_-]{1,}\b/u.test(text);
+  };
+  const objectTerms = (value) => {
+    const text = normalizeSpace(value).normalize('NFKC').toLowerCase();
+    const terms = new Set(text.match(/[a-z][a-z0-9_.-]{2,}/gu) || []);
+    const ignored = new Set(['已经', '现在', '当前', '这个', '那个', '可以', '继续', '是否', '成功', '完成']);
+    for (const run of text.match(/[\p{Script=Han}]{2,}/gu) || []) {
+      const values = chars(run);
+      for (let index = 0; index < values.length - 1; index += 1) {
+        const term = values.slice(index, index + 2).join('');
+        if (!ignored.has(term)) terms.add(term);
+      }
+    }
+    return terms;
+  };
+  const wanted = objectTerms(row.prompt + ' ' + (row.answer || ''));
+  const roots = previous.filter((item) => !promptNeedsPreviousContext(item.prompt) && hasObjectAnchor(item.prompt));
+  const linked = roots.filter((item) => {
+    const available = objectTerms(item.prompt + ' ' + item.answer);
+    for (const term of wanted) if (available.has(term)) return true;
+    return false;
+  });
+  return linked.at(-1) || roots[0] ||
+    previous.find((item) => !promptNeedsPreviousContext(item.prompt)) || previous[0] || null;
+}
+
+export function canonicalizeCompletedTurns(db, options = {}) {
+  ensureCanonicalSchema(db);
+  if (!hasTable(db, 'turns')) return { added: 0, remaining: 0 };
+  const limit = Math.max(1, Math.min(100000, Number(options.limit) || 100000));
+  const rows = db.prepare([
+    'SELECT t.turn_key turnKey,t.source_key sourceKey,t.session_id sessionId,t.turn_id turnId,',
+    't.timestamp,t.prompt,t.answer,t.summary',
+    'FROM turns t LEFT JOIN memory_event_turns met ON met.turn_key=t.turn_key',
+    "WHERE met.turn_key IS NULL AND t.complete=1 AND t.answer<>''",
+    'ORDER BY t.timestamp,t.turn_key LIMIT ?',
+  ].join(' ')).all(limit);
+  let added = 0;
+  for (const row of rows) {
+    const previous = previousCompletedTurn(db, row);
+    const result = recordCanonicalTurn(db, {
+      sessionId: row.sessionId,
+      turnId: row.turnId,
+      turnKey: row.turnKey,
+      sourceKey: row.sourceKey,
+      timestamp: row.timestamp,
+      prompt: row.prompt,
+      answer: row.answer,
+      lastAssistantMessage: row.answer,
+      summary20: row.summary,
+      contextPrompt: previous?.prompt || '',
+    }, {
+      leafLimit: options.leafLimit,
+      allowDerivedMarker: true,
+    });
+    if (result.saved) added += 1;
+  }
+  const remaining = Number(db.prepare([
+    'SELECT count(*) count FROM turns t',
+    'LEFT JOIN memory_event_turns met ON met.turn_key=t.turn_key',
+    "WHERE met.turn_key IS NULL AND t.complete=1 AND t.answer<>''",
+  ].join(' ')).get()?.count || 0);
+  return { added, remaining };
+}
+
+export function refreshDerivedCanonicalEvents(db, options = {}) {
+  ensureCanonicalSchema(db);
+  if (!hasTable(db, 'turns')) return { updated: 0 };
+  const sourceKeys = [...new Set((options.sourceKeys || []).map(String).filter(Boolean))];
+  if (options.all !== true && !sourceKeys.length) return { updated: 0 };
+  const sourceFilter = options.all === true
+    ? ''
+    : ` AND t.source_key IN (${sourceKeys.map(() => '?').join(',')})`;
+  const rows = db.prepare([
+    'SELECT e.event_id eventId,e.summary20,e.semantic_full semanticFull,e.outcome,',
+    'met.input_id inputId,t.session_id sessionId,t.timestamp,t.prompt,t.answer,t.summary',
+    'FROM memory_events e JOIN memory_event_turns met ON met.event_id=e.event_id AND met.selected=1',
+    'JOIN turns t ON t.turn_key=met.turn_key',
+    "WHERE e.source='derived-completion' AND t.complete=1 AND t.answer<>''" + sourceFilter,
+    'ORDER BY e.event_id,t.timestamp,t.turn_key',
+  ].join(' ')).all(...sourceKeys);
+  const latest = new Map();
+  for (const row of rows) latest.set(row.eventId, row);
+  let updated = 0;
+  const now = new Date().toISOString();
+  const save = db.prepare([
+    'UPDATE memory_events SET semantic_full=?,summary20=?,outcome=?,last_at=?,updated_at=?',
+    'WHERE event_id=?',
+  ].join(' '));
+  begin(db);
+  try {
+    for (const row of latest.values()) {
+      const previous = previousCompletedTurn(db, row);
+      const marker = deriveMemoryMarker({
+        prompt: row.prompt,
+        answer: row.answer,
+        summary20: row.summary,
+        contextPrompt: previous?.prompt || '',
+      });
+      if (!marker.ok || (marker.semanticFull === row.semanticFull &&
+          marker.summary20 === row.summary20 && marker.outcome === row.outcome)) continue;
+      save.run(marker.semanticFull, marker.summary20, marker.outcome,
+        String(row.timestamp || now), now, row.eventId);
+      indexEvent(db, row.eventId);
+      updated += 1;
+    }
+    commit(db);
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+  return { updated };
+}
+
+export function resolveOrphanedMarkerInbox(db) {
+  ensureCanonicalSchema(db);
+  const now = new Date().toISOString();
+  const result = db.prepare([
+    "UPDATE memory_inbox SET reason='orphaned-pre-marker-no-raw',updated_at=?",
+    "WHERE reason='awaiting-semantic-marker'",
+    'AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.turn_key=memory_inbox.selected_turn_key)',
+    'AND NOT EXISTS (SELECT 1 FROM memory_raw_fallbacks r WHERE r.turn_key=memory_inbox.selected_turn_key)',
+    'AND NOT EXISTS (SELECT 1 FROM memory_event_inputs mei WHERE mei.input_id=memory_inbox.input_id)',
+  ].join(' ')).run(now);
+  return { resolved: Number(result.changes || 0) };
 }
 
 function richerTurn(left, right) {

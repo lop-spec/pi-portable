@@ -4,13 +4,17 @@ pi-web + 规则执行链 + codex 代理桥的便携发行版工程。目标:另�
 
 方案与循环验收契约:`decision-replay-engine/specs/piweb-release/plan.md`
 
+GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-execution-chain.md`](docs/gpt-execution-chain.md)
+
 ## 目录
 
-- `src/bridge/` — **生成物**,由 `tools/portable-ize.mjs` 从生产源桥转换而来,勿手改;源桥升级后重跑转换器。
+- `src/bridge/` — 受版本控制的便携桥层；随生产桥同步升级，并在本仓维护 Pi user-role 历史与 exact response memo 适配。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。
 - `src/rules-snapshot.mjs` — 规则单向生成器；bootstrap/受管源经校验后原子生成 `data/rules.jsonl`。
-- `tools/portable-ize.mjs` — 可移植化转换器(路径参数化 + 直连默认 + 发行版措辞)。
-- `test/` — 隔离实例验收脚本,伪 HOME 重定向,不碰真实配置。
+- `tests/` — 可在 CI 运行的契约与隔离记忆测试。
+- `benchmarks/` — 高频五类任务、历史最佳阶段值和严格 `<50%` 性能门。
+- `tools/pi-five-chain-benchmark.mjs` — 两轮真实 GPT/工具/历史/规则/canonical 验收。
+- `tools/pi-chain-hard-gate-probes.mjs` — 扩写、规则全集和模型历史使用的反事实验收。
 
 ## 规则单一真值
 
@@ -54,8 +58,9 @@ pi-web + 规则执行链 + codex 代理桥的便携发行版工程。目标:另�
 ## 本地验收
 
 ```bash
-node tools/portable-ize.mjs          # 重生成可移植桥
 node tests/rules-snapshot-contract.mjs # 唯一真值→bootstrap/受管源→生成物契约
+node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs
+node tools/pi-five-chain-benchmark.mjs --dry-run # 高频排序、基线和门定义自检
 node test/s2-full.mjs                # S2 隔离实例完整验收
 node src/egress-autodetect.mjs <dir> --force   # 单测出口探测
 ```

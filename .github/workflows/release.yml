@@ -32,6 +32,10 @@ jobs:
           node tests/launcher-portable-node-contract.mjs
           node tests/lop-chain-contract.mjs
           node tests/rules-snapshot-contract.mjs
+          node --test tests/pi-history-contract.mjs
+          node --test tests/deterministic-fast-path.mjs
+          node --test tests/bridge-response-replay.mjs
+          node tools/pi-five-chain-benchmark.mjs --dry-run
 
       - name: Stage portable node runtime
         shell: pwsh

@@ -1,16 +1,28 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..");
+const contractData = fs.mkdtempSync(path.join(os.tmpdir(), "pi-chain-contract-"));
+process.env.PI_PORTABLE_HOME = root;
+process.env.PI_PORTABLE_DATA = contractData;
+process.env.LOP_MEMORY_HOME = path.join(contractData, "memory");
+process.env.LOP_MEMORY_DISABLE_PI_DISCOVERY = "1";
+process.env.PI_CHAIN_METRICS = path.join(contractData, "metrics.jsonl");
+process.env.PI_CHAIN_LOG = path.join(contractData, "chain.log");
+process.on("exit", () => fs.rmSync(contractData, { recursive: true, force: true }));
 const sourcePath = process.env.LOP_CHAIN_SOURCE || path.join(root, "src", "lop-chain.ts");
 const policy = await import(pathToFileURL(sourcePath).href + `?contract=${Date.now()}`);
 const {
   default: lopChainExtension,
+  auditRuleRouting,
   completionGuardAlreadyQueued,
   completionGuardDecision,
+  expandPrompt,
   goalGateVerdict,
+  historyUsageDecision,
   isContextDependentHistoryPrompt,
   parseGoalGateDirective,
   scopeLopChainContext,
@@ -23,9 +35,54 @@ assert.equal(isContextDependentHistoryPrompt("不做1，其余的都做，也改
 assert.equal(isContextDependentHistoryPrompt("继续修复 8794 的 history 快路"), false);
 assert.equal(isContextDependentHistoryPrompt("确认 30141 端口是否监听"), false);
 
+const expanded = expandPrompt("检查 SSH 互通历史规则");
+assert.ok(expanded.charRatio >= 3, JSON.stringify(expanded));
+assert.ok([...expanded.forHistory].length >= [..."检查 SSH 互通历史规则"].length * 3);
+assert.match(expanded.forHistory, /SSH[\s\S]*双向/iu);
+assert.match(expanded.forRules, /规则语料|命中全集|oracle/u);
+
+const fixtureRules = [
+  { id: "ssh", trigger: "SSH", text: "ssh", alwaysOn: [] },
+  { id: "remote", trigger: "远端", text: "remote", alwaysOn: [] },
+  { id: "always", trigger: ".*", text: "always", alwaysOn: ["codex"] },
+];
+const fixtureRegistry = {
+  matchRules(rules, input) {
+    return rules.filter((rule) => new RegExp(rule.trigger, "i").test(input))
+      .map((rule) => ({ rule, h: 1, len: 1 }));
+  },
+};
+const routed = auditRuleRouting(fixtureRegistry, fixtureRules, "检查 SSH", "检查 SSH 远端");
+assert.equal(routed.pass, true);
+assert.deepEqual(routed.actualIds, ["remote", "ssh"]);
+assert.deepEqual(routed.oracleIds, ["remote", "ssh"]);
+assert.deepEqual(routed.fromExpansion.map((hit) => hit.rule.id), ["remote"]);
+assert.equal(auditRuleRouting({ matchRules: () => [] }, fixtureRules, "检查 SSH", "检查 SSH 远端").pass, false);
+
+const resolvedHistory = {
+  hit: true,
+  usageToken: "h_contract",
+  summary20: "SSH双向免密已完成",
+  full: "两台机器的 SSH 公钥认证与双向连接均通过。",
+};
+assert.equal(historyUsageDecision(
+  resolvedHistory,
+  "SSH 双向连接已经通过。\n<!-- history-used:h_contract -->",
+).pass, true);
+assert.equal(historyUsageDecision(
+  resolvedHistory,
+  "已完成。\n<!-- history-used:h_contract -->",
+).pass, false);
+assert.equal(historyUsageDecision(
+  resolvedHistory,
+  "当前证据与历史不一致，已明确说明冲突。\n<!-- history-conflict:h_contract -->",
+).pass, true);
+
 const oldChain = { role: "custom", customType: "lop-chain", content: "old" };
 const oldGuard = { role: "custom", customType: "lop-completion-guard", content: "old guard" };
 const oldGate = { role: "custom", customType: "lop-goal-gate", content: "old gate" };
+const oldHistoryGuard = { role: "custom", customType: "lop-history-disposition-guard", content: "old history guard" };
+const oldAdversary = { role: "custom", customType: "lop-adversary-redelivery", content: "old adversary" };
 const currentChain = { role: "custom", customType: "lop-chain", content: "current" };
 const unrelated = { role: "custom", customType: "other-extension", content: "keep" };
 const oldSummary = {
@@ -37,6 +94,8 @@ const scoped = scopeLopChainContext([
   oldChain,
   oldGuard,
   oldGate,
+  oldHistoryGuard,
+  oldAdversary,
   unrelated,
   oldSummary,
   { role: "assistant", content: [] },
@@ -47,6 +106,8 @@ const scoped = scopeLopChainContext([
 assert.equal(scoped.includes(oldChain), false);
 assert.equal(scoped.includes(oldGuard), false);
 assert.equal(scoped.includes(oldGate), false);
+assert.equal(scoped.includes(oldHistoryGuard), false);
+assert.equal(scoped.includes(oldAdversary), false);
 assert.equal(scoped.includes(unrelated), true);
 assert.equal(scoped.includes(currentChain), true);
 const scopedSummary = scoped.find((message) => message.role === "compactionSummary");
@@ -178,12 +239,15 @@ const gateEnd = () => gateHandlers.get("agent_end")[0]({
 const gateMessages = () => gateSent.filter((s) => s.message.customType === "lop-goal-gate");
 await gateHandlers.get("before_agent_start")[0]({ prompt: failPrompt });
 await gateEnd();
+await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).message.content });
 await gateEnd();
+await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).message.content });
 await gateEnd();
 assert.equal(gateMessages().length, 3);
 assert.deepEqual(gateMessages()[0].options, { deliverAs: "followUp", triggerTurn: true });
 assert.match(gateMessages()[0].message.content, /目标门命令未通过/u);
 assert.match(gateMessages()[0].message.content, /禁止修改校验命令/u);
+await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).message.content });
 await gateEnd(); // attempts=3 达上限 → exhausted,不再续跑
 assert.equal(gateMessages().length, 3);
 await gateHandlers.get("before_agent_start")[0]({ prompt: "继续\n【目标门】node -e \"process.exit(0)\"" });
@@ -200,4 +264,4 @@ assert.match(source, /context-dependent-prompt/u);
 assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /windowsHide:\s*true/u);
 
-console.log("PASS lop-chain turn scope/history gate/completion guard/goal gate contract");
+console.log("PASS lop-chain S2/S3/S4 hard gates, turn scope, completion and goal gates contract");

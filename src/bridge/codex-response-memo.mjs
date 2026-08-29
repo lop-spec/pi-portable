@@ -12,7 +12,7 @@ function replayBody(body, storedToken, currentToken) {
   if (!currentToken) return Buffer.from(body);
   return Buffer.from(
     Buffer.from(body).toString('utf8').replace(
-      /history-(used|conflict):h_[0-9a-f]{16}/gu,
+      /history-(used|conflict):h_[0-9a-f]{8,16}/gu,
       `history-$1:${currentToken}`,
     ),
     'utf8',
