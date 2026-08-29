@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import { responseReplayIdentity } from '../src/bridge/codex-cache-policy.mjs';
@@ -31,6 +32,13 @@ test('Pi user-role exact history participates in stable response replay identity
   assert.equal(first.key, second.key);
   assert.equal(first.usageToken, 'h_12345678');
   assert.equal(second.usageToken, 'h_abcdef123456');
+});
+
+test('persistence prompt yields to host-verified deterministic final drafts', () => {
+  const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
+  assert.match(source, /gpt56-chain-replay-v7\.9\.2/u);
+  assert.match(source, /both <deterministic-current-evidence> and <deterministic-final-draft/u);
+  assert.match(source, /Do not call any tool, do not emit an acceptance checklist/u);
 });
 
 test('memo replays equivalent SSE while replacing 8-16 hex history token', () => {

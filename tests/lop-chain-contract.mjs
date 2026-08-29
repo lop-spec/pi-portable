@@ -29,6 +29,7 @@ const {
   parseAcceptanceChecklist,
   parseGoalGateDirective,
   scopeLopChainContext,
+  stripAcceptanceChecklist,
 } = policy;
 
 assert.equal(isContextDependentHistoryPrompt("继续"), true);
@@ -80,6 +81,12 @@ assert.equal(historyUsageDecision(
   resolvedHistory,
   "当前证据与历史不一致，已明确说明冲突。\n<!-- history-conflict:h_contract -->",
 ).pass, true);
+assert.equal(stripAcceptanceChecklist([
+  "【验收清单】",
+  "- [x] 只读检查文件",
+  "- [~] 可选项：用户取消",
+  "tools/sync.mjs 为 32039 字节。",
+].join("\n")), "tools/sync.mjs 为 32039 字节。");
 
 const oldChain = { role: "custom", customType: "lop-chain", content: "old" };
 const oldGuard = { role: "custom", customType: "lop-completion-guard", content: "old guard" };

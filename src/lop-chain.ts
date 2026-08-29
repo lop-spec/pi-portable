@@ -177,6 +177,12 @@ function usageTerms(value: unknown): string[] {
   return [...terms].slice(0, 300);
 }
 
+export function stripAcceptanceChecklist(value: unknown): string {
+  return String(value || "")
+    .replace(/(?:^|\n)\s*【验收清单】\s*\n(?:\s*[-*]\s*\[[ xX~]\]\s*[^\n]*(?:\n|$))+/gu, "\n")
+    .replace(/^\s+|\s+$/gu, "");
+}
+
 export function historyUsageDecision(resolved: any, answer: unknown) {
   if (!resolved?.hit) return { required: false, pass: true, disposition: "not-required", overlap: [] };
   const text = String(answer || "");
@@ -1064,7 +1070,7 @@ export default function (pi: ExtensionAPI) {
     try {
       if (prompt && text) {
         const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
-        const persistenceText = text
+        const persistenceText = stripAcceptanceChecklist(text)
           .replace(/<!--\s*history-(?:used|conflict):[^>]+-->/gu, "")
           .replace(/<!--\s*lop-memory-event\s+\{[\s\S]*?\}\s*-->/gu, "")
           .trim();

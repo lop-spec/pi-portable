@@ -34,7 +34,7 @@ const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); 
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "low";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.9.1";
+const POLICY_VERSION = "gpt56-chain-replay-v7.9.2";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 // persistence 注入:Codex 官方 prompt(codex-rs/core/gpt_5_2_prompt.md)的 Autonomy and
 // Persistence 段原文。gpt-5.x 按这份提示训练对齐"不提前收尾";pi 等 responses 方言
@@ -53,6 +53,7 @@ const PERSISTENCE_APPENDIX = [
   // 清单,agent_end 确定性解析闭合状态,未勾项自动续跑。codex CLI 流量 MARK 命中
   // 跳过注入,不与其自带 update_plan 工具重复。
   "For any request that requires actions or changes (not a pure question), begin your first reply with an acceptance checklist: the line 【验收清单】 followed by '- [ ] <item>' lines covering each verifiable acceptance criterion of the task. Repeat the checklist with updated states in every later reply: mark an item '- [x]' only when it is verifiably done, or '- [~] <item>: <reason>' when explicitly canceled or deferred. Never end your turn while any item remains '- [ ]'.",
+  "Host-verified deterministic exception: when the request context contains both <deterministic-current-evidence> and <deterministic-final-draft verified=\"true\">, the host has already completed and verified the bounded action. Do not call any tool, do not emit an acceptance checklist, and output the supplied deterministic final draft exactly. This exception never applies without both tags.",
 ].join("\n");
 
 function appendPersistence(body) {
