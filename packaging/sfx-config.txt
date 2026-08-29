@@ -1,6 +1,6 @@
 ;!@Install@!UTF-8!
 Title="pi-portable"
 BeginPrompt="Extract and start pi-portable?"
-RunProgram="pi-portable.cmd"
+RunProgram="pi-portable-launcher.exe"
 GUIMode="2"
 ;!@InstallEnd@!

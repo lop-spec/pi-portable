@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-30T01:44:35+08:00",
+  "scenario": "Start-menu launch while an existing Pi Web instance owns port 30141",
+  "baseline": {
+    "entryChain": "explorer.exe -> cmd.exe /K -> pi-portable.cmd -> wscript.exe -> node.exe",
+    "cmdStarts": 1,
+    "conhostStarts": 1,
+    "vbscriptEvents": 1,
+    "httpStatus": 200,
+    "persistentVisibleCmd": 1
+  },
+  "interimDirectVbs": {
+    "entryChain": "wscript.exe -> node.exe",
+    "cmdStarts": 0,
+    "conhostStarts": 1,
+    "vbscriptEvents": 1,
+    "httpStatus": 200,
+    "accepted": false,
+    "reason": "A hidden console host and the deprecated VBScript runtime remain."
+  },
+  "target": {
+    "entryChain": "pi-portable-launcher.exe -> node.exe",
+    "cmdStarts": 0,
+    "conhostStarts": 0,
+    "vbscriptEvents": 0,
+    "httpStatus": 200,
+    "persistentVisibleCmd": 0
+  },
+  "verified": null
+}

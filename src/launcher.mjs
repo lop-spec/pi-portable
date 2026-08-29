@@ -16,6 +16,7 @@ const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
 const BLOB = path.join(HOME, "assets.enc");
 const PORTS = { bridge: Number(process.env.PI_BRIDGE_PORT || 8794), web: Number(process.env.PI_WEB_PORT || 30141) };
 const NODE = process.env.PI_NODE_EXE || path.join(HOME, "runtime", "node.exe");
+const NATIVE_RESTART_EXIT_CODE = 75;
 // 加密资产段的布局契约(打包器必须按这些键写入,launcher 依赖它们):
 //   .pi/agent/models.json|settings.json|AGENTS.md  pi 配置(HOME 被指向 DATA,故需前导点)
 //   auth.json  codex 登录态文件(仅键名约定,不含内容) scan-allow: 布局契约键名,非凭证
@@ -393,6 +394,10 @@ function restartSelf() {
   (async () => {
     for (let i = 0; i < 20 && ((await portAlive(PORTS.web)) || (await portAlive(PORTS.bridge))); i++)
       await new Promise((r) => setTimeout(r, 500));
+    if (process.env.PI_LAUNCH_SUPERVISOR === "1") {
+      log(`端口已释放:交由原生宿主重启(exit ${NATIVE_RESTART_EXIT_CODE})`);
+      process.exit(NATIVE_RESTART_EXIT_CODE);
+    }
     try {
       const next = spawn(process.execPath, process.argv.slice(1), {
         detached: true, stdio: "ignore", windowsHide: true, cwd: process.cwd(), env: { ...process.env },

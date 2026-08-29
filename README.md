@@ -9,6 +9,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 ## 目录
 
 - `src/bridge/` — 受版本控制的便携桥层；随生产桥同步升级，并在本仓维护 Pi user-role 历史与 exact response memo 适配。
+- `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；直接以 `CREATE_NO_WINDOW` 拉起便携 Node，监督重启并用 Job Object 兜底清理进程树。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。
 - `src/rules-snapshot.mjs` — 规则单向生成器；bootstrap/受管源经校验后原子生成 `data/rules.jsonl`。
 - `tests/` — 可在 CI 运行的契约与隔离记忆测试。
@@ -43,7 +44,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 1. 从 [Releases](https://github.com/lop-spec/pi-portable/releases) 下载 `pi-portable-<版本>.exe`(或主机 SSH 推送解包内容)
 2. 主机推资产到 `<解包目录>\data\`:`auth.json`、`.pi/agent/{models,settings,AGENTS.md,extensions/lop-chain.ts}`、`rules-pretool.mjs`、`registry/rules-corpus.jsonl`、`anchors.jsonl`、`egress-extra-ports.json`(models.json 先过 `tools/portableize-models.mjs` 便携化凭证引用)
-3. 双击 exe:launcher 先校验受管语料并原子生成 `data/rules.jsonl`,再自动完成出口探测 → 起桥 → 起 pi-web → 打开独立 app 窗口(任务栏图标即 pi-web 自带 pi 图标),同时托盘常驻 pi 图标
+3. 双击 exe:7z SFX 直接进入 Win32 GUI 宿主(`pi-portable-launcher.exe`)，不经过 Explorer/cmd/VBScript；宿主用无控制台进程启动 launcher，后者校验受管语料并原子生成 `data/rules.jsonl`，再自动完成出口探测 → 起桥 → 起 pi-web → 打开独立 app 窗口，同时托盘常驻 pi 图标
 4. 托盘交互:**单击图标 = 进入(重开窗口)**;右键菜单 = 打开 Pi Web / 重启(整套换代重启)/ 彻底退出(整棵进程树回收零残留)。关闭窗口只驻留托盘,不再整体退出
 5. 托盘不可用时自动回退旧语义:关闭窗口 = 彻底退出;`PI_TRAY=0` 可显式关闭托盘。托盘宿主是 Windows 自带 PowerShell NotifyIcon(`src/tray.ps1`,纯 ASCII 契约,中文菜单由 launcher argv 传入),图标运行时取 `@agegr/pi-web/public/icons/icon-192.png`,零新增资产
 
@@ -61,6 +62,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 ```bash
 node tests/rules-snapshot-contract.mjs # 唯一真值→bootstrap/受管源→生成物契约
+node tests/windows-launcher-contract.mjs # GUI 子系统→无 cmd/WSH→Node 监督与 SFX 入口契约
 node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs
 node tools/pi-five-chain-benchmark.mjs --dry-run # 高频排序、基线和门定义自检
 node test/s2-full.mjs                # S2 隔离实例完整验收

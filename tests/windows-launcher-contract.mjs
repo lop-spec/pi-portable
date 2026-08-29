@@ -1,0 +1,40 @@
+// Windows native entry contract: release/runtime entry must never traverse Explorer, cmd, or WSH.
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..");
+const cpp = fs.readFileSync(path.join(root, "packaging", "windows-launcher.cpp"), "utf8");
+const rc = fs.readFileSync(path.join(root, "packaging", "windows-launcher.rc"), "utf8");
+const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+const sfx = fs.readFileSync(path.join(root, "packaging", "sfx-config.txt"), "utf8");
+const launcher = fs.readFileSync(path.join(root, "src", "launcher.mjs"), "utf8");
+const baseline = JSON.parse(fs.readFileSync(path.join(root, "benchmarks", "windows-launcher-baseline.json"), "utf8"));
+
+assert.match(cpp, /wWinMain\(/, "native entry must use the Windows GUI subsystem entry point");
+assert.match(cpp, /CREATE_NO_WINDOW/, "node child must be created without a console");
+assert.match(cpp, /CreateProcessW\(node\.c_str\(\)/, "portable node must be launched directly by exact path");
+assert.match(cpp, /runtime\\\\node\.exe/, "native entry must resolve bundled node.exe");
+assert.match(cpp, /src\\\\launcher\.mjs/, "native entry must resolve launcher.mjs");
+assert.match(cpp, /PI_PORTABLE_HOME/, "native entry must pin portable HOME to its executable directory");
+assert.match(cpp, /PI_LAUNCH_SUPERVISOR/, "native entry must enable restart supervision");
+assert.match(cpp, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/, "native host must clean its descendant tree if it dies");
+assert.match(cpp, /WaitForSingleObject/, "native host must stay resident so 7z SFX cannot clean the payload early");
+assert.doesNotMatch(cpp, /ShellExecute|cmd\.exe|wscript\.exe/i, "native entry must not delegate through shell hosts");
+assert.match(rc, /assets\\\\pi-web\.ico/, "native entry must embed the maintained pi icon");
+
+assert.match(workflow, /tests\/windows-launcher-contract\.mjs/, "CI must execute native-entry contracts");
+assert.match(workflow, /cl\.exe/, "CI must compile the native launcher on windows-latest");
+assert.match(workflow, /\/SUBSYSTEM:WINDOWS/, "compiled launcher must be a GUI-subsystem executable");
+assert.match(workflow, /native-launcher-smoke\.ps1/, "CI must execute the cloud-built launcher and trace child processes");
+assert.match(workflow, /stage[\\/]pi-portable-launcher\.exe/, "compiled launcher must be staged into the release payload");
+assert.doesNotMatch(workflow, /Copy-Item packaging\/pi-portable\.cmd|Copy-Item packaging\\pi-portable\.cmd/, "release must not stage the legacy batch entry");
+assert.equal(sfx.match(/RunProgram="([^"]+)"/)?.[1], "pi-portable-launcher.exe", "SFX must run the native entry directly");
+assert.equal(fs.existsSync(path.join(root, "packaging", "pi-portable.cmd")), false, "legacy batch entry must be removed from source");
+assert.match(launcher, /PI_LAUNCH_SUPERVISOR/, "Node launcher must hand restart requests back to native supervisor");
+assert.equal(baseline.target.cmdStarts, 0);
+assert.equal(baseline.target.conhostStarts, 0);
+assert.equal(baseline.target.vbscriptEvents, 0);
+assert.equal(baseline.target.httpStatus, 200);
+
+console.log("PASS native Windows no-console entry contract");

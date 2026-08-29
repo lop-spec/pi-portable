@@ -30,6 +30,7 @@ jobs:
         shell: pwsh
         run: |
           node tests/launcher-portable-node-contract.mjs
+          node tests/windows-launcher-contract.mjs
           node tests/lop-chain-contract.mjs
           node tests/rules-snapshot-contract.mjs
           node --test tests/pi-history-contract.mjs
@@ -48,6 +49,30 @@ jobs:
           New-Item -ItemType Directory -Force -Path stage/runtime | Out-Null
           Copy-Item "nodedist/node-$ver-win-x64/node.exe" stage/runtime/node.exe
           if (-not (Test-Path stage/runtime/node.exe)) { throw "portable node missing" }
+
+      - name: Build native no-console launcher
+        shell: pwsh
+        run: |
+          $vswhere = "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere missing" }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ([string]::IsNullOrWhiteSpace($vs)) { throw "MSVC x64 toolchain missing" }
+          $devShell = Join-Path $vs "Common7\Tools\Launch-VsDevShell.ps1"
+          & $devShell -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { throw "cl.exe missing after VsDevShell" }
+          & rc.exe /nologo /fo stage\pi-portable-launcher.res packaging\windows-launcher.rc
+          if ($LASTEXITCODE -ne 0) { throw "resource compilation failed: $LASTEXITCODE" }
+          & cl.exe /nologo /std:c++17 /O1 /MT /W4 /WX /DUNICODE /D_UNICODE /GS /guard:cf packaging\windows-launcher.cpp stage\pi-portable-launcher.res /Fe:stage\pi-portable-launcher.exe /link /SUBSYSTEM:WINDOWS /DYNAMICBASE /NXCOMPAT /OPT:REF /OPT:ICF
+          if ($LASTEXITCODE -ne 0) { throw "native launcher compilation failed: $LASTEXITCODE" }
+          Remove-Item stage\pi-portable-launcher.res
+          $launcher = Get-Item stage\pi-portable-launcher.exe
+          if ($launcher.Length -ge 1MB) { throw "native launcher must stay below 1 MiB, actual=$($launcher.Length)" }
+          $bytes = [IO.File]::ReadAllBytes($launcher.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
+          if ($subsystem -ne 2) { throw "native launcher is not Windows GUI subsystem: $subsystem" }
+          Write-Host "native GUI launcher $($launcher.Length) bytes; subsystem=$subsystem"
+          & tests/native-launcher-smoke.ps1 -Launcher $launcher.FullName -Node (Resolve-Path stage/runtime/node.exe)
 
       - name: Stage app layer (pi-web + pi)
         shell: pwsh
@@ -68,7 +93,7 @@ jobs:
           Copy-Item tools/remote-verify.mjs stage/tools/remote-verify.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
-          Copy-Item packaging/pi-portable.cmd stage/pi-portable.cmd
+          if (-not (Test-Path stage/pi-portable-launcher.exe)) { throw "native launcher missing" }
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
           if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
 
@@ -78,7 +103,9 @@ jobs:
           # 2026-08-29 方案改定:发行物只出脱敏 base.exe,敏感资产一律走 SSH 私道进数据根,
           # 不再嵌加密资产段。stage 里若出现 assets.enc 直接失败,防旧路径复活。
           if (Test-Path stage/assets.enc) { throw "assets.enc must not be embedded; ship base exe only" }
-          Write-Host "base exe (no embedded assets; credentials delivered out-of-band)"
+          if (Test-Path stage/pi-portable.cmd) { throw "legacy cmd entry must not be shipped" }
+          if (Test-Path stage/src/launch-silent.vbs) { throw "deprecated VBScript entry must not be shipped" }
+          Write-Host "base exe (native GUI entry; no cmd/VBScript; no embedded credentials)"
 
       - name: Build single-file exe (7z SFX)
         shell: pwsh
