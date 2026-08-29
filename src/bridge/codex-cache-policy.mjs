@@ -62,6 +62,15 @@ function failedToolOutputPresent(input) {
   );
 }
 
+function conversationAlreadyStarted(input) {
+  // 历史摘要只允许降低新会话的首个模型请求。摘要标记会随线程上下文继续
+  // 出现在后续请求中，不能据此把工具轮、追问轮和其余整条线程永久降为 low。
+  return input.some((item) =>
+    item?.role === 'assistant' ||
+    ['custom_tool_call', 'function_call', 'custom_tool_call_output', 'function_call_output'].includes(String(item?.type || ''))
+  );
+}
+
 function replayString(value) {
   return String(value)
     .replace(/(\busage=["'])h_[a-z0-9_-]+/giu, '$1h_*')
@@ -175,6 +184,10 @@ function applyHistoryReplayEffort(payload, effort) {
   }
   if (failedToolOutputPresent(payload.input)) {
     result.reason = 'tool-failure-escalation';
+    return result;
+  }
+  if (conversationAlreadyStarted(payload.input)) {
+    result.reason = 'history-first-request-complete';
     return result;
   }
   payload.reasoning = { ...(payload.reasoning || {}), effort };

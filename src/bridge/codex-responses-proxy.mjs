@@ -34,7 +34,7 @@ const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); 
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "low";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.8.5";
+const POLICY_VERSION = "gpt56-chain-replay-v7.8.6";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 // 出口跟随：可选的出口选择状态文件（外部工具写入）。缺失/损坏时保持上次值，
 // 最终回退环境默认（未设 CODEX_UPSTREAM_PROXY_PORT 即直连），fail-open 不断流。
@@ -257,6 +257,8 @@ async function handleResponses(req, res) {
     log(`history 快路：reasoning ${rewritten.meta.reasoning.from || "default"}→${rewritten.meta.reasoning.to}`);
   } else if (rewritten.meta.reasoning?.reason === "tool-failure-escalation") {
     log(`history 快路升级：检测到工具失败，保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
+  } else if (rewritten.meta.reasoning?.reason === "history-first-request-complete") {
+    log(`history 快路结束：仅首个模型请求使用 low，后续保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
   }
   const replay = rewritten.meta.replay;
   if (replay?.enabled) {
