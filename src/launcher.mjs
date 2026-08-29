@@ -281,9 +281,10 @@ async function main() {
   }
   log(`pi-web 就绪 :${PORTS.web}`);
 
-  // 6 开窗口并守护:窗口关闭 = 整体退出。PI_HEADLESS=1 时不开窗(自动化/无头场景),常驻至信号
+  // 6 托盘 + 窗口:托盘在则关窗驻留(单击托盘再进入,菜单可重启/彻底退出);托盘不可用回退关窗即退
   if (process.env.PI_HEADLESS === "1") { log("无头模式:不开窗口,等待终止信号"); setInterval(() => {}, 1 << 30); return; }
-  await openWindow(true);
+  if (!startTray()) log("无托盘:关闭窗口即彻底退出");
+  await openWindow();
 }
 
 function chromePath() {
@@ -297,16 +298,103 @@ function chromePath() {
   return null;
 }
 
-async function openWindow(guard = false) {
+function browserCmd() {
+  if (process.env.PI_BROWSER_CMD) {
+    try { const c = JSON.parse(process.env.PI_BROWSER_CMD); if (Array.isArray(c) && c.length) return c; } catch {}
+    log("PI_BROWSER_CMD 不是 JSON 数组,忽略");
+  }
+  const b = chromePath();
+  return b ? [b] : null;
+}
+
+let windowProc = null;
+async function openWindow() {
   const url = `http://127.0.0.1:${PORTS.web}/`;
-  const browser = chromePath();
-  if (!browser) { log("未找到 Chrome/Edge,用默认浏览器打开"); spawnSync("cmd.exe", ["/c", "start", "", url], { windowsHide: true }); return; }
-  // --user-data-dir 独立配置,窗口关闭进程即退出 → 可作为退出信号
+  const cmd = browserCmd();
+  if (!cmd) { log("未找到 Chrome/Edge,用默认浏览器打开"); spawnSync("cmd.exe", ["/c", "start", "", url], { windowsHide: true }); return; }
+  // --user-data-dir 独立配置 → 独立应用身份,任务栏图标取 pi-web 自带 favicon/manifest 图标
   const profile = path.join(DATA, "browser-profile");
-  const win = spawn(browser, [`--app=${url}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check"], { stdio: "ignore" });
+  const win = spawn(cmd[0], [...cmd.slice(1), `--app=${url}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check"], { stdio: "ignore", windowsHide: true });
   children.push(win);
-  log("窗口已打开" + (guard ? "(关闭窗口即彻底退出)" : ""));
-  if (guard) win.on("exit", () => { log("窗口已关闭"); shutdown(0); });
+  windowProc = win;
+  log("窗口已打开");
+  win.once("exit", () => {
+    if (windowProc === win) windowProc = null;
+    const at = children.indexOf(win);
+    if (at >= 0) children.splice(at, 1);
+    if (shuttingDown) return;
+    if (trayAlive) log("窗口已关闭:驻留托盘(单击托盘图标重新进入)");
+    else { log("窗口已关闭:无托盘,彻底退出"); shutdown(0); }
+  });
+}
+
+// ── 托盘:pi 图标常驻,单击进入;菜单 打开/重启/彻底退出 ─────────
+let trayAlive = false;
+const trayRestarts = [];
+function startTray() {
+  if (process.env.PI_TRAY === "0") return false;
+  let cmd = null;
+  if (process.env.PI_TRAY_CMD) {
+    try { const c = JSON.parse(process.env.PI_TRAY_CMD); if (Array.isArray(c) && c.length) cmd = c; } catch {}
+    if (!cmd) { log("PI_TRAY_CMD 不是 JSON 数组,不起托盘"); return false; }
+  } else {
+    const icon = path.join(HOME, "app", "node_modules", "@agegr", "pi-web", "public", "icons", "icon-192.png");
+    cmd = ["powershell.exe", "-NoProfile", "-NoLogo", "-ExecutionPolicy", "Bypass",
+      "-File", path.join(HOME, "src", "tray.ps1"),
+      "-Title", "Pi Web", "-ParentPid", String(process.pid),
+      "-MenuOpen", "打开 Pi Web", "-MenuRestart", "重启", "-MenuExit", "彻底退出"];
+    if (fs.existsSync(icon)) cmd.push("-IconPng", icon);
+  }
+  let tray;
+  const t0 = Date.now();
+  try { tray = spawn(cmd[0], cmd.slice(1), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true }); }
+  catch (e) { log(`托盘启动失败:${e.message}`); return false; }
+  children.push(tray);
+  trayAlive = true;
+  readline.createInterface({ input: tray.stdout }).on("line", (line) => {
+    const c = line.trim();
+    if (c === "READY") log(`托盘就绪(${Date.now() - t0}ms;单击进入,菜单:打开/重启/彻底退出)`);
+    else if (c === "OPEN") { log("托盘:进入"); openWindow().catch((e) => log(`开窗失败:${e.message}`)); }
+    else if (c === "RESTART") { log("托盘:重启"); restartSelf(); }
+    else if (c === "EXIT") { log("托盘:彻底退出"); shutdown(0); }
+  });
+  tray.once("exit", () => {
+    trayAlive = false;
+    const at = children.indexOf(tray);
+    if (at >= 0) children.splice(at, 1);
+    if (shuttingDown) return;
+    const now = Date.now();
+    trayRestarts.push(now);
+    while (trayRestarts.length && now - trayRestarts[0] > 60000) trayRestarts.shift();
+    if (trayRestarts.length > 2) {
+      log("托盘 60s 内退出超 2 次,放弃托盘,回退关窗即退语义");
+      if (!windowProc) { log("窗口也已不在:直接彻底退出"); shutdown(0); }
+      return;
+    }
+    log("托盘进程退出,1s 后重启…");
+    setTimeout(() => { if (!shuttingDown) startTray(); }, 1000);
+  });
+  return true;
+}
+
+// ── 重启:杀本实例整棵树 → 端口释放后按原参数拉起新实例 ─────────
+function restartSelf() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("重启:杀本实例进程树,拉起新实例…");
+  for (const c of children) if (c?.pid) killTree(c.pid);
+  (async () => {
+    for (let i = 0; i < 20 && ((await portAlive(PORTS.web)) || (await portAlive(PORTS.bridge))); i++)
+      await new Promise((r) => setTimeout(r, 500));
+    try {
+      const next = spawn(process.execPath, process.argv.slice(1), {
+        detached: true, stdio: "ignore", windowsHide: true, cwd: process.cwd(), env: { ...process.env },
+      });
+      next.unref();
+      log(`新实例已拉起 pid=${next.pid}(后续日志见 launcher.log)`);
+    } catch (e) { log(`新实例拉起失败:${e.message}`); }
+    process.exit(0);
+  })();
 }
 
 main().catch((e) => { log("启动失败:" + String(e.stack || e).slice(0, 400)); shutdown(1); });

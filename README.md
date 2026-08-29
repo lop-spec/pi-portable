@@ -33,6 +33,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 | S6 执行链 | ✅ 9/9 | `test/s6-chain-coldstart.mjs`(空账本冷启):INJECT 生效 → S8 落账建库 → **第二遍 exact 命中(冷启→热账本闭环)** → 历史注入 630B |
 | S7 代理桥 | ✅ | 含于 S2/S5/S6:出口自适应命中、/health 版本正确、真实模型请求 200 |
 | S8 预演(本机) | ✅ 13/13 | `test/s8-fresh-machine-sim.mjs`(纯下载 v0.0.2-rc2 全含版,零注入):自带 938KB 加密段 → 仅输一次口令 881ms → 出口自适应 → 双服务 → **零配置直接对话+工具执行 fresh-machine-ok** → 执行链 INJECT 生效 → 关闭端口全释放 → 复活零口令 |
+| 托盘 app 形态 | ✅ 17/17 + 2/2 | `test/tray-e2e.mjs`(隔离实例):启动托盘就绪 70ms → 关窗驻留(服务不断)→ 托盘进入复活窗口 → 托盘重启整套换代 → 托盘彻底退出零残留;`tests/tray-contract.mjs`:协议契约 + tray.ps1 实跑(真图标 `ICON:custom`) |
 | S8 机器2 终验 | ☐ **待异机执行** | 需真实异机:下载 Release exe → 双击 → 输口令 → 同 13 项断言。本机无法代验 |
 | S9 交付 | ☐ | S8 异机通过后:去 rc 正式 tag + README 补机器2 记录 |
 
@@ -42,8 +43,9 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 1. 从 [Releases](https://github.com/lop-spec/pi-portable/releases) 下载 `pi-portable-<版本>.exe`(或主机 SSH 推送解包内容)
 2. 主机推资产到 `<解包目录>\data\`:`auth.json`、`.pi/agent/{models,settings,AGENTS.md,extensions/lop-chain.ts}`、`rules-pretool.mjs`、`registry/rules-corpus.jsonl`、`anchors.jsonl`、`egress-extra-ports.json`(models.json 先过 `tools/portableize-models.mjs` 便携化凭证引用)
-3. 双击 exe:launcher 先校验受管语料并原子生成 `data/rules.jsonl`,再自动完成出口探测 → 起桥 → 起 pi-web → 打开独立窗口；需要立即生成可运行 `runtime\node.exe src\rules-snapshot.mjs --data-root data --source data\registry\rules-corpus.jsonl`
-4. 关闭窗口 = 彻底退出(整棵进程树被回收);再双击即复活
+3. 双击 exe:launcher 先校验受管语料并原子生成 `data/rules.jsonl`,再自动完成出口探测 → 起桥 → 起 pi-web → 打开独立 app 窗口(任务栏图标即 pi-web 自带 pi 图标),同时托盘常驻 pi 图标
+4. 托盘交互:**单击图标 = 进入(重开窗口)**;右键菜单 = 打开 Pi Web / 重启(整套换代重启)/ 彻底退出(整棵进程树回收零残留)。关闭窗口只驻留托盘,不再整体退出
+5. 托盘不可用时自动回退旧语义:关闭窗口 = 彻底退出;`PI_TRAY=0` 可显式关闭托盘。托盘宿主是 Windows 自带 PowerShell NotifyIcon(`src/tray.ps1`,纯 ASCII 契约,中文菜单由 launcher argv 传入),图标运行时取 `@agegr/pi-web/public/icons/icon-192.png`,零新增资产
 
 无头验证(SSH 远程,不开窗口):`runtime\node.exe tools\remote-verify.mjs "<测试 prompt>"`——出口/桥 health/pi 全链/S6 预审日志一次回显。
 
