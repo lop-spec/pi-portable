@@ -205,9 +205,10 @@ const COMPLETION_GUARD_TYPE = "lop-completion-guard";
 const GOAL_GATE_TYPE = "lop-goal-gate";
 const HISTORY_GUARD_TYPE = "lop-history-disposition-guard";
 const ADVERSARY_REDELIVERY_TYPE = "lop-adversary-redelivery";
+const CHECKLIST_GATE_TYPE = "lop-checklist-gate";
 const TURN_SCOPED_CUSTOM_TYPES = new Set([
   "lop-chain", COMPLETION_GUARD_TYPE, GOAL_GATE_TYPE, HISTORY_GUARD_TYPE,
-  ADVERSARY_REDELIVERY_TYPE,
+  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE,
 ]);
 // 目标门:用户在消息里显式声明一条可执行校验命令,agent_end 时 exit!=0 就自动续跑。
 // 只认显式声明(【目标门】/[goal-gate] 行),不做任何语义猜测——"不达标不许交付"类
@@ -215,6 +216,12 @@ const TURN_SCOPED_CUSTOM_TYPES = new Set([
 const GOAL_GATE_MAX = Number(process.env.LOP_GOAL_GATE_MAX || 3);
 const GOAL_GATE_TIMEOUT_MS = Number(process.env.LOP_GOAL_GATE_TIMEOUT_MS || 120000);
 const GOAL_GATE_LINE = /^\s*(?:【目标门】|\[goal-gate\])\s*(.*?)\s*$/miu;
+// 验收清单门:桥 persistence 注入(v7.9.1)要求模型对执行型任务自列【验收清单】并
+// 逐轮更新;本门在 agent_end 确定性解析最后回复的清单,存在未勾项且无阻塞声明即
+// 自动续跑——判据出自模型开工时刻的自列清单,用户零手写,每个执行任务自动有门。
+// 限度:全勾造假拦不住,由 S6 预审与显式目标门补位;显式目标门在场时本门让位。
+const CHECKLIST_GATE_MAX = Number(process.env.LOP_CHECKLIST_GATE_MAX || 2);
+const CHECKLIST_HEADER = "【验收清单】";
 const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
 const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
 const CONTEXT_REFERENCE = /(?:这个|那个|这些|那些|上面|前面|刚才|其余|剩下|第\s*\d+\s*项|不做\s*\d+)/u;
@@ -314,6 +321,40 @@ export function parseGoalGateDirective(prompt: unknown):
 // 判定纯函数:数值非零 exit 一律 retry(校验脚本被删/命令不存在时 shell 也返回非零,
 // 不给"弄坏校验器"留 fail-open 逃逸口);仅超时/无法取得 exit code 视为校验器自身
 // 故障,fail-open 不续跑。attempts 为已自动续跑次数,达上限后 exhausted 停止干预。
+export function parseAcceptanceChecklist(text: unknown):
+  { open: string[]; done: number; deferred: number } | null {
+  const s = String(text || "");
+  const idx = s.lastIndexOf(CHECKLIST_HEADER);
+  if (idx < 0) return null;
+  const open: string[] = [];
+  let done = 0;
+  let deferred = 0;
+  for (const m of s.slice(idx).matchAll(/^\s*[-*]\s*\[( |x|X|~)\]\s*(.+?)\s*$/gmu)) {
+    if (m[1] === " ") open.push(m[2]);
+    else if (m[1] === "~") deferred += 1;
+    else done += 1;
+  }
+  if (open.length + done + deferred === 0) return null;
+  return { open, done, deferred };
+}
+
+export function checklistGateDecision(input: {
+  assistantText: unknown; stopReason: unknown; pendingMessages: boolean;
+  hasGoalGate: boolean; attempts: number; max: number;
+}): { trigger: boolean; reason: string; open: string[] } {
+  const none = (reason: string) => ({ trigger: false, reason, open: [] as string[] });
+  if (input.stopReason !== "stop") return none("not-stop");
+  if (input.pendingMessages) return none("pending-messages");
+  if (input.hasGoalGate) return none("goal-gate-owns-completion");
+  const text = String(input.assistantText || "");
+  const checklist = parseAcceptanceChecklist(text);
+  if (!checklist) return none("no-checklist");
+  if (!checklist.open.length) return none("checklist-closed");
+  if (EXPLICIT_BLOCKER.test(text)) return none("explicit-blocker");
+  if (input.attempts >= input.max) return none("exhausted");
+  return { trigger: true, reason: "open-items", open: checklist.open };
+}
+
 export function goalGateVerdict(input: {
   exitCode: number | null; timedOut?: boolean; attempts: number; max: number;
 }): "pass" | "retry" | "exhausted" | "fail-open" {
@@ -371,6 +412,8 @@ export default function (pi: ExtensionAPI) {
   let historyRetryCount = 0;
   let completionRetryActive = false;
   let goalGateRetryActive = false;
+  let checklistRetryActive = false;
+  let checklistGateAttempts = 0;
   let runHadTool = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
   let goalGate: { command: string; attempts: number } | null = null;
@@ -542,6 +585,7 @@ export default function (pi: ExtensionAPI) {
     if (!prompt) return;
     if (advRedelivery) { log("S6 REDELIVERY TURN skip inject"); return; }
     if (goalGateRetryActive) { log(`GOAL_GATE retry=${goalGate?.attempts || 0}/${GOAL_GATE_MAX} skip reinject`); return; }
+    if (checklistRetryActive) { log(`CHECKLIST_GATE retry=${checklistGateAttempts}/${CHECKLIST_GATE_MAX} skip reinject`); return; }
     if (historyRetryActive) { log(`S3 USAGE_RETRY ${historyRetryCount}/2 skip reinject`); return; }
     if (completionRetryActive) { log("COMPLETION_GUARD retry skip reinject"); return; }
     turnStartedAt = performance.now();
@@ -553,6 +597,7 @@ export default function (pi: ExtensionAPI) {
     advDeliveredTurn = false;
     historyRetryCount = 0;
     completionRetryActive = false;
+    checklistGateAttempts = 0;
     lastResolved = null;
     lastPrompt = prompt;
     // 目标门声明/关闭只认真实用户消息;续跑注入轮 prompt 为空,走不到这里,
@@ -907,6 +952,39 @@ export default function (pi: ExtensionAPI) {
           metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
         }
       }
+    }
+    // 验收清单门:模型自列清单的确定性闭合检查(每任务自动,无需用户声明)。
+    const checklistGate = checklistGateDecision({
+      assistantText: text,
+      stopReason: lastAssistant?.stopReason,
+      pendingMessages: Boolean(ctx?.hasPendingMessages?.()),
+      hasGoalGate: Boolean(goalGate),
+      attempts: checklistGateAttempts,
+      max: CHECKLIST_GATE_MAX,
+    });
+    if (checklistGate.reason === "exhausted") {
+      checklistRetryActive = false;
+      log(`CHECKLIST_GATE EXHAUSTED attempts=${checklistGateAttempts}/${CHECKLIST_GATE_MAX}`);
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGate: "exhausted" });
+    } else if (checklistGate.trigger) {
+      checklistGateAttempts += 1;
+      checklistRetryActive = true;
+      log(`CHECKLIST_GATE RETRY attempts=${checklistGateAttempts}/${CHECKLIST_GATE_MAX} open=${checklistGate.open.length}`);
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGate: "retry", checklistOpen: checklistGate.open.length });
+      try {
+        pi.sendMessage({
+          customType: CHECKLIST_GATE_TYPE,
+          content: `验收清单未闭合(自动续跑 ${checklistGateAttempts}/${CHECKLIST_GATE_MAX}),剩余未完成项:\n${checklistGate.open.map((item) => `- ${item}`).join("\n")}\n\n继续执行这些项并在回复中带上更新后的清单;只有可验证完成才勾选 [x];确实无法完成的项改为 "- [~] 项: 原因" 显式延期,由用户决定。`,
+          display: false,
+          details: { open: checklistGate.open, attempts: checklistGateAttempts },
+        }, { deliverAs: "followUp", triggerTurn: true });
+        return;
+      } catch (e) {
+        checklistRetryActive = false;
+        log(`CHECKLIST_GATE FAIL_OPEN ${String(e).slice(0, 160)}`);
+      }
+    } else {
+      checklistRetryActive = false;
     }
     const guard = completionGuardDecision({
       prompt,

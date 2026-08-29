@@ -34,7 +34,7 @@ const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); 
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "low";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.9.0";
+const POLICY_VERSION = "gpt56-chain-replay-v7.9.1";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 // persistence 注入:Codex 官方 prompt(codex-rs/core/gpt_5_2_prompt.md)的 Autonomy and
 // Persistence 段原文。gpt-5.x 按这份提示训练对齐"不提前收尾";pi 等 responses 方言
@@ -49,6 +49,10 @@ const PERSISTENCE_APPENDIX = [
   "You must keep going until the query or task is completely resolved, before ending your turn and yielding back to the user. Persist until the task is fully handled end-to-end within the current turn whenever feasible and persevere even when function calls fail. Only terminate your turn when you are sure that the problem is solved. Autonomously resolve the query to the best of your ability, using the tools available to you, before coming back to the user. Do NOT guess or make up an answer.",
   "Do not stop at analysis or partial fixes; carry changes through implementation, verification, and a clear explanation of outcomes unless the user explicitly pauses or redirects you.",
   "If the user states an explicit acceptance target (for example a numeric threshold, all tests passing, or a delivery gate), treat the task as unresolved until that target is verifiably met, or until you have concrete evidence it is unreachable under the stated constraints; in that case report the quantified gap instead of silently stopping.",
+  // 清单纪律:与 lop-chain 验收清单门(CHECKLIST_HEADER)构成协议闭环——模型自列
+  // 清单,agent_end 确定性解析闭合状态,未勾项自动续跑。codex CLI 流量 MARK 命中
+  // 跳过注入,不与其自带 update_plan 工具重复。
+  "For any request that requires actions or changes (not a pure question), begin your first reply with an acceptance checklist: the line 【验收清单】 followed by '- [ ] <item>' lines covering each verifiable acceptance criterion of the task. Repeat the checklist with updated states in every later reply: mark an item '- [x]' only when it is verifiably done, or '- [~] <item>: <reason>' when explicitly canceled or deferred. Never end your turn while any item remains '- [ ]'.",
 ].join("\n");
 
 function appendPersistence(body) {
