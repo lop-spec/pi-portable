@@ -104,6 +104,32 @@ test('SSH history-reference paraphrase hits highly relevant summary20+full, unre
   t.after(() => fs.rmSync(fx.root, { recursive: true, force: true }));
   await scanHistory({ dataRoot: fx.dataRoot, config: fx.config });
 
+  const recursiveWrong = await recordStop({
+    session_id: 'recursive-history-answer',
+    turn_id: 'recursive-wrong-turn',
+    prompt: 'SSH 双向免密是否成功？请只根据相关历史结论回答。',
+    last_assistant_message: '仅根据当前相关历史结论，无法确认 SSH 双向免密已成功。',
+    transcript_path: '',
+  }, { dataRoot: fx.dataRoot, config: fx.config });
+  assert.equal(recursiveWrong.canonical.saved, true, JSON.stringify(recursiveWrong));
+  const constrainedHit = await resolveHistory(
+    'SSH 双向免密是否成功？请只根据相关历史结论回答。',
+    {
+      dataRoot: fx.dataRoot,
+      config: fx.config,
+      refresh: false,
+      sessionId: 'new-session',
+      maxFullChars: 800,
+    },
+  );
+  assert.equal(constrainedHit.hit, true, JSON.stringify(constrainedHit));
+  assert.equal(constrainedHit.mode, 'assoc');
+  assert.ok(constrainedHit.relevance >= 0.82);
+  assert.notEqual(constrainedHit.eventId, recursiveWrong.canonical.eventId);
+  assert.match(constrainedHit.summary20, /SSH|双向|免密/iu);
+  assert.match(constrainedHit.full, /双向 SSH 免密已实测成功/iu);
+  assert.doesNotMatch(constrainedHit.full, /无法确认|Permission denied/iu);
+
   const hit = await resolveHistory('刚刚的 SSH 双向免密对话是否成功？', {
     dataRoot: fx.dataRoot,
     config: fx.config,

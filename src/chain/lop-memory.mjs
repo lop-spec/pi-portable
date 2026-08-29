@@ -1214,6 +1214,13 @@ const ASCII_ANCHOR_STOP = new Set([
   'memory', 'history', 'please', 'explain', 'inspect', 'execute',
 ]);
 const HISTORY_REFERENCE_RE = /历史|记忆|之前|上次|刚刚|前面|对话|记录|回忆|history|memory/iu;
+const HISTORY_ANSWER_DIRECTIVE_RE = /(?:请)?(?:只)?根据(?:当前|相关|已有|上述)*?(?:历史|记忆|记录)(?:记录|结论|内容|信息|事实|证据)*?(?:进行)?(?:回答|作答|判断|说明)/iu;
+
+function isHistoryWrapperPrompt(value) {
+  const text = sanitizeText(value).normalize('NFKC');
+  return /刚刚.{0,20}对话|没有扫描到历史|匹配机制.{0,20}历史/iu.test(text) ||
+    HISTORY_ANSWER_DIRECTIVE_RE.test(text);
+}
 
 function taskTypeOf(value) {
   const text = sanitizeText(value).toLowerCase()
@@ -1258,6 +1265,7 @@ function anchorMatches(value, anchor) {
 
 function semanticQueryCore(value) {
   return sanitizeText(value).normalize('NFKC')
+    .replace(new RegExp(HISTORY_ANSWER_DIRECTIVE_RE.source, 'giu'), ' ')
     .replace(/(?:请|麻烦|帮我|一下|告诉我|精确|当前|现在|不要改|不改|不要|不得|禁止|只读|报告|分别|各自|一个|最小|任务|问题|最关键|关键|使用场景|有多少|多少|两边|都能)/gu, ' ')
     .replace(/(?:是否|有没有|能不能|能否|可否|成功|生效|状态|结果|怎么样|了没|了吗|吗)/gu, ' ')
     .replace(/(?:刚刚|之前|上次|前面|历史|记忆|对话|记录|回忆|扫描|匹配机制|机制)/gu, ' ')
@@ -1301,7 +1309,7 @@ function scoreAssociation(prompt, event, options = {}) {
   if (event.taskPrompt && isSystemEnvelopePrompt(event.taskPrompt)) {
     return { accepted: false, reason: 'system-envelope', relevance: 0 };
   }
-  if (event.taskPrompt && /刚刚.{0,20}对话|没有扫描到历史|匹配机制.{0,20}历史/iu.test(event.taskPrompt)) {
+  if (event.taskPrompt && isHistoryWrapperPrompt(event.taskPrompt)) {
     return { accepted: false, reason: 'history-wrapper', relevance: 0 };
   }
   if (/待处理|未完成/u.test(summary20)) {
@@ -1479,7 +1487,7 @@ export async function resolveHistory(prompt, options = {}) {
       "WHEN 'stop_hook' THEN 3 WHEN 'final_answer' THEN 2 ELSE 1 END DESC,",
       't.timestamp DESC,t.turn_key LIMIT 1',
     ].join(' ')).get(identityHash, sessionId, turnId);
-    if (exact) {
+    if (exact && !isHistoryWrapperPrompt(exact.prompt)) {
       const eventId = 'raw:' + exact.turnKey;
       return {
         hit: true,
