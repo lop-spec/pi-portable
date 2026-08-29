@@ -71,6 +71,10 @@ assert.equal(completionGuardDecision({
 }).trigger, false);
 assert.equal(completionGuardDecision({
   ...interrupted,
+  assistantText: "当前会话没有连接本机的 read/command 工具；下一轮我会直接检查。",
+}).trigger, false);
+assert.equal(completionGuardDecision({
+  ...interrupted,
   prompt: "具体怎么改，说明白",
   assistantText: "接下来我会说明修改位置。",
 }).trigger, false);
