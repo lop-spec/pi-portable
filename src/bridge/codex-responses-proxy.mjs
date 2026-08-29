@@ -34,8 +34,46 @@ const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); 
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "low";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.8.6";
+const POLICY_VERSION = "gpt56-chain-replay-v7.9.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
+// persistence 注入:Codex 官方 prompt(codex-rs/core/gpt_5_2_prompt.md)的 Autonomy and
+// Persistence 段原文。gpt-5.x 按这份提示训练对齐"不提前收尾";pi 等 responses 方言
+// 客户端的 instructions 缺该段,同模型在 pi 壳里就会出现"承诺后 stop/如实汇报未达标
+// 后停轮"。幂等判定用官方原文特征串,codex CLI 自带官方提示的流量自动跳过。
+// 可用 CODEX_PROXY_PERSISTENCE=0 关闭。
+const PERSISTENCE_INJECT = process.env.CODEX_PROXY_PERSISTENCE !== "0";
+const PERSISTENCE_MARK = "keep going until the query or task is completely resolved";
+const PERSISTENCE_APPENDIX = [
+  "",
+  "## Autonomy and Persistence",
+  "You must keep going until the query or task is completely resolved, before ending your turn and yielding back to the user. Persist until the task is fully handled end-to-end within the current turn whenever feasible and persevere even when function calls fail. Only terminate your turn when you are sure that the problem is solved. Autonomously resolve the query to the best of your ability, using the tools available to you, before coming back to the user. Do NOT guess or make up an answer.",
+  "Do not stop at analysis or partial fixes; carry changes through implementation, verification, and a clear explanation of outcomes unless the user explicitly pauses or redirects you.",
+  "If the user states an explicit acceptance target (for example a numeric threshold, all tests passing, or a delivery gate), treat the task as unresolved until that target is verifiably met, or until you have concrete evidence it is unreachable under the stated constraints; in that case report the quantified gap instead of silently stopping.",
+].join("\n");
+
+function appendPersistence(body) {
+  if (!PERSISTENCE_INJECT) return { body, applied: false };
+  try {
+    const j = JSON.parse(body.toString("utf8"));
+    // 形态1:codex CLI——顶层 instructions 字符串(自带官方提示,MARK 命中即跳过)。
+    if (typeof j.instructions === "string") {
+      if (j.instructions.includes(PERSISTENCE_MARK)) return { body, applied: false };
+      j.instructions += "\n" + PERSISTENCE_APPENDIX;
+      return { body: Buffer.from(JSON.stringify(j)), applied: true, target: "instructions" };
+    }
+    // 形态2:pi 等 responses 方言——系统提示在 input[0] 的 developer/system message,
+    // content 为字符串(pi-ai 序列化实测,2026-08-29)。
+    const first = Array.isArray(j.input) ? j.input[0] : null;
+    if (first && (first.role === "developer" || first.role === "system") && typeof first.content === "string") {
+      if (first.content.includes(PERSISTENCE_MARK)) return { body, applied: false };
+      first.content += "\n" + PERSISTENCE_APPENDIX;
+      return { body: Buffer.from(JSON.stringify(j)), applied: true, target: `input[0].${first.role}` };
+    }
+    return { body, applied: false };
+  } catch {
+    return { body, applied: false }; // 非明文 JSON:保持原样,fail-open
+  }
+}
 // 出口跟随：可选的出口选择状态文件（外部工具写入）。缺失/损坏时保持上次值，
 // 最终回退环境默认（未设 CODEX_UPSTREAM_PROXY_PORT 即直连），fail-open 不断流。
 const EGRESS_STATE_FILE = process.env.CODEX_EGRESS_STATE_FILE || path.join(PORTABLE_DATA, "active-egress.json");
@@ -221,6 +259,12 @@ const TIER = process.env.CODEX_PROXY_TIER || "off";
 async function handleResponses(req, res) {
   let body = await readBody(req);
   let fwdHeaders = req.headers;
+  // persistence 先于 rewrite:缓存/重放 key 必须基于注入后的真实 body 计算。
+  const persistence = appendPersistence(body);
+  if (persistence.applied) {
+    log(`persistence 注入：${persistence.target} +${persistence.body.length - body.length}B originator=${req.headers.originator || "-"}`);
+    body = persistence.body;
+  }
   const originalBytes = body.length;
   const rewritten = rewriteCodexRequestBody(body, req.headers, {
     tier: TIER,
