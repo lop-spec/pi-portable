@@ -382,7 +382,9 @@ export default function (pi: ExtensionAPI) {
   let toolDurationMs = 0;
   const toolStarts = new Map<string, number>();
   // 扩展装载即后台补扫,第一条 prompt 只等待尚未完成的尾部;后续 S3 不再扫描。
-  const memoryReady = (async () => {
+  const memoryReady = process.env.PI_CHAIN_SKIP_STARTUP_SCAN === "1"
+    ? Promise.resolve({ physicalSources: 0, changedSources: 0, canonicalized: 0 })
+    : (async () => {
     const started = performance.now();
     try {
       const mem: any = await import(pathToFileURL(MEMORY_MJS).href);

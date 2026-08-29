@@ -10,6 +10,7 @@ process.env.PI_PORTABLE_HOME = root;
 process.env.PI_PORTABLE_DATA = contractData;
 process.env.LOP_MEMORY_HOME = path.join(contractData, "memory");
 process.env.LOP_MEMORY_DISABLE_PI_DISCOVERY = "1";
+process.env.PI_CHAIN_SKIP_STARTUP_SCAN = "1";
 process.env.PI_CHAIN_METRICS = path.join(contractData, "metrics.jsonl");
 process.env.PI_CHAIN_LOG = path.join(contractData, "chain.log");
 process.on("exit", () => fs.rmSync(contractData, { recursive: true, force: true }));

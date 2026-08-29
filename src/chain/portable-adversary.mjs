@@ -85,7 +85,9 @@ function callBridge(prompt, job) {
       res.on("end", () => finish(parseReview(text, t0, res.statusCode)));
       res.on("error", () => finish({ ok: false, reason: "响应流中断" }));
     });
+    req.on("socket", (socket) => { job.socket = socket; });
     job.cancel = () => {
+      try { job.socket?.unref?.(); } catch {}
       req.destroy();
       finish({ ok: false, canceled: true, reason: "已由确定性当前证据覆盖" });
     };
