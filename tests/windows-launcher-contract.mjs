@@ -13,6 +13,8 @@ const baseline = JSON.parse(fs.readFileSync(path.join(root, "benchmarks", "windo
 
 assert.match(cpp, /wWinMain\(/, "native entry must use the Windows GUI subsystem entry point");
 assert.match(cpp, /#pragma comment\(lib, "user32\.lib"\)/, "GUI error reporting must declare its User32 linker dependency");
+assert.match(cpp, /#pragma comment\(lib, "shell32\.lib"\)/, "native argument parsing must declare its Shell32 linker dependency");
+assert.match(cpp, /--pi-node-host/, "the GUI binary must also host launcher child Node processes without a console");
 assert.match(cpp, /DETACHED_PROCESS/, "node child must be detached from every console");
 assert.match(cpp, /STARTF_USESTDHANDLES/, "detached node must receive explicit standard handles");
 assert.match(cpp, /CreateFileW\(L"NUL"/, "detached node standard streams must terminate at NUL, not a console host");
@@ -35,6 +37,8 @@ assert.doesNotMatch(workflow, /Copy-Item packaging\/pi-portable\.cmd|Copy-Item p
 assert.equal(sfx.match(/RunProgram="([^"]+)"/)?.[1], "pi-portable-launcher.exe", "SFX must run the native entry directly");
 assert.equal(fs.existsSync(path.join(root, "packaging", "pi-portable.cmd")), false, "legacy batch entry must be removed from source");
 assert.match(launcher, /PI_LAUNCH_SUPERVISOR/, "Node launcher must hand restart requests back to native supervisor");
+assert.match(launcher, /PI_PROCESS_HOST/, "Node launcher must route bridge and web children through the native process host");
+assert.match(launcher, /spawnPortableNode\(/, "bridge/web Node children must use the no-console native host");
 assert.equal(baseline.target.cmdStarts, 0);
 assert.equal(baseline.target.conhostStarts, 0);
 assert.equal(baseline.target.vbscriptEvents, 0);

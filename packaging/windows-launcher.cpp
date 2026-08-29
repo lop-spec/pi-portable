@@ -1,13 +1,17 @@
 #include <windows.h>
+#include <shellapi.h>
 
 #include <climits>
+#include <cwchar>
 #include <string>
 #include <vector>
 
+#pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 
 namespace {
 constexpr DWORD kRestartExitCode = 75;
+constexpr wchar_t kNodeHostSwitch[] = L"--pi-node-host";
 constexpr wchar_t kWindowTitle[] = L"Pi Portable";
 
 std::wstring ExecutablePath() {
@@ -88,8 +92,37 @@ int Fail(const std::wstring& root, const std::wstring& operation, DWORD error) {
     return 1;
 }
 
-std::wstring Quoted(const std::wstring& value) {
-    return L"\"" + value + L"\"";
+std::wstring QuoteArgument(const std::wstring& value) {
+    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+        return value;
+    }
+    std::wstring result = L"\"";
+    size_t backslashes = 0;
+    for (const wchar_t character : value) {
+        if (character == L'\\') {
+            ++backslashes;
+        } else if (character == L'\"') {
+            result.append(backslashes * 2 + 1, L'\\');
+            result.push_back(L'\"');
+            backslashes = 0;
+        } else {
+            result.append(backslashes, L'\\');
+            backslashes = 0;
+            result.push_back(character);
+        }
+    }
+    result.append(backslashes * 2, L'\\');
+    result.push_back(L'\"');
+    return result;
+}
+
+std::wstring BuildCommand(const std::wstring& executable,
+                          const std::vector<std::wstring>& arguments) {
+    std::wstring command = QuoteArgument(executable);
+    for (const std::wstring& argument : arguments) {
+        command += L" " + QuoteArgument(argument);
+    }
+    return command;
 }
 
 HANDLE CreateKillOnCloseJob(const std::wstring& root) {
@@ -112,7 +145,7 @@ HANDLE CreateKillOnCloseJob(const std::wstring& root) {
 }
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const std::wstring executable = ExecutablePath();
     const std::wstring root = DirectoryName(executable);
     if (root.empty()) return Fail(L".", L"GetModuleFileNameW", GetLastError());
@@ -120,13 +153,42 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
     const std::wstring node = Join(root, L"runtime\\node.exe");
     const std::wstring script = Join(root, L"src\\launcher.mjs");
     if (!IsFile(node)) return Fail(root, L"portable node missing: " + node, ERROR_FILE_NOT_FOUND);
-    if (!IsFile(script)) return Fail(root, L"launcher missing: " + script, ERROR_FILE_NOT_FOUND);
 
-    if (!SetEnvironmentVariableW(L"PI_PORTABLE_HOME", root.c_str()) ||
-        !SetEnvironmentVariableW(L"PI_NODE_EXE", node.c_str()) ||
-        !SetEnvironmentVariableW(L"PI_LAUNCH_SUPERVISOR", L"1")) {
-        return Fail(root, L"SetEnvironmentVariableW", GetLastError());
+    int argument_count = 0;
+    wchar_t** argument_values = CommandLineToArgvW(GetCommandLineW(), &argument_count);
+    if (!argument_values) return Fail(root, L"CommandLineToArgvW", GetLastError());
+    const bool node_host_mode = argument_count >= 2 &&
+                                std::wcscmp(argument_values[1], kNodeHostSwitch) == 0;
+    if (node_host_mode && argument_count < 3) {
+        LocalFree(argument_values);
+        return Fail(root, L"--pi-node-host requires a target", ERROR_INVALID_PARAMETER);
     }
+    if (!node_host_mode && !IsFile(script)) {
+        LocalFree(argument_values);
+        return Fail(root, L"launcher missing: " + script, ERROR_FILE_NOT_FOUND);
+    }
+
+    std::vector<std::wstring> child_arguments;
+    if (node_host_mode) {
+        for (int index = 2; index < argument_count; ++index) {
+            child_arguments.emplace_back(argument_values[index]);
+        }
+    } else {
+        child_arguments.emplace_back(script);
+        for (int index = 1; index < argument_count; ++index) {
+            child_arguments.emplace_back(argument_values[index]);
+        }
+    }
+    LocalFree(argument_values);
+
+    bool environment_ok = SetEnvironmentVariableW(L"PI_PORTABLE_HOME", root.c_str()) &&
+                          SetEnvironmentVariableW(L"PI_NODE_EXE", node.c_str()) &&
+                          SetEnvironmentVariableW(L"PI_PROCESS_HOST", executable.c_str());
+    if (!node_host_mode) {
+        environment_ok = environment_ok &&
+                         SetEnvironmentVariableW(L"PI_LAUNCH_SUPERVISOR", L"1");
+    }
+    if (!environment_ok) return Fail(root, L"SetEnvironmentVariableW", GetLastError());
 
     SECURITY_ATTRIBUTES inherited{};
     inherited.nLength = sizeof(inherited);
@@ -143,10 +205,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
         CloseHandle(null_input);
         return Fail(root, L"open NUL stdout", error);
     }
+    auto inherited_standard_handle = [](DWORD identifier, HANDLE fallback) {
+        HANDLE candidate = GetStdHandle(identifier);
+        if (candidate && candidate != INVALID_HANDLE_VALUE &&
+            SetHandleInformation(candidate, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+            return candidate;
+        }
+        return fallback;
+    };
+    const HANDLE child_input = node_host_mode
+                                   ? inherited_standard_handle(STD_INPUT_HANDLE, null_input)
+                                   : null_input;
+    const HANDLE child_output = node_host_mode
+                                    ? inherited_standard_handle(STD_OUTPUT_HANDLE, null_output)
+                                    : null_output;
+    const HANDLE child_error = node_host_mode
+                                   ? inherited_standard_handle(STD_ERROR_HANDLE, null_output)
+                                   : null_output;
 
-    std::wstring child_command = Quoted(node) + L" " + Quoted(script);
-    if (command_line && *command_line) child_command += L" " + std::wstring(command_line);
-
+    const std::wstring child_command = BuildCommand(node, child_arguments);
     HANDLE job = CreateKillOnCloseJob(root);
     for (;;) {
         std::vector<wchar_t> mutable_command(child_command.begin(), child_command.end());
@@ -154,9 +231,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         startup.dwFlags = STARTF_USESTDHANDLES;
-        startup.hStdInput = null_input;
-        startup.hStdOutput = null_output;
-        startup.hStdError = null_output;
+        startup.hStdInput = child_input;
+        startup.hStdOutput = child_output;
+        startup.hStdError = child_error;
         PROCESS_INFORMATION process{};
         const DWORD flags = DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
         if (!CreateProcessW(node.c_str(), mutable_command.data(), nullptr, nullptr, TRUE,
@@ -183,8 +260,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
             return Fail(root, L"ResumeThread", error);
         }
         CloseHandle(process.hThread);
-        AppendLog(root, L"START native supervisor child pid=" +
-                            std::to_wstring(process.dwProcessId));
+        AppendLog(root, L"START mode=" +
+                            std::wstring(node_host_mode ? L"node-host" : L"supervisor") +
+                            L" child pid=" + std::to_wstring(process.dwProcessId));
 
         const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
         DWORD exit_code = 1;
@@ -197,9 +275,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR command_line, int) {
             return Fail(root, L"WaitForSingleObject/GetExitCodeProcess", error);
         }
         CloseHandle(process.hProcess);
-        AppendLog(root, L"EXIT child code=" + std::to_wstring(exit_code));
+        AppendLog(root, L"EXIT mode=" +
+                            std::wstring(node_host_mode ? L"node-host" : L"supervisor") +
+                            L" child code=" + std::to_wstring(exit_code));
 
-        if (exit_code == kRestartExitCode) {
+        if (!node_host_mode && exit_code == kRestartExitCode) {
             AppendLog(root, L"RESTART requested by launcher");
             Sleep(200);
             continue;
