@@ -239,7 +239,11 @@ export default function (pi: ExtensionAPI) {
   // 真实用量超水位后,仅对发往上游的载荷把"尾部保留预算之外的旧工具结果"替换为占位符——
   // 会话文件不动、不 abort、无额外 LLM 调用;裁剪单调(旧的永远保持裁剪态)保上游前缀缓存;
   // 粘性开关防"裁→用量回落→停裁→再膨胀"振荡,原生压缩(session_compact)发生时复位。fail-open。
-  const COMPACT_TRIGGER_TOKENS = Number(process.env.LOP_COMPACT_TRIGGER_TOKENS || 250000);
+  // 触发线 12 万:实测成本曲线 <5万 tok TTFB 941ms(地板)/~9.4万 1421ms/≥20万 1966ms;
+  // 稳态载荷≈保留额+对话文本(与触发线无关),触发线只决定进入省钱模式的早晚——
+  // 取 12 万可让短会话零打扰、长会话尽早收敛到 ~6-10万 稳态;保留 5 万护住工作集
+  // (再压每轮省 <0.2s,一次重读付 ~5s,风险不对称)。
+  const COMPACT_TRIGGER_TOKENS = Number(process.env.LOP_COMPACT_TRIGGER_TOKENS || 120000);
   const TRIM_KEEP_RECENT_TOKENS = Number(process.env.LOP_TRIM_KEEP_TOKENS || 50000);
   const TRIM_MIN_CHARS = 600;
   const TRIM_MARK = "[lop-compact-guard 已裁剪";
