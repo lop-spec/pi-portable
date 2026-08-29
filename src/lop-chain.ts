@@ -1,6 +1,6 @@
 // lop 执行链 v2 的 pi 承接层(规格:decision-replay-engine/specs/gpt-exec-chain-v2.md)
 // 进程内 import rule-enforcer 核心,单源三宿主(claude/codex/pi)。全步骤 fail-open。
-// S2 扩写(硬门3) S3 历史召回(硬门1) S4 规则路由(硬门2) S7 工具门 S8 落账+耗时埋点。
+// S2 扩写(硬门3) S3 历史召回(硬门1) S4 规则路由(硬门2) S6 对抗预审 S7 工具门 S8 落账+耗时埋点。
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,6 +16,8 @@ const MEMORY_MJS = path.join(CHAIN_DIR, "lop-memory.mjs");
 // S7 工具门规则集属私有数据面(个人环境标识密集),不随公开包分发。
 // 数据根有 rules-pretool.mjs 才启用工具门,否则该步跳过(fail-open,不阻断执行)。
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(DATA, "rules-pretool.mjs");
+// S6 预审:便携版走包内 8794 桥的进程内实现(见 portable-adversary.mjs),同签名同判据。
+const ADVERSARY_MJS = path.join(CHAIN_DIR, "portable-adversary.mjs");
 const REGISTRY_MJS = path.join(CHAIN_DIR, "rule-registry.mjs");
 const CORPUS = path.join(DATA, "rules.jsonl");
 const ENTITIES = path.join(DATA, "anchors.jsonl");
@@ -84,10 +86,15 @@ export default function (pi: ExtensionAPI) {
   const sessionId = `pi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let lastPrompt = "";
   let lastPhase: Record<string, unknown> = {};
+  // S6 打回轮标记:等价 Claude 侧 stop_hook_active,防预审递归打回。
+  let advRedelivery = false;
+  let advDeliveredTurn = false; // 本轮已投递过预审 context,防每次 tool_call 重复注入
 
   pi.on("before_agent_start", async (event: any) => {
     const prompt = String(event?.prompt || "");
     if (!prompt) return;
+    if (advRedelivery) { log("S6 REDELIVERY TURN skip inject"); return; }
+    advDeliveredTurn = false;
     lastPrompt = prompt;
     const contexts: string[] = [];
     const phase: Record<string, unknown> = {};
@@ -148,6 +155,15 @@ export default function (pi: ExtensionAPI) {
     } catch (e) { log(`S3 FAIL_OPEN ${String(e).slice(0, 160)}`); }
     phase.s3Ms = +(performance.now() - t3).toFixed(1);
 
+    // S6 后台对抗预审起审:detached 子进程(windowsHide),agent_end 消费,fail-open
+    const t6 = performance.now();
+    try {
+      const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
+      const started = adv.startBackgroundReview({ session_id: sessionId, prompt });
+      phase.s6Start = started?.status || "-";
+    } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
+    phase.s6Ms = +(performance.now() - t6).toFixed(1);
+
     lastPhase = phase;
     log(`INJECT s2=${phase.s2Ms}ms s3=${phase.s3Ms}ms(hit=${phase.s3Hit},exp=${phase.s3ViaExpansion}) s4=${phase.s4Ms}ms(rules=${(phase.s4Live as string[])?.length || 0}+${(phase.s4FromExpansion as string[])?.length || 0}exp) bytes=${Buffer.byteLength(contexts.join("\n\n"))}`);
     if (!contexts.length) return;
@@ -156,8 +172,22 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // S7 工具红线:复用 rules-pretool
+  // S7 工具红线:复用 rules-pretool;S6 预审就绪则执行阶段早投递(防长任务超 TTL)
   pi.on("tool_call", async (event: any) => {
+    if (!advRedelivery && !advDeliveredTurn) {
+      try {
+        const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
+        const claimed = adv.claimBackgroundReview({ session_id: sessionId });
+        if (claimed?.status === "ready" && claimed.context) {
+          advDeliveredTurn = true;
+          pi.sendMessage(
+            { customType: "lop-adversary", content: claimed.context, display: false },
+            { deliverAs: "steer", triggerTurn: false },
+          );
+          log("S6 DELIVERED pretool");
+        }
+      } catch (e) { log(`S6 CLAIM FAIL_OPEN ${String(e).slice(0, 120)}`); }
+    }
     try {
       const pre: any = await import(pathToFileURL(PRETOOL_MJS).href);
       const result = pre.checkPreTool({
@@ -173,8 +203,32 @@ export default function (pi: ExtensionAPI) {
     } catch (e) { log(`S7 FAIL_OPEN ${String(e).slice(0, 120)}`); }
   });
 
-  // S8 完成态落账 + 全链耗时落 metrics
+  // S8 完成态落账 + 全链耗时落 metrics;S6 预审消费在落账前(block 则打回一轮,不落账)
   pi.on("agent_end", async (event: any) => {
+    if (advRedelivery) {
+      // 打回轮收尾:重置标记,顺带 consume 触发 envelope cleanup(已投递态返回 pass)
+      advRedelivery = false;
+      try {
+        const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
+        adv.consumeBackgroundReview({ session_id: sessionId });
+      } catch {}
+    } else {
+      try {
+        const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
+        const review = adv.consumeBackgroundReview({ session_id: sessionId });
+        if (review?.status === "block") {
+          advRedelivery = true;
+          log(`S6 BLOCK ${String(review.reason || "").slice(0, 160)}`);
+          metric({ sessionId, prompt: lastPrompt.slice(0, 160), ...lastPhase, s6Block: true });
+          pi.sendUserMessage(
+            `Stop hook feedback:\n${review.reason}\n\n${review.body || ""}`,
+            { deliverAs: "followUp" },
+          );
+          return;
+        }
+        if (review?.status && review.status !== "skip") log(`S6 ${review.status} ${String(review.reason || "").slice(0, 120)}`);
+      } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
+    }
     const t8 = performance.now();
     try {
       const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
