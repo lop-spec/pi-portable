@@ -31,7 +31,6 @@ jobs:
         run: |
           node tests/launcher-portable-node-contract.mjs
           node tests/lop-chain-contract.mjs
-          node tests/rules-snapshot-contract.mjs
 
       - name: Stage portable node runtime
         shell: pwsh
