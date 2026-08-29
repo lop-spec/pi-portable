@@ -419,8 +419,30 @@ export default function (pi: ExtensionAPI) {
       });
       const hits = Array.isArray(result) ? result : result?.hits || [];
       if (hits.length) {
+        // 与 Claude 侧 index.mjs 同语义:全部可 fixup → 链式改写后放行(pi API 约定 event.input 原地可变);
+        // 任一 fixup 改不动 → 放行原样(fail-open,同 Claude);存在不可修 hit → block。
+        // 2026-08-29 前这里无 fixup 路——pi 侧 heredoc 自伤因此全部漏网(62 错复盘)。
+        const allFixable = hits.every((h: any) => typeof h.fixup === "function");
+        if (allFixable) {
+          let input = { ...(event?.input ?? {}) };
+          let ok = true;
+          const notes: string[] = [];
+          for (const h of hits) {
+            try {
+              const r = h.fixup(input);
+              if (!r?.input) { ok = false; break; }
+              input = r.input;
+              notes.push(`${h.id} → ${r.note}`);
+            } catch (e) { log(`S7 FIXUP_FAIL ${h.id} ${String(e).slice(0, 120)}`); ok = false; break; }
+          }
+          if (ok) {
+            Object.assign(event.input, input);
+            log(`S7 FIXUP tool=${event?.toolName} ${notes.join("; ").slice(0, 200)}`);
+          }
+          return;
+        }
         log(`S7 BLOCK tool=${event?.toolName} hits=${hits.map((h: any) => h.id || h.rule || "?").join(",")}`);
-        return { block: true, reason: `lop 规则红线:${hits.map((h: any) => h.reason || h.id || "blocked").join("; ").slice(0, 300)}` };
+        return { block: true, reason: `lop 规则红线:${hits.map((h: any) => `${h.reason || h.id || "blocked"}${h.fix ? `;正确形态:${h.fix}` : ""}`).join(" | ").slice(0, 500)}` };
       }
     } catch (e) { log(`S7 FAIL_OPEN ${String(e).slice(0, 120)}`); }
   });
