@@ -27,14 +27,18 @@ pi-web + 规则执行链 + codex 代理桥的便携发行版工程。目标:另�
 | S8 机器2 终验 | ☐ **待异机执行** | 需真实异机:下载 Release exe → 双击 → 输口令 → 同 13 项断言。本机无法代验 |
 | S9 交付 | ☐ | S8 异机通过后:去 rc 正式 tag + README 补机器2 记录 |
 
-## 使用方式(机器2)
+## 使用方式(异机,2026-08-29 方案改定)
 
-1. 从 [Releases](https://github.com/lop-spec/pi-portable/releases) 下载 `pi-portable-<版本>.exe`
-2. 双击 → 解压 → 首次启动输一次解密口令(之后本机免输)
-3. 自动完成:出口探测 → 起桥 → 起 pi-web → 打开独立窗口
+发行物只有脱敏 base.exe(代码 + runtime,零凭证);敏感资产不再嵌加密段,由主机经 SSH 私道直推异机数据根。
+
+1. 从 [Releases](https://github.com/lop-spec/pi-portable/releases) 下载 `pi-portable-<版本>.exe`(或主机 SSH 推送解包内容)
+2. 主机推资产到 `<解包目录>\data\`:`auth.json`、`.pi/agent/{models,settings,AGENTS.md,extensions/lop-chain.ts}`、`rules-pretool.mjs`、`rules.jsonl`、`anchors.jsonl`、`egress-extra-ports.json`(models.json 先过 `tools/portableize-models.mjs` 便携化凭证引用)
+3. 双击 exe:launcher 检测到无加密段,直接用数据根已有资产;自动完成出口探测 → 起桥 → 起 pi-web → 打开独立窗口
 4. 关闭窗口 = 彻底退出(整棵进程树被回收);再双击即复活
 
-无凭证的 base 版:删掉仓库根的 `assets.enc` 重新构建即可,首启会用本机已有的 codex 登录态。
+无头验证(SSH 远程,不开窗口):`runtime\node.exe tools\remote-verify.mjs "<测试 prompt>"`——出口/桥 health/pi 全链/S6 预审日志一次回显。
+
+历史方案(exe 内嵌 AES 加密资产段 + 首启口令)已于 2026-08-29 退役:CI 现在断言 stage 里不得出现 `assets.enc`。
 
 ## 关键实测结论
 

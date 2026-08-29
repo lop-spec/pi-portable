@@ -31,6 +31,7 @@ jobs:
         run: |
           node tests/launcher-portable-node-contract.mjs
           node tests/lop-chain-contract.mjs
+          node tests/rules-snapshot-contract.mjs
 
       - name: Stage portable node runtime
         shell: pwsh
@@ -62,22 +63,13 @@ jobs:
           Copy-Item packaging/pi-portable.cmd stage/pi-portable.cmd
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
 
-      - name: Inject encrypted assets
+      - name: Assert no embedded assets
         shell: pwsh
-        env:
-          ASSETS_ENC_B64: ${{ secrets.ASSETS_ENC_B64 }}
         run: |
-          # 优先用仓库内密文(AES-256-GCM + scrypt,设计上可公开,靠口令保护);
-          # 若配置了 Secret 则以 Secret 覆盖(便于不入仓的私有构建)。
-          if (-not [string]::IsNullOrEmpty($env:ASSETS_ENC_B64)) {
-            [IO.File]::WriteAllBytes("stage/assets.enc", [Convert]::FromBase64String($env:ASSETS_ENC_B64))
-            Write-Host "assets.enc from secret ($((Get-Item stage/assets.enc).Length) bytes)"
-          } elseif (Test-Path assets.enc) {
-            Copy-Item assets.enc stage/assets.enc
-            Write-Host "assets.enc from repo ($((Get-Item stage/assets.enc).Length) bytes)"
-          } else {
-            Write-Host "no assets.enc; building base exe (bring your own account)"
-          }
+          # 2026-08-29 方案改定:发行物只出脱敏 base.exe,敏感资产一律走 SSH 私道进数据根,
+          # 不再嵌加密资产段。stage 里若出现 assets.enc 直接失败,防旧路径复活。
+          if (Test-Path stage/assets.enc) { throw "assets.enc must not be embedded; ship base exe only" }
+          Write-Host "base exe (no embedded assets; credentials delivered out-of-band)"
 
       - name: Build single-file exe (7z SFX)
         shell: pwsh

@@ -9,3 +9,6 @@ tools/portable-ize.mjs
 tools/vendor-chain.mjs
 tools/create-repo.mjs
 test/
+
+# 2026-08-29 起发行物不嵌资产段;密文块也不入仓(敏感资产走 SSH 私道)
+assets.enc
