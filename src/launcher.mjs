@@ -283,7 +283,10 @@ async function main() {
 
   // 6 托盘 + 窗口:托盘在则关窗驻留(单击托盘再进入,菜单可重启/彻底退出);托盘不可用回退关窗即退
   if (process.env.PI_HEADLESS === "1") { log("无头模式:不开窗口,等待终止信号"); setInterval(() => {}, 1 << 30); return; }
-  if (!startTray()) log("无托盘:关闭窗口即彻底退出");
+  const hasTray = startTray();
+  if (!hasTray) log("无托盘:关闭窗口即彻底退出");
+  // PI_AUTO_WINDOW=0:自启/常驻场景不自动弹窗,窗口由托盘"进入"按需打开(托盘不可用则忽略该档)
+  if (process.env.PI_AUTO_WINDOW === "0" && hasTray) { log("自启模式:不自动开窗,单击托盘进入"); return; }
   await openWindow();
 }
 
@@ -338,12 +341,16 @@ function startTray() {
     try { const c = JSON.parse(process.env.PI_TRAY_CMD); if (Array.isArray(c) && c.length) cmd = c; } catch {}
     if (!cmd) { log("PI_TRAY_CMD 不是 JSON 数组,不起托盘"); return false; }
   } else {
-    const icon = path.join(HOME, "app", "node_modules", "@agegr", "pi-web", "public", "icons", "icon-192.png");
+    // 图标优先 lop 自绘 π 图标(assets/pi-web.ico,与桌面 lnk 同源);缺失回退 pi-web 包内 icon-192.png
+    const icon = [
+      path.join(HOME, "assets", "pi-web.ico"),
+      path.join(HOME, "app", "node_modules", "@agegr", "pi-web", "public", "icons", "icon-192.png"),
+    ].find((p) => fs.existsSync(p));
     cmd = ["powershell.exe", "-NoProfile", "-NoLogo", "-ExecutionPolicy", "Bypass",
       "-File", path.join(HOME, "src", "tray.ps1"),
       "-Title", "Pi Web", "-ParentPid", String(process.pid),
       "-MenuOpen", "打开 Pi Web", "-MenuRestart", "重启", "-MenuExit", "彻底退出"];
-    if (fs.existsSync(icon)) cmd.push("-IconPng", icon);
+    if (icon) cmd.push("-IconPng", icon);
   }
   let tray;
   const t0 = Date.now();

@@ -21,8 +21,12 @@ $icon = $null
 $iconSource = "fallback"
 if ($IconPng -and (Test-Path -LiteralPath $IconPng)) {
   try {
-    $bmp = [System.Drawing.Bitmap]::FromFile($IconPng)
-    $icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+    if ($IconPng -match '\.ico$') {
+      $icon = New-Object System.Drawing.Icon($IconPng)
+    } else {
+      $bmp = [System.Drawing.Bitmap]::FromFile($IconPng)
+      $icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+    }
     $iconSource = "custom"
   } catch { $icon = $null; $iconSource = "fallback" }
 }

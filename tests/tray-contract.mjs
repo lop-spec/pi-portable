@@ -19,7 +19,11 @@ test("tray.ps1 与 launcher 协议契约", () => {
     assert(launcher.includes(`"${tok}"`), `launcher.mjs 缺 ${tok} 解析`);
   }
   assert(launcher.includes("PI_TRAY"), "launcher 缺 PI_TRAY 开关");
-  assert(launcher.includes("icon-192.png"), "托盘图标必须复用 pi-web 自带 icon-192.png");
+  assert(launcher.includes("assets") && launcher.includes("pi-web.ico"), "托盘图标必须优先 lop 自绘 assets/pi-web.ico");
+  assert(launcher.includes("icon-192.png"), "缺 pi-web 包内 icon-192.png 图标回退");
+  assert(ps1.includes(".ico"), "tray.ps1 缺 .ico 直载分支");
+  assert(launcher.includes("PI_AUTO_WINDOW"), "launcher 缺 PI_AUTO_WINDOW 自启档");
+  assert(fs.existsSync(path.join(ROOT, "assets", "pi-web.ico")), "assets/pi-web.ico 缺失");
   assert(launcher.includes("-MenuOpen"), "中文菜单文本必须由 launcher argv 传入");
 });
 

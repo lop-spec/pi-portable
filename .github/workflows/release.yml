@@ -63,6 +63,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse src stage/src
+          Copy-Item -Recurse assets stage/assets
           New-Item -ItemType Directory -Force -Path stage/tools | Out-Null
           Copy-Item tools/remote-verify.mjs stage/tools/remote-verify.mjs
           Copy-Item LICENSE stage/LICENSE
