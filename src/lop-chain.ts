@@ -324,7 +324,7 @@ export function goalGateVerdict(input: {
 
 function execGoalGate(command: string): Promise<{ code: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolve) => {
-    exec(command, {
+    const child = exec(command, {
       windowsHide: true, timeout: GOAL_GATE_TIMEOUT_MS, maxBuffer: 1024 * 1024, encoding: "utf8",
     }, (error: any, stdout, stderr) => {
       resolve({
@@ -333,6 +333,9 @@ function execGoalGate(command: string): Promise<{ code: number | null; output: s
         timedOut: Boolean(error?.killed),
       });
     });
+    // Windows/Node 24 下 exec 已 exit=0 的 ChildProcess 仍可能保持事件循环引用；
+    // Promise 与 stdio 继续保证回调完成，unref 只移除残留进程句柄。
+    child.unref();
   });
 }
 
