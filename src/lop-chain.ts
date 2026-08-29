@@ -327,6 +327,9 @@ function execGoalGate(command: string): Promise<{ code: number | null; output: s
     const child = exec(command, {
       windowsHide: true, timeout: GOAL_GATE_TIMEOUT_MS, maxBuffer: 1024 * 1024, encoding: "utf8",
     }, (error: any, stdout, stderr) => {
+      child.stdout?.unref?.();
+      child.stderr?.unref?.();
+      child.stdin?.unref?.();
       resolve({
         code: error ? (typeof error.code === "number" ? error.code : null) : 0,
         output: `${stdout || ""}\n${stderr || ""}`.trim(),
