@@ -82,13 +82,137 @@ function expandPrompt(prompt: string): { forRules: string; forHistory: string; a
   return { forRules, forHistory, anchors: historyParts.size };
 }
 
+const COMPLETION_GUARD_TYPE = "lop-completion-guard";
+const TURN_SCOPED_CUSTOM_TYPES = new Set(["lop-chain", COMPLETION_GUARD_TYPE]);
+const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
+const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
+const CONTEXT_REFERENCE = /(?:这个|那个|这些|那些|上面|前面|刚才|其余|剩下|第\s*\d+\s*项|不做\s*\d+)/u;
+const EXECUTION_ACTION = /(?:看下|看一下|查下|查一下|检查|查看|排查|定位|修复|修改|改|执行|运行|部署|安装|更新|提交|推送|上传|下载|验证|测试|创建|删除|迁移|接入|配置|重启|停止|启动|处理|完成|落地|做)/u;
+const EXPLANATION_REQUEST = /(?:怎么|如何|为什么|是什么|有什么|有哪些|有没有|能否|是否|可不可以|推荐|说明|解释|原理|方案|区别)/u;
+const DIRECT_EXECUTION = /(?:直接|帮我|请你|给我|都做|做完|改好|修好|落地|执行|运行|部署|上传|提交|推送)/u;
+const FUTURE_ACTION_COMMITMENT = /(?:接下来|下一步|然后|随后|现在)?\s*(?:我会|我将|我先|我接着|我继续|将会)\s*(?:直接|先|继续)?[\s\S]{0,24}(?:读取|检查|查看|排查|定位|修复|修改|执行|运行|验证|测试|部署|安装|提交|推送|上传|连接|打开|搜索|处理)/u;
+const EXPLICIT_BLOCKER = /(?:需要你|请(?:你)?(?:提供|确认|回复|授权|登录|打开|选择)|等待(?:你|用户)|缺少(?:权限|凭据|信息|参数)|无法(?:安全)?(?:继续|访问|连接|执行|读取|写入|调用)|被阻塞|需要授权|未提供(?:权限|凭据|信息|参数)|(?:工具|调用|执行)(?:通道|层)?(?:异常|不可用|被拦截))/u;
+const COMPLETION_EVIDENCE = /(?:已(?:完成|修复|修改|执行|运行|验证|部署|安装|提交|推送|上传|处理|落地)|(?:测试|验证)(?:已经)?通过|结果如下|修改如下|代码如下)/u;
+
+export function isContextDependentHistoryPrompt(value: unknown): boolean {
+  const text = String(value || "").normalize("NFKC").replace(/\s+/gu, " ").trim()
+    .replace(/[。！!？?；;，,\s]+$/gu, "");
+  if (!text || INDEPENDENT_HISTORY_ANCHOR.test(text)) return false;
+  if (CONTEXT_ONLY_PROMPT.test(text) || /^(?:继续|确认)/u.test(text)) return true;
+  return [...text].length <= 48 && CONTEXT_REFERENCE.test(text);
+}
+
+function stripTurnScopedBlocks(value: unknown): string {
+  return String(value || "")
+    .replace(/<(history-resolved|rules-resolved)\b[^>]*>[\s\S]*?<\/\1>/giu, "")
+    .replace(/<\/?(?:history-resolved|rules-resolved)\b[^>]*>/giu, "")
+    .trim();
+}
+
+export function scopeLopChainContext(messages: any[]): any[] {
+  const source = Array.isArray(messages) ? messages : [];
+  let latestUser = -1;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index]?.role === "user") latestUser = index;
+  }
+  if (latestUser < 0) return source;
+  const scoped = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const message = source[index];
+    if (index < latestUser && message?.role === "custom" &&
+        TURN_SCOPED_CUSTOM_TYPES.has(String(message?.customType || ""))) continue;
+    if (index < latestUser && ["compactionSummary", "branchSummary"].includes(message?.role)) {
+      const summary = stripTurnScopedBlocks(message?.summary);
+      scoped.push(summary === String(message?.summary || "") ? message : { ...message, summary });
+    } else {
+      scoped.push(message);
+    }
+  }
+  return scoped;
+}
+
+function isExecutionRequest(value: unknown): boolean {
+  const text = String(value || "").normalize("NFKC");
+  return EXECUTION_ACTION.test(text) && (!EXPLANATION_REQUEST.test(text) || DIRECT_EXECUTION.test(text));
+}
+
+export function completionGuardDecision(input: {
+  prompt?: unknown;
+  assistantText?: unknown;
+  stopReason?: unknown;
+  runHadTool?: boolean;
+  pendingMessages?: boolean;
+  alreadyQueued?: boolean;
+}): { trigger: boolean; reason: string } {
+  const prompt = String(input?.prompt || "");
+  const assistantText = String(input?.assistantText || "");
+  if (input?.stopReason !== "stop") return { trigger: false, reason: "not-stop" };
+  if (input?.runHadTool) return { trigger: false, reason: "tool-used" };
+  if (input?.pendingMessages) return { trigger: false, reason: "pending-messages" };
+  if (input?.alreadyQueued) return { trigger: false, reason: "already-queued" };
+  if (!isExecutionRequest(prompt)) return { trigger: false, reason: "not-execution-request" };
+  if (!FUTURE_ACTION_COMMITMENT.test(assistantText)) return { trigger: false, reason: "no-future-commitment" };
+  if (EXPLICIT_BLOCKER.test(assistantText)) return { trigger: false, reason: "explicit-blocker" };
+  if (COMPLETION_EVIDENCE.test(assistantText)) return { trigger: false, reason: "completion-evidence" };
+  return { trigger: true, reason: "future-commitment-without-execution" };
+}
+
+export function completionGuardAlreadyQueued(entries: any[]): boolean {
+  const branch = Array.isArray(entries) ? entries : [];
+  let latestUser = -1;
+  for (let index = 0; index < branch.length; index += 1) {
+    if (branch[index]?.type === "message" && branch[index]?.message?.role === "user") latestUser = index;
+  }
+  if (latestUser < 0) return false;
+  return branch.slice(latestUser + 1).some((entry) =>
+    (entry?.type === "custom_message" && entry?.customType === COMPLETION_GUARD_TYPE) ||
+    (entry?.type === "message" && entry?.message?.role === "custom" &&
+      entry?.message?.customType === COMPLETION_GUARD_TYPE)
+  );
+}
+
+function latestUserTurn(entries: any[]): { id: string; text: string } {
+  const branch = Array.isArray(entries) ? entries : [];
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (entry?.type !== "message" || entry?.message?.role !== "user") continue;
+    const content = entry.message.content;
+    const text = Array.isArray(content)
+      ? content.filter((item: any) => item?.type === "text").map((item: any) => item.text).join("\n")
+      : String(content || "");
+    return { id: String(entry.id || ""), text };
+  }
+  return { id: "", text: "" };
+}
+
+function assistantText(message: any): string {
+  return Array.isArray(message?.content)
+    ? message.content.filter((item: any) => item?.type === "text").map((item: any) => item.text).join("\n")
+    : String(message?.content || "");
+}
+
 export default function (pi: ExtensionAPI) {
   const sessionId = `pi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let lastPrompt = "";
   let lastPhase: Record<string, unknown> = {};
+  let runHadTool = false;
   // S6 打回轮标记:等价 Claude 侧 stop_hook_active,防预审递归打回。
   let advRedelivery = false;
   let advDeliveredTurn = false; // 本轮已投递过预审 context,防每次 tool_call 重复注入
+
+  pi.on("context", (event: any) => {
+    const original = Array.isArray(event?.messages) ? event.messages : [];
+    const messages = scopeLopChainContext(original);
+    const removed = original.length - messages.length;
+    const sanitized = messages.filter((message) =>
+      ["compactionSummary", "branchSummary"].includes(message?.role) && !original.includes(message)
+    ).length;
+    if (removed || sanitized) log(`CONTEXT removed=${removed} sanitizedSummary=${sanitized}`);
+    return { messages };
+  });
+
+  pi.on("agent_start", () => { runHadTool = false; });
+  pi.on("tool_execution_start", () => { runHadTool = true; });
 
   pi.on("before_agent_start", async (event: any) => {
     const prompt = String(event?.prompt || "");
@@ -135,24 +259,32 @@ export default function (pi: ExtensionAPI) {
     // R5 修正:resolveHistory 内部是同步 sqlite,"并行"双查在单线程实际串行,
     // 反让 hit 路白吃扩写查询成本(R1 hit 137ms→R3 337ms 回归实测)。扩写查询惰性化。
     const t3 = performance.now();
-    try {
-      const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
-      const opts = { sessionId, turnId: "", refresh: false, maxFullChars: 800 };
-      const r1 = await mem.resolveHistory(prompt, opts);
-      let resolved = r1;
-      let viaExpansion = false;
-      if (!r1?.hit && expanded.forHistory !== prompt) {
-        const r2 = await mem.resolveHistory(expanded.forHistory, opts).catch(() => null);
-        if (r2?.hit) { resolved = r2; viaExpansion = true; }
-      }
-      phase.s3Hit = Boolean(resolved?.hit);
-      phase.s3Mode = resolved?.mode || "-";
-      phase.s3Reason = resolved?.reason || "-";
-      phase.s3ViaExpansion = viaExpansion;
-      phase.s3Token = resolved?.usageToken || "";
-      const context = mem.renderResolvedHistory(resolved);
-      if (context) contexts.push(context);
-    } catch (e) { log(`S3 FAIL_OPEN ${String(e).slice(0, 160)}`); }
+    if (isContextDependentHistoryPrompt(prompt)) {
+      phase.s3Hit = false;
+      phase.s3Mode = "-";
+      phase.s3Reason = "context-dependent-prompt";
+      phase.s3ViaExpansion = false;
+      phase.s3Token = "";
+    } else {
+      try {
+        const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
+        const opts = { sessionId, turnId: "", refresh: false, maxFullChars: 800 };
+        const r1 = await mem.resolveHistory(prompt, opts);
+        let resolved = r1;
+        let viaExpansion = false;
+        if (!r1?.hit && expanded.forHistory !== prompt) {
+          const r2 = await mem.resolveHistory(expanded.forHistory, opts).catch(() => null);
+          if (r2?.hit) { resolved = r2; viaExpansion = true; }
+        }
+        phase.s3Hit = Boolean(resolved?.hit);
+        phase.s3Mode = resolved?.mode || "-";
+        phase.s3Reason = resolved?.reason || "-";
+        phase.s3ViaExpansion = viaExpansion;
+        phase.s3Token = resolved?.usageToken || "";
+        const context = mem.renderResolvedHistory(resolved);
+        if (context) contexts.push(context);
+      } catch (e) { log(`S3 FAIL_OPEN ${String(e).slice(0, 160)}`); }
+    }
     phase.s3Ms = +(performance.now() - t3).toFixed(1);
 
     // S6 后台对抗预审起审:detached 子进程(windowsHide),agent_end 消费,fail-open
@@ -165,7 +297,7 @@ export default function (pi: ExtensionAPI) {
     phase.s6Ms = +(performance.now() - t6).toFixed(1);
 
     lastPhase = phase;
-    log(`INJECT s2=${phase.s2Ms}ms s3=${phase.s3Ms}ms(hit=${phase.s3Hit},exp=${phase.s3ViaExpansion}) s4=${phase.s4Ms}ms(rules=${(phase.s4Live as string[])?.length || 0}+${(phase.s4FromExpansion as string[])?.length || 0}exp) bytes=${Buffer.byteLength(contexts.join("\n\n"))}`);
+    log(`INJECT s2=${phase.s2Ms}ms s3=${phase.s3Ms}ms(hit=${phase.s3Hit},exp=${phase.s3ViaExpansion},reason=${phase.s3Reason}) s4=${phase.s4Ms}ms(rules=${(phase.s4Live as string[])?.length || 0}+${(phase.s4FromExpansion as string[])?.length || 0}exp) bytes=${Buffer.byteLength(contexts.join("\n\n"))}`);
     if (!contexts.length) return;
     return {
       message: { customType: "lop-chain", content: contexts.join("\n\n"), display: false },
@@ -174,6 +306,7 @@ export default function (pi: ExtensionAPI) {
 
   // S7 工具红线:复用 rules-pretool;S6 预审就绪则执行阶段早投递(防长任务超 TTL)
   pi.on("tool_call", async (event: any) => {
+    runHadTool = true;
     if (!advRedelivery && !advDeliveredTurn) {
       try {
         const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
@@ -204,7 +337,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // S8 完成态落账 + 全链耗时落 metrics;S6 预审消费在落账前(block 则打回一轮,不落账)
-  pi.on("agent_end", async (event: any) => {
+  pi.on("agent_end", async (event: any, ctx: any) => {
     if (advRedelivery) {
       // 打回轮收尾:重置标记,顺带 consume 触发 envelope cleanup(已投递态返回 pass)
       advRedelivery = false;
@@ -229,26 +362,54 @@ export default function (pi: ExtensionAPI) {
         if (review?.status && review.status !== "skip") log(`S6 ${review.status} ${String(review.reason || "").slice(0, 120)}`);
       } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
     }
+    const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
+    const lastAssistant = [...msgs].reverse().find((message) => message?.role === "assistant");
+    const text = assistantText(lastAssistant);
+    let branch: any[] = [];
+    try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
+    const userTurn = latestUserTurn(branch);
+    const prompt = lastPrompt || userTurn.text;
+    const guard = completionGuardDecision({
+      prompt,
+      assistantText: text,
+      stopReason: lastAssistant?.stopReason,
+      runHadTool,
+      pendingMessages: Boolean(ctx?.hasPendingMessages?.()),
+      alreadyQueued: completionGuardAlreadyQueued(branch),
+    });
+    if (guard.trigger) {
+      lastPhase = { ...lastPhase, completionGuard: true };
+      log(`COMPLETION_GUARD retry=1/1 userEntry=${userTurn.id || "-"} reason=${guard.reason}`);
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase });
+      try {
+        pi.sendMessage({
+          customType: COMPLETION_GUARD_TYPE,
+          content: "上一条回复只承诺了后续动作，但尚无工具调用或完成证据。不要再复述计划；立即调用必要工具完成原始用户任务。若确实无法继续，只报告可验证的阻塞原因和缺少的信息。",
+          display: false,
+          details: { userEntryId: userTurn.id, reason: guard.reason, retry: 1 },
+        }, { deliverAs: "followUp", triggerTurn: true });
+      } catch (e) {
+        log(`COMPLETION_GUARD FAIL_OPEN ${String(e).slice(0, 160)}`);
+        lastPhase = {};
+      }
+      return;
+    }
+
     const t8 = performance.now();
     try {
-      const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
-      const lastAssistant = [...msgs].reverse().find((m) => m?.role === "assistant");
-      const text = Array.isArray(lastAssistant?.content)
-        ? lastAssistant.content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n")
-        : String(lastAssistant?.content || "");
-      if (lastPrompt && text) {
+      if (prompt && text) {
         const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
         const saved = await mem.recordStop({
           session_id: sessionId,
           turn_id: "",
-          prompt: lastPrompt,
+          prompt,
           last_assistant_message: text,
           transcript_path: "",
         });
         log(`S8 STOP ${saved?.added ? "ADDED" : saved?.skipped ? "SKIP:" + (saved?.reason || "") : "UPDATED"}`);
       }
     } catch (e) { log(`S8 FAIL_OPEN ${String(e).slice(0, 160)}`); }
-    metric({ sessionId, prompt: lastPrompt.slice(0, 160), ...lastPhase, s8Ms: +(performance.now() - t8).toFixed(1) });
+    metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, s8Ms: +(performance.now() - t8).toFixed(1) });
     lastPhase = {};
   });
 }

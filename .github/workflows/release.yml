@@ -26,8 +26,11 @@ jobs:
         with:
           node-version: "22.19.0"
 
-      - name: Verify portable launcher contract
-        run: node tests/launcher-portable-node-contract.mjs
+      - name: Verify portable contracts
+        shell: pwsh
+        run: |
+          node tests/launcher-portable-node-contract.mjs
+          node tests/lop-chain-contract.mjs
 
       - name: Stage portable node runtime
         shell: pwsh
