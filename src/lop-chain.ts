@@ -200,19 +200,108 @@ export default function (pi: ExtensionAPI) {
   let advRedelivery = false;
   let advDeliveredTurn = false; // 本轮已投递过预审 context,防每次 tool_call 重复注入
 
-  pi.on("context", (event: any) => {
+  pi.on("context", (event: any, ctx: any) => {
     const original = Array.isArray(event?.messages) ? event.messages : [];
-    const messages = scopeLopChainContext(original);
+    let messages = scopeLopChainContext(original);
     const removed = original.length - messages.length;
     const sanitized = messages.filter((message) =>
       ["compactionSummary", "branchSummary"].includes(message?.role) && !original.includes(message)
     ).length;
     if (removed || sanitized) log(`CONTEXT removed=${removed} sanitizedSummary=${sanitized}`);
+    try {
+      if (!trimActive) {
+        const tokens = ctx?.getContextUsage?.()?.tokens;
+        if (typeof tokens === "number" && tokens > COMPACT_TRIGGER_TOKENS) {
+          trimActive = true;
+          log(`COMPACT_GUARD activate tokens=${tokens} threshold=${COMPACT_TRIGGER_TOKENS}`);
+        }
+      }
+      if (trimActive) {
+        const r = microcompact(messages);
+        if (r.trimmed) messages = r.messages;
+        if (r.trimmed !== lastTrimCount) {
+          lastTrimCount = r.trimmed;
+          log(`COMPACT_GUARD trim n=${r.trimmed} tok≈${r.beforeTok}->${r.afterTok} keep=${TRIM_KEEP_RECENT_TOKENS}`);
+          metric({ sessionId, compactGuard: true, trimCount: r.trimmed, trimBeforeTok: r.beforeTok, trimAfterTok: r.afterTok });
+        }
+      }
+    } catch (e) { log(`COMPACT_GUARD FAIL_OPEN ${String(e).slice(0, 120)}`); }
     return { messages };
   });
 
   pi.on("agent_start", () => { runHadTool = false; });
   pi.on("tool_execution_start", () => { runHadTool = true; });
+
+  // 循环内上下文水位门(microcompact):pi 原生阈值压缩只在 run 结束/新 prompt 前检查
+  // (_checkCompaction 仅两个调用点),单条消息的长工具循环里上下文无界膨胀(2026-08-29 实测
+  // 超调至 45.1 万 tok,≥20万 tok 时每轮 TTFB/流时长 2-3×);而 ctx.compact() 的 manual 路
+  // 首行 await this.abort() 会掐死在途 run,不可用于循环内。故采用 Claude 壳 microcompact 同款:
+  // 真实用量超水位后,仅对发往上游的载荷把"尾部保留预算之外的旧工具结果"替换为占位符——
+  // 会话文件不动、不 abort、无额外 LLM 调用;裁剪单调(旧的永远保持裁剪态)保上游前缀缓存;
+  // 粘性开关防"裁→用量回落→停裁→再膨胀"振荡,原生压缩(session_compact)发生时复位。fail-open。
+  const COMPACT_TRIGGER_TOKENS = Number(process.env.LOP_COMPACT_TRIGGER_TOKENS || 250000);
+  const TRIM_KEEP_RECENT_TOKENS = Number(process.env.LOP_TRIM_KEEP_TOKENS || 50000);
+  const TRIM_MIN_CHARS = 600;
+  const TRIM_MARK = "[lop-compact-guard 已裁剪";
+  let trimActive = false;
+  let lastTrimCount = -1;
+
+  function estimateContentChars(content: any): number {
+    if (typeof content === "string") return content.length;
+    if (!Array.isArray(content)) return 0;
+    let chars = 0;
+    for (const b of content) {
+      if (b?.type === "text") chars += String(b.text || "").length;
+      else if (b?.type === "image") chars += 4800;
+    }
+    return chars;
+  }
+  function estimateMessageTokens(m: any): number {
+    if (!m) return 0;
+    if (m.role === "assistant" && Array.isArray(m.content)) {
+      let chars = 0;
+      for (const b of m.content) {
+        if (b?.type === "text") chars += String(b.text || "").length;
+        else if (b?.type === "thinking") chars += String(b.thinking || "").length;
+        else if (b?.type === "toolCall") chars += String(b.name || "").length + JSON.stringify(b.arguments ?? {}).length;
+      }
+      return Math.ceil(chars / 4);
+    }
+    if (m.role === "bashExecution") return Math.ceil((String(m.command || "").length + String(m.output || "").length) / 4);
+    if (m.role === "branchSummary" || m.role === "compactionSummary") return Math.ceil(String(m.summary || "").length / 4);
+    return Math.ceil(estimateContentChars(m.content) / 4);
+  }
+  function isTrimmedResult(content: any): boolean {
+    if (typeof content === "string") return content.startsWith(TRIM_MARK);
+    return Array.isArray(content) && content.length === 1 && content[0]?.type === "text" &&
+      String(content[0].text || "").startsWith(TRIM_MARK);
+  }
+  function microcompact(messages: any[]): { messages: any[]; trimmed: number; beforeTok: number; afterTok: number } {
+    const est = messages.map(estimateMessageTokens);
+    const beforeTok = est.reduce((a, b) => a + b, 0);
+    let keepFrom = messages.length;
+    let acc = 0;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      acc += est[i];
+      keepFrom = i;
+      if (acc >= TRIM_KEEP_RECENT_TOKENS) break;
+    }
+    let trimmed = 0;
+    let saved = 0;
+    const out = messages.slice();
+    for (let i = 0; i < keepFrom; i += 1) {
+      const m = out[i];
+      if (m?.role !== "toolResult" || isTrimmedResult(m.content)) continue;
+      const chars = estimateContentChars(m.content);
+      if (chars < TRIM_MIN_CHARS) continue;
+      const text = `${TRIM_MARK} ~${chars} 字符的工具结果:上下文超水位。若仍需要该内容,用工具重新获取。]`;
+      out[i] = { ...m, content: typeof m.content === "string" ? text : [{ type: "text", text }] };
+      trimmed += 1;
+      saved += est[i];
+    }
+    return { messages: out, trimmed, beforeTok, afterTok: beforeTok - saved };
+  }
+  pi.on("session_compact", () => { trimActive = false; lastTrimCount = -1; });
 
   pi.on("before_agent_start", async (event: any) => {
     const prompt = String(event?.prompt || "");
