@@ -520,6 +520,27 @@ assert.match(proxySource, /Only two item states are valid/u);
 assert.match(proxySource, /Never use '\[~\]'/u);
 assert.doesNotMatch(`${source}\n${proxySource}`, /registerTool\([\s\S]{0,80}subagent/iu);
 const adversary = await import(pathToFileURL(path.join(root, "src", "chain", "portable-adversary.mjs")).href);
+const missingAuth = path.join(contractData, "missing-auth.json");
+const fallbackAuth = path.join(contractData, "fallback-auth.json");
+const primaryAuth = path.join(contractData, "primary-auth.json");
+fs.writeFileSync(fallbackAuth, JSON.stringify({ tokens: { access_token: "fallback-token", account_id: "fallback-account" } }));
+assert.deepEqual(adversary.bridgeAuthFromFiles([missingAuth, fallbackAuth]), {
+  token: "fallback-token", account: "fallback-account", file: fallbackAuth,
+});
+fs.writeFileSync(primaryAuth, JSON.stringify({ tokens: { access_token: "primary-token", account_id: "primary-account" } }));
+assert.deepEqual(adversary.bridgeAuthFromFiles([primaryAuth, fallbackAuth]), {
+  token: "primary-token", account: "primary-account", file: primaryAuth,
+});
+const modelsAuth = path.join(contractData, "models-auth.json");
+const modelsFile = path.join(contractData, "models.json");
+fs.writeFileSync(modelsFile, JSON.stringify({
+  providers: {
+    "codex-bridge": {
+      apiKey: `!node -p "JSON.parse(require('fs').readFileSync('${modelsAuth.replaceAll("\\", "/")}', 'utf8')).tokens.access_token"`,
+    },
+  },
+}));
+assert.deepEqual(adversary.authFilesFromModelConfigs([modelsFile]), [modelsAuth.replaceAll("\\", "/")]);
 adversary.shutdownBackgroundReviews();
 
 console.log("PASS lop-chain S2/S3/S4 hard gates, turn scope, completion and goal gates contract");

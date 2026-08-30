@@ -43,6 +43,8 @@ test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
   assert.match(source, /CODEX_HISTORY_REPLAY_EFFORT \|\| "max"/u);
   assert.match(source, /CODEX_FORCE_REASONING_EFFORT \|\| "max"/u);
   assert.match(adversary, /reasoning: \{ effort: "max" \}/u);
+  assert.match(adversary, /PI_CODING_AGENT_DIR/u);
+  assert.match(adversary, /\.pi", "agent", "auth\.json"/u);
   assert.doesNotMatch(adversary, /reasoning: \{ effort: "low" \}/u);
 
   const rewritten = rewriteCodexRequestBody(Buffer.from(JSON.stringify({

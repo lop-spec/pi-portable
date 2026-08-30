@@ -3,6 +3,7 @@
 // provider 走包内 8794 桥(openai-responses SSE),凭证取数据根 auth.json。全程 fail-open。
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 
 const DATA = process.env.PI_PORTABLE_DATA || "";
@@ -29,11 +30,59 @@ const SYSTEM_PREFLIGHT =
 
 const jobs = new Map(); // session_id -> { startedAt, done, result, delivered }
 
+export function authFilesFromModelConfigs(files, provider = "codex-bridge") {
+  const result = [];
+  for (const modelsFile of Array.isArray(files) ? files : []) {
+    if (!modelsFile) continue;
+    try {
+      const config = JSON.parse(fs.readFileSync(modelsFile, "utf8"));
+      const node = config?.providers?.[provider];
+      const values = [];
+      const visit = (value) => {
+        if (typeof value === "string") values.push(value);
+        else if (value && typeof value === "object") Object.values(value).forEach(visit);
+      };
+      visit(node);
+      for (const value of values) {
+        const match = value.match(/readFileSync\(\s*(['"])([^'"]+?auth\.json)\1/iu);
+        if (!match?.[2]) continue;
+        const authFile = path.isAbsolute(match[2]) ? match[2] : path.resolve(path.dirname(modelsFile), match[2]);
+        if (!result.includes(authFile)) result.push(authFile);
+      }
+    } catch { /* 无模型配置或非受支持命令时继续 */ }
+  }
+  return result;
+}
+
+export function bridgeAuthFromFiles(files) {
+  for (const file of Array.isArray(files) ? files : []) {
+    if (!file) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(file, "utf8"));
+      const token = j?.tokens?.access_token || "";
+      const account = j?.tokens?.account_id || "";
+      if (token) return { token, account, file };
+    } catch { /* 继续尝试下一份现有凭证资产 */ }
+  }
+  return { token: "", account: "", file: "" };
+}
+
 function bridgeAuth() {
-  try {
-    const j = JSON.parse(fs.readFileSync(path.join(DATA, "auth.json"), "utf8"));
-    return { token: j?.tokens?.access_token || "", account: j?.tokens?.account_id || "" };
-  } catch { return { token: "", account: "" }; }
+  const agentDir = process.env.PI_CODING_AGENT_DIR || "";
+  const modelFiles = [...new Set([
+    DATA ? path.join(DATA, ".pi", "agent", "models.json") : "",
+    agentDir ? path.join(agentDir, "models.json") : "",
+    path.join(os.homedir(), ".pi", "agent", "models.json"),
+  ].filter(Boolean))];
+  const files = [...new Set([
+    process.env.PI_ADVERSARY_AUTH_FILE || "",
+    DATA ? path.join(DATA, "auth.json") : "",
+    DATA ? path.join(DATA, ".pi", "agent", "auth.json") : "",
+    agentDir ? path.join(agentDir, "auth.json") : "",
+    ...authFilesFromModelConfigs(modelFiles),
+    path.join(os.homedir(), ".pi", "agent", "auth.json"),
+  ].filter(Boolean))];
+  return bridgeAuthFromFiles(files);
 }
 
 // SSE 调桥,汇总 output_text;超时/连接失败 resolve 失败对象,绝不抛出。
