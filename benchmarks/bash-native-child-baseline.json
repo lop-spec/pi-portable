@@ -30,6 +30,9 @@
     "commandExitCode": 7,
     "stdoutCaptured": true,
     "stderrCaptured": true,
+    "cloudCiRun": "https://github.com/lop-spec/pi-portable/actions/runs/33315418133",
+    "release": "https://github.com/lop-spec/pi-portable/releases/tag/v0.0.4-rc6",
+    "releaseAssetSha256": "D49AE01495F768B4B0661ED73691BCB68736A70DA7B7E3B6B70919D6FF5EBA23",
     "passed": true
   }
 }
