@@ -10,6 +10,7 @@ import readline from "node:readline";
 import { detectEgress } from "./egress-autodetect.mjs";
 import { openAssets } from "./assets-crypto.mjs";
 import { RULES_ASSET_LAYOUT, syncRulesSnapshot } from "./rules-snapshot.mjs";
+import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -175,7 +176,7 @@ async function main() {
   // 1 自检
   if (!fs.existsSync(NODE) && !process.env.PI_NODE_EXE) log(`警告:未找到便携 node(${NODE}),将使用当前 node`);
   const nodeExe = fs.existsSync(NODE) ? NODE : process.execPath;
-  const portableEnv = withPortableNode(process.env, nodeExe);
+  const portableEnv = withSilentWindowsProcessEnv(withPortableNode(process.env, nodeExe));
   refreshRulesSnapshot(); // 已有实例也先收敛规则；运行中的扩展下一轮直接读取新生成物。
   if (await portAlive(PORTS.web)) {
     if (process.env.PI_HEADLESS === "1") log(`端口 ${PORTS.web} 已有实例,无头模式仅同步规则,不打开窗口`);

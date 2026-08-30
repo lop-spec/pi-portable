@@ -10,6 +10,7 @@ const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "releas
 const sfx = fs.readFileSync(path.join(root, "packaging", "sfx-config.txt"), "utf8");
 const launcher = fs.readFileSync(path.join(root, "src", "launcher.mjs"), "utf8");
 const baseline = JSON.parse(fs.readFileSync(path.join(root, "benchmarks", "windows-launcher-baseline.json"), "utf8"));
+const bashChildBaseline = JSON.parse(fs.readFileSync(path.join(root, "benchmarks", "bash-native-child-baseline.json"), "utf8"));
 
 assert.match(cpp, /wWinMain\(/, "native entry must use the Windows GUI subsystem entry point");
 assert.match(cpp, /#pragma comment\(lib, "user32\.lib"\)/, "GUI error reporting must declare its User32 linker dependency");
@@ -32,6 +33,7 @@ assert.match(workflow, /tests\/windows-launcher-contract\.mjs/, "CI must execute
 assert.match(workflow, /cl\.exe/, "CI must compile the native launcher on windows-latest");
 assert.match(workflow, /\/SUBSYSTEM:WINDOWS/, "compiled launcher must be a GUI-subsystem executable");
 assert.match(workflow, /native-launcher-smoke\.ps1/, "CI must execute the cloud-built launcher and trace child processes");
+assert.match(workflow, /msys-pcon-smoke\.ps1/, "CI must execute Git Bash native parent/child visibility smoke");
 assert.match(workflow, /stage[\\/]pi-portable-launcher\.exe/, "compiled launcher must be staged into the release payload");
 assert.doesNotMatch(workflow, /Copy-Item packaging\/pi-portable\.cmd|Copy-Item packaging\\pi-portable\.cmd/, "release must not stage the legacy batch entry");
 assert.equal(sfx.match(/RunProgram="([^"]+)"/)?.[1], "pi-portable-launcher.exe", "SFX must run the native entry directly");
@@ -43,5 +45,8 @@ assert.equal(baseline.target.cmdStarts, 0);
 assert.equal(baseline.target.conhostStarts, 0);
 assert.equal(baseline.target.vbscriptEvents, 0);
 assert.equal(baseline.target.httpStatus, 200);
+assert.equal(bashChildBaseline.baseline.visibleConsoleWindows, 1);
+assert.equal(bashChildBaseline.target.visibleConsoleWindows, 0);
+assert.equal(bashChildBaseline.target.childrenCovered, true);
 
 console.log("PASS native Windows no-console entry contract");

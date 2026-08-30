@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-30T14:46:32+08:00",
+  "scenario": "Pi bash tool launches the bundled Python 3.11 console interpreter for a local backtest",
+  "baseline": {
+    "transport": "Git Bash native-child spawn without MSYS enable_pcon",
+    "visibleConsoleWindows": 1,
+    "windowTitle": "D:\\Documents\\vscodium\\dy-short-backtest-20260823\\vendor\\python-3.11.9-embed-amd64\\python.exe",
+    "commandExitCode": 0,
+    "stdoutCaptured": true,
+    "runtimeSeconds": 27.68,
+    "evidence": "User screenshot plus matching Pi session command/result"
+  },
+  "target": {
+    "transport": "Git Bash native-child spawn with MSYS enable_pcon",
+    "visibleConsoleWindows": 0,
+    "focusSteals": 0,
+    "commandExitCodePreserved": true,
+    "stdoutCaptured": true,
+    "stderrCaptured": true,
+    "childrenCovered": true
+  },
+  "verified": {
+    "measuredAt": "2026-08-30T21:49:00+08:00",
+    "runtime": "hidden ProcessStartInfo -> Git Bash -> bundled Python parent -> bundled Python child",
+    "pythonSha256": "5F7B89A612C9B8AF1D6456CDFCD1DBE5CA630849E79AEBCED9BEE9A6694952EC",
+    "visibleConsoleWindows": 0,
+    "focusSteals": 0,
+    "parentAndChildStates": 2,
+    "commandExitCode": 7,
+    "stdoutCaptured": true,
+    "stderrCaptured": true,
+    "passed": true
+  }
+}

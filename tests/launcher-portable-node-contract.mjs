@@ -10,6 +10,7 @@ assert.match(source, /pkg\.bin/, "pi-web 入口应从包清单 bin 字段解析"
 assert.match(source, /spawnPortableNode\(nodeExe, \[webEntry, "--no-open"\]/, "pi-web 必须由原生进程宿主拉起便携 nodeExe");
 assert.doesNotMatch(source, /node_modules["'], ["']\.bin|pi-web\.cmd/, "不得回退到 npm Windows 包装器");
 assert.match(source, /PATH: \[path\.dirname\(nodeExe\), inheritedPath\]/, "子进程 PATH 应包含便携 Node 目录");
+assert.match(source, /withSilentWindowsProcessEnv\(withPortableNode\(process\.env, nodeExe\)\)/, "pi-web 环境必须启用 MSYS ConPTY，阻止 Bash 原生子进程弹控制台");
 assert.match(source, /path\.join\(DATA, "pi-web\.log"\)/, "pi-web stdout/stderr 必须持久化");
 assert.match(source, /function portableizeModelAuth\(\)/, "便携启动时必须迁移模型鉴权命令");
 assert.match(source, /process\.env\.PI_PORTABLE_DATA,'auth\.json'/, "模型鉴权必须读取便携 data/auth.json");

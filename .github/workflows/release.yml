@@ -30,6 +30,7 @@ jobs:
         shell: pwsh
         run: |
           node tests/launcher-portable-node-contract.mjs
+          node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node tests/lop-chain-contract.mjs
           node tests/rules-snapshot-contract.mjs
@@ -83,6 +84,17 @@ jobs:
           npm install --omit=dev --no-audit --no-fund "@agegr/pi-web@latest" "@earendil-works/pi-coding-agent@latest"
           Pop-Location
           if (-not (Test-Path stage/app/node_modules/@agegr/pi-web/package.json)) { throw "pi-web not installed" }
+
+      - name: Verify hidden Git Bash native children
+        shell: pwsh
+        run: |
+          $bash = @(
+            "$env:ProgramFiles\Git\bin\bash.exe",
+            "${env:ProgramFiles(x86)}\Git\bin\bash.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $bash) { throw "Git for Windows bash.exe not found" }
+          $python = (Get-Command python.exe -ErrorAction Stop).Source
+          & tests/msys-pcon-smoke.ps1 -Bash $bash -Python $python
 
       - name: Stage custom layer (bridge + chain + launcher)
         shell: pwsh
