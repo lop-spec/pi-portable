@@ -315,6 +315,20 @@ export function completionGuardAlreadyQueued(entries: any[]): boolean {
   );
 }
 
+// 修法四(2026-08-31,db 案实录):预审若在本轮工具窗口内未能投递(有工具轮却从没见过
+// 执行轨迹),其 block 属盲判——实录:模型已 read 目标文件仍被"未读取便猜测"打回,
+// 冤枉重跑 ~20s(占该任务耗时一半)。此类降级为日志;无工具轮时投递窗口本不存在,
+// 保留打回权(那正是"没执行就猜"的合法抓捕面)。
+export function s6BlockDisposition(input: {
+  status?: unknown;
+  runHadTool?: boolean;
+  delivered?: boolean;
+}): "redeliver" | "missed-window" | "none" {
+  if (input?.status !== "block") return "none";
+  if (input.runHadTool && !input.delivered) return "missed-window";
+  return "redeliver";
+}
+
 export function parseGoalGateDirective(prompt: unknown):
   { action: "set"; command: string } | { action: "clear" } | { action: "none" } {
   const match = String(prompt || "").match(GOAL_GATE_LINE);
@@ -901,7 +915,13 @@ export default function (pi: ExtensionAPI) {
       try {
         const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
         const review = adv.consumeBackgroundReview({ session_id: sessionId });
-        if (review?.status === "block") {
+        const disposition = s6BlockDisposition({
+          status: review?.status, runHadTool, delivered: advDeliveredTurn,
+        });
+        if (disposition === "missed-window") {
+          log(`S6 MISSED_WINDOW block 降级为日志(预审未见执行轨迹) ${String(review.reason || "").slice(0, 160)}`);
+          metric({ sessionId, prompt: lastPrompt.slice(0, 160), ...lastPhase, s6MissedWindow: true });
+        } else if (disposition === "redeliver") {
           advRedelivery = true;
           log(`S6 BLOCK ${String(review.reason || "").slice(0, 160)}`);
           metric({ sessionId, prompt: lastPrompt.slice(0, 160), ...lastPhase, s6Block: true });

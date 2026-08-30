@@ -28,9 +28,18 @@ const {
   isContextDependentHistoryPrompt,
   parseAcceptanceChecklist,
   parseGoalGateDirective,
+  s6BlockDisposition,
   scopeLopChainContext,
   stripAcceptanceChecklist,
 } = policy;
+
+// S6 打回处置(修法四 2026-08-31):预审没见过执行轨迹的 block 属盲判,降级;
+// db 案实录:已 read 目标文件仍被"未读取便猜测"打回,冤枉重跑 ~20s。
+assert.equal(s6BlockDisposition({ status: "block", runHadTool: true, delivered: false }), "missed-window");
+assert.equal(s6BlockDisposition({ status: "block", runHadTool: true, delivered: true }), "redeliver");
+assert.equal(s6BlockDisposition({ status: "block", runHadTool: false, delivered: false }), "redeliver");
+assert.equal(s6BlockDisposition({ status: "pass", runHadTool: true, delivered: false }), "none");
+assert.equal(s6BlockDisposition({}), "none");
 
 assert.equal(isContextDependentHistoryPrompt("继续"), true);
 assert.equal(isContextDependentHistoryPrompt("确认一下"), true);
