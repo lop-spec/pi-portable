@@ -37,7 +37,9 @@ test('Pi user-role exact history participates in stable response replay identity
 test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
   const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
   const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.9\.3/u);
+  assert.match(source, /gpt56-chain-replay-v7\.10\.0/u);
+  assert.match(source, /Only two item states are valid/u);
+  assert.match(source, /Never use '\[~\]'/u);
   assert.match(source, /CODEX_HISTORY_REPLAY_EFFORT \|\| "max"/u);
   assert.match(source, /CODEX_FORCE_REASONING_EFFORT \|\| "max"/u);
   assert.match(adversary, /reasoning: \{ effort: "max" \}/u);

@@ -22,10 +22,12 @@ const {
   checklistGateDecision,
   completionGuardAlreadyQueued,
   completionGuardDecision,
+  createChecklistGoalState,
   expandPrompt,
   goalGateVerdict,
   historyUsageDecision,
   isContextDependentHistoryPrompt,
+  latestChecklistGoalState,
   parseAcceptanceChecklist,
   parseGoalGateDirective,
   s6BlockDisposition,
@@ -276,44 +278,159 @@ await gateHandlers.get("before_agent_start")[0]({ prompt: "【目标门】关闭
 await gateEnd();
 assert.equal(gateMessages().length, 3);
 
-// 验收清单门:解析纯函数
+// 两态验收目标:解析纯函数。只有空标记与 x/X 合法；任何第三状态都是未完成。
 const openChecklistText = "开工。\n【验收清单】\n- [x] 读取配置\n- [ ] 部署服务\n- [ ] 验证端口";
-const closedChecklistText = "完成。\n【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [~] 验证端口: 对端不可达,已说明";
+const fullyClosedChecklistText = "完成。\n【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [x] 验证端口";
+const forbiddenTildeText = "未完成。\n【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [~] 验证端口";
 assert.equal(parseAcceptanceChecklist("没有清单的普通回复"), null);
-assert.deepEqual(parseAcceptanceChecklist(openChecklistText), { open: ["部署服务", "验证端口"], done: 1, deferred: 0 });
-assert.deepEqual(parseAcceptanceChecklist(closedChecklistText), { open: [], done: 2, deferred: 1 });
-assert.deepEqual(
-  parseAcceptanceChecklist(`${openChecklistText}\n\n更新:\n${closedChecklistText}`),
-  { open: [], done: 2, deferred: 1 },
-);
+const parsedOpen = parseAcceptanceChecklist(openChecklistText);
+assert.deepEqual(parsedOpen.open, ["部署服务", "验证端口"]);
+assert.equal(parsedOpen.done, 1);
+assert.deepEqual(parsedOpen.invalid, []);
+const parsedTilde = parseAcceptanceChecklist(forbiddenTildeText);
+assert.deepEqual(parsedTilde.open, ["验证端口"]);
+assert.equal(parsedTilde.done, 2);
+assert.deepEqual(parsedTilde.invalid, ["[~] 验证端口"]);
+assert.equal(parseAcceptanceChecklist(`${openChecklistText}\n\n更新:\n${fullyClosedChecklistText}`).done, 3);
 
-// 验收清单门:判定纯函数
+// 两个历史停止答复必须回归为 active，而不是把 [~] 当闭合。
+const douyinHistoricalStop = [
+  "【验收清单】",
+  "- [x] 固化严格契约：09:35决策、09:40成交、次一可交易日收盘退出",
+  "- [x] 构建开发期沪深全候选快照，并将收益标签物理隔离",
+  "- [~] 冻结可进入最近一年的唯一规则：现有架构未通过历史门",
+  "- [~] 最近一年三档费用≥100倍：尚未获准打开保护期",
+  "- [~] 独立逐笔复算：没有合格策略，禁止生成交割单",
+  "- [x] 未通过全部门槛时不生成策略、交割单或实盘股票清单",
+].join("\n");
+const eastmoneyHistoricalStop = [
+  "【验收清单】",
+  "- [x] 从既有真实账号条件中选定尚未失败、且09:35前可严格重建的新信息族",
+  "- [x] 在读取对应收益前冻结字段、阈值距离、排序、买卖和失败处置",
+  "- [x] 仅用沪深候选完成开发段逐日排名和严格资金回放",
+  "- [x] 确认验证段、隔离段读取均为0，且不存在后验赢家替换",
+  "- [x] 完成独立复算并更新报告、机器真值和SHA-256",
+  "- [~] 最近一年三费率均≥100倍后交付：本轮信息族开发失败，保持不交付",
+].join("\n");
+for (const [text, invalidCount] of [[douyinHistoricalStop, 3], [eastmoneyHistoricalStop, 1]]) {
+  const parsed = parseAcceptanceChecklist(text);
+  assert.equal(parsed.invalid.length, invalidCount);
+  const decision = checklistGateDecision({
+    assistantText: text, stopReason: "stop", pendingMessages: false, hasGoalGate: false,
+  });
+  assert.equal(decision.trigger, true);
+  assert.equal(decision.state.status, "active");
+}
+
+// 冻结合同与 active/complete/blocked 状态机纯函数。
+const freshGoal = createChecklistGoalState("部署并验证服务", "u-checklist");
 const checklistBase = {
-  assistantText: openChecklistText, stopReason: "stop", pendingMessages: false,
-  hasGoalGate: false, attempts: 0, max: 2,
+  assistantText: openChecklistText,
+  stopReason: "stop",
+  pendingMessages: false,
+  hasGoalGate: false,
+  state: freshGoal,
 };
-assert.equal(checklistGateDecision(checklistBase).trigger, true);
-assert.deepEqual(checklistGateDecision(checklistBase).open, ["部署服务", "验证端口"]);
+const frozen = checklistGateDecision(checklistBase);
+assert.equal(frozen.trigger, true);
+assert.equal(frozen.reason, "open-items");
+assert.deepEqual(frozen.state.items.map((item) => item.text), ["读取配置", "部署服务", "验证端口"]);
+assert.equal(frozen.state.status, "active");
+assert.equal(frozen.state.continuationCount, 1);
+const firstReplyFrozen = checklistGateDecision({
+  ...checklistBase,
+  state: createChecklistGoalState("首轮先列清单再执行", "u-first"),
+  contractText: openChecklistText,
+  assistantText: fullyClosedChecklistText,
+});
+assert.equal(firstReplyFrozen.state.status, "complete");
+assert.deepEqual(firstReplyFrozen.state.items.map((item) => item.text), ["读取配置", "部署服务", "验证端口"]);
 assert.equal(checklistGateDecision({ ...checklistBase, stopReason: "aborted" }).reason, "not-stop");
 assert.equal(checklistGateDecision({ ...checklistBase, pendingMessages: true }).reason, "pending-messages");
 assert.equal(checklistGateDecision({ ...checklistBase, hasGoalGate: true }).reason, "goal-gate-owns-completion");
-assert.equal(checklistGateDecision({ ...checklistBase, assistantText: "普通回复" }).reason, "no-checklist");
-assert.equal(checklistGateDecision({ ...checklistBase, assistantText: closedChecklistText }).reason, "checklist-closed");
-assert.equal(checklistGateDecision({
-  ...checklistBase,
-  assistantText: `${openChecklistText}\n需要你提供可用凭据。`,
-}).reason, "explicit-blocker");
-assert.equal(checklistGateDecision({ ...checklistBase, attempts: 2 }).reason, "exhausted");
 
-// 验收清单门:集成(未闭合 → 连续续跑至上限;闭合 → 放行;目标门在场 → 让位)
+const missingChecklist = checklistGateDecision({ ...checklistBase, assistantText: "普通回复", state: frozen.state });
+assert.equal(missingChecklist.trigger, true);
+assert.equal(missingChecklist.reason, "missing-checklist");
+assert.match(missingChecklist.open.join("\n"), /遗漏了冻结/u);
+const renamedChecklist = checklistGateDecision({
+  ...checklistBase,
+  state: frozen.state,
+  assistantText: "【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [x] 验证网络端口",
+});
+assert.equal(renamedChecklist.trigger, true);
+assert.match(renamedChecklist.open.join("\n"), /验证端口/u);
+assert.match(renamedChecklist.open.join("\n"), /新增或改名/u);
+const tildeDecision = checklistGateDecision({ ...checklistBase, state: frozen.state, assistantText: forbiddenTildeText });
+assert.equal(tildeDecision.trigger, true);
+assert.match(tildeDecision.open.join("\n"), /禁止的第三状态/u);
+const checkmarkDecision = checklistGateDecision({
+  ...checklistBase,
+  state: frozen.state,
+  assistantText: "【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [√] 验证端口",
+});
+assert.equal(checkmarkDecision.trigger, true);
+assert.match(checkmarkDecision.open.join("\n"), /禁止的第三状态 \[√\]/u);
+const expandedContract = checklistGateDecision({
+  ...checklistBase,
+  state: { ...frozen.state, allowExpansion: true },
+  assistantText: `${fullyClosedChecklistText}\n- [ ] 同步远端机器`,
+});
+assert.deepEqual(expandedContract.state.items.map((item) => item.text), [
+  "读取配置", "部署服务", "验证端口", "同步远端机器",
+]);
+assert.deepEqual(expandedContract.open, ["同步远端机器"]);
+
+// 不再有固定两轮后 exhausted：第 20 轮仍保持 active 并续跑。
+let longRunning = frozen;
+for (let index = 0; index < 19; index += 1) {
+  longRunning = checklistGateDecision({ ...checklistBase, state: longRunning.state });
+  assert.equal(longRunning.trigger, true);
+}
+assert.equal(longRunning.state.continuationCount, 20);
+assert.equal(longRunning.state.status, "active");
+
+// 同一外部阻塞连续三轮才转 blocked；完成合同则 complete。
+const blockerText = `${openChecklistText}\n无法继续：缺少权限，需要你授权。`;
+let blocker = checklistGateDecision({ ...checklistBase, state: frozen.state, assistantText: blockerText });
+assert.equal(blocker.trigger, true);
+assert.equal(blocker.state.blockerTurns, 1);
+blocker = checklistGateDecision({ ...checklistBase, state: blocker.state, assistantText: blockerText });
+assert.equal(blocker.trigger, true);
+assert.equal(blocker.state.blockerTurns, 2);
+blocker = checklistGateDecision({ ...checklistBase, state: blocker.state, assistantText: blockerText });
+assert.equal(blocker.trigger, false);
+assert.equal(blocker.reason, "same-blocker-three-turns");
+assert.equal(blocker.state.status, "blocked");
+const complete = checklistGateDecision({
+  ...checklistBase, state: frozen.state, assistantText: fullyClosedChecklistText,
+});
+assert.equal(complete.trigger, false);
+assert.equal(complete.reason, "goal-complete");
+assert.equal(complete.state.status, "complete");
+const deterministicComplete = checklistGateDecision({
+  ...checklistBase, state: frozen.state, assistantText: "host verified", deterministicVerified: true,
+});
+assert.equal(deterministicComplete.state.status, "complete");
+
+// 持久状态只从当前分支最后一条 lop-checklist-goal-state 恢复。
+assert.equal(latestChecklistGoalState([]), null);
+assert.equal(latestChecklistGoalState([
+  { type: "custom", customType: "lop-checklist-goal-state", data: frozen.state },
+  { type: "custom", customType: "other", data: complete.state },
+]).status, "active");
+
+// 集成:未闭合/第三状态/漏清单在超过旧上限后仍续跑；完成才放行；目标门优先。
 const clHandlers = new Map();
 const clSent = [];
+const clEntries = [];
 const clPi = {
   on(name, handler) {
     const list = clHandlers.get(name) || [];
     list.push(handler);
     clHandlers.set(name, list);
   },
+  appendEntry(customType, data) { clEntries.push({ type: "custom", customType, data }); },
   sendMessage(message, options) { clSent.push({ message, options }); },
   sendUserMessage() { throw new Error("unexpected user-message fallback"); },
 };
@@ -322,38 +439,71 @@ const clCtx = {
   hasPendingMessages: () => false,
   sessionManager: { getBranch: () => [{
     type: "message", id: "cl-user", message: { role: "user", content: "部署并验证服务" },
-  }] },
+  }, ...clEntries] },
 };
 const clEnd = (text) => clHandlers.get("agent_end")[0]({
   messages: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }],
 }, clCtx);
 const clMessages = () => clSent.filter((s) => s.message.customType === "lop-checklist-gate");
-await clHandlers.get("before_agent_start")[0]({ prompt: "部署并验证服务" });
+await clHandlers.get("before_agent_start")[0]({ prompt: "部署并验证服务" }, clCtx);
 await clEnd(openChecklistText);
 assert.equal(clMessages().length, 1);
-assert.match(clMessages()[0].message.content, /验收清单未闭合/u);
-assert.match(clMessages()[0].message.content, /部署服务/u);
+assert.match(clMessages()[0].message.content, /目标仍为 ACTIVE/u);
+assert.match(clMessages()[0].message.content, /禁止 \[~\]/u);
 assert.deepEqual(clMessages()[0].options, { deliverAs: "followUp", triggerTurn: true });
-await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content });
-await clEnd(openChecklistText);
-assert.equal(clMessages().length, 2);
-await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content });
-await clEnd(openChecklistText); // attempts=2 达上限 → exhausted,不再续跑
-assert.equal(clMessages().length, 2);
-await clHandlers.get("before_agent_start")[0]({ prompt: "新任务:再部署一次" }); // 新人工消息重置预算
-await clEnd(closedChecklistText); // 闭合(全部 [x]/[~]) → 放行
-assert.equal(clMessages().length, 2);
-await clHandlers.get("before_agent_start")[0]({ prompt: "跑到过为止\n【目标门】node -e \"process.exit(0)\"" });
-await clEnd(openChecklistText); // 目标门在场且通过 → 清单门让位
-assert.equal(clMessages().length, 2);
+const activeSnapshot = structuredClone(clEntries.at(-1).data);
+for (const response of [forbiddenTildeText, openChecklistText, openChecklistText, "普通回复"]) {
+  await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content }, clCtx);
+  await clEnd(response);
+}
+assert.equal(clMessages().length, 5);
+assert.match(clMessages().at(-1).message.content, /遗漏了冻结/u);
+await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content }, clCtx);
+await clEnd(fullyClosedChecklistText);
+assert.equal(clMessages().length, 5);
+assert.equal(clEntries.at(-1).data.status, "complete");
+
+// 新扩展实例从会话 custom entry 恢复 active 合同，漏清单仍会续跑。
+const restoreHandlers = new Map();
+const restoreSent = [];
+const restoreEntries = [{ type: "custom", customType: "lop-checklist-goal-state", data: activeSnapshot }];
+const restorePi = {
+  on(name, handler) {
+    const list = restoreHandlers.get(name) || [];
+    list.push(handler);
+    restoreHandlers.set(name, list);
+  },
+  appendEntry(customType, data) { restoreEntries.push({ type: "custom", customType, data }); },
+  sendMessage(message, options) { restoreSent.push({ message, options }); },
+};
+lopChainExtension(restorePi);
+const restoreCtx = {
+  hasPendingMessages: () => false,
+  sessionManager: { getBranch: () => restoreEntries },
+};
+await restoreHandlers.get("session_start")[0]({ reason: "resume" }, restoreCtx);
+await restoreHandlers.get("agent_end")[0]({
+  messages: [{ role: "assistant", content: [{ type: "text", text: "普通回复" }], stopReason: "stop" }],
+}, restoreCtx);
+assert.equal(restoreSent.filter((item) => item.message.customType === "lop-checklist-gate").length, 1);
+
+await clHandlers.get("before_agent_start")[0]({ prompt: "跑到过为止\n【目标门】node -e \"process.exit(0)\"" }, clCtx);
+await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机让位
+assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
 assert.match(source, /GOAL_GATE SET/u);
-assert.match(source, /CHECKLIST_GATE RETRY/u);
+assert.match(source, /CHECKLIST_GOAL CONTINUE/u);
+assert.doesNotMatch(source, /CHECKLIST_GATE_MAX/u);
+assert.doesNotMatch(source, /deferred\s*[:=]/u);
 assert.match(source, /windowsHide:\s*true/u);
+const proxySource = fs.readFileSync(path.join(root, "src", "bridge", "codex-responses-proxy.mjs"), "utf8");
+assert.match(proxySource, /Only two item states are valid/u);
+assert.match(proxySource, /Never use '\[~\]'/u);
+assert.doesNotMatch(`${source}\n${proxySource}`, /registerTool\([\s\S]{0,80}subagent/iu);
 const adversary = await import(pathToFileURL(path.join(root, "src", "chain", "portable-adversary.mjs")).href);
 adversary.shutdownBackgroundReviews();
 

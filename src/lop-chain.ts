@@ -179,7 +179,7 @@ function usageTerms(value: unknown): string[] {
 
 export function stripAcceptanceChecklist(value: unknown): string {
   return String(value || "")
-    .replace(/(?:^|\n)\s*【验收清单】\s*\n(?:\s*[-*]\s*\[[ xX~]\]\s*[^\n]*(?:\n|$))+/gu, "\n")
+    .replace(/(?:^|\n)\s*【验收清单】\s*\n(?:\s*[-*]\s*\[[^\]\r\n]*\]\s*[^\n]*(?:\n|$))+/gu, "\n")
     .replace(/^\s+|\s+$/gu, "");
 }
 
@@ -212,6 +212,7 @@ const GOAL_GATE_TYPE = "lop-goal-gate";
 const HISTORY_GUARD_TYPE = "lop-history-disposition-guard";
 const ADVERSARY_REDELIVERY_TYPE = "lop-adversary-redelivery";
 const CHECKLIST_GATE_TYPE = "lop-checklist-gate";
+const CHECKLIST_STATE_TYPE = "lop-checklist-goal-state";
 const TURN_SCOPED_CUSTOM_TYPES = new Set([
   "lop-chain", COMPLETION_GUARD_TYPE, GOAL_GATE_TYPE, HISTORY_GUARD_TYPE,
   ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE,
@@ -222,11 +223,11 @@ const TURN_SCOPED_CUSTOM_TYPES = new Set([
 const GOAL_GATE_MAX = Number(process.env.LOP_GOAL_GATE_MAX || 3);
 const GOAL_GATE_TIMEOUT_MS = Number(process.env.LOP_GOAL_GATE_TIMEOUT_MS || 120000);
 const GOAL_GATE_LINE = /^\s*(?:【目标门】|\[goal-gate\])\s*(.*?)\s*$/miu;
-// 验收清单门:桥 persistence 注入(v7.9.1)要求模型对执行型任务自列【验收清单】并
-// 逐轮更新;本门在 agent_end 确定性解析最后回复的清单,存在未勾项且无阻塞声明即
-// 自动续跑——判据出自模型开工时刻的自列清单,用户零手写,每个执行任务自动有门。
-// 限度:全勾造假拦不住,由 S6 预审与显式目标门补位;显式目标门在场时本门让位。
-const CHECKLIST_GATE_MAX = Number(process.env.LOP_CHECKLIST_GATE_MAX || 2);
+// 两态验收目标:桥 persistence 注入要求模型对执行型任务自列【验收清单】。
+// 首份清单冻结为会话分支上的持久合同;只有 [ ](未完成) 与 [x](已验证完成),任何
+// 第三状态、删项、改名、漏清单都保持 active 并自动续跑。不存在固定轮数后静默放行;
+// 同一真实阻塞连续出现 3 轮才转 blocked。显式目标门始终拥有更高完成优先级。
+const CHECKLIST_BLOCKER_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_BLOCKER_TURNS || 3));
 const CHECKLIST_HEADER = "【验收清单】";
 const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
 const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
@@ -341,38 +342,222 @@ export function parseGoalGateDirective(prompt: unknown):
 // 判定纯函数:数值非零 exit 一律 retry(校验脚本被删/命令不存在时 shell 也返回非零,
 // 不给"弄坏校验器"留 fail-open 逃逸口);仅超时/无法取得 exit code 视为校验器自身
 // 故障,fail-open 不续跑。attempts 为已自动续跑次数,达上限后 exhausted 停止干预。
-export function parseAcceptanceChecklist(text: unknown):
-  { open: string[]; done: number; deferred: number } | null {
+export type AcceptanceChecklistItem = {
+  text: string;
+  key: string;
+  marker: string;
+  state: "open" | "done" | "invalid";
+};
+export type AcceptanceChecklist = {
+  items: AcceptanceChecklistItem[];
+  open: string[];
+  done: number;
+  invalid: string[];
+  duplicates: string[];
+};
+export type ChecklistGoalState = {
+  version: 1;
+  status: "inactive" | "active" | "complete" | "blocked";
+  objective: string;
+  taskUserEntryId: string;
+  items: Array<{ text: string; key: string }>;
+  continuationCount: number;
+  blockerKey: string;
+  blockerTurns: number;
+  allowExpansion: boolean;
+};
+export type ChecklistGateResult = {
+  trigger: boolean;
+  reason: string;
+  open: string[];
+  violations: string[];
+  state: ChecklistGoalState | null;
+};
+
+export function normalizeChecklistItem(value: unknown): string {
+  return String(value || "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+export function createChecklistGoalState(
+  objective: unknown = "", taskUserEntryId: unknown = "",
+): ChecklistGoalState {
+  return {
+    version: 1,
+    status: "active",
+    objective: String(objective || "").trim(),
+    taskUserEntryId: String(taskUserEntryId || ""),
+    items: [],
+    continuationCount: 0,
+    blockerKey: "",
+    blockerTurns: 0,
+    allowExpansion: false,
+  };
+}
+
+function cloneChecklistGoalState(state: ChecklistGoalState): ChecklistGoalState {
+  return { ...state, items: state.items.map((item) => ({ ...item })) };
+}
+
+function validChecklistGoalState(value: any): value is ChecklistGoalState {
+  return value?.version === 1 && ["inactive", "active", "complete", "blocked"].includes(value?.status) &&
+    Array.isArray(value?.items) && value.items.every((item: any) =>
+      typeof item?.text === "string" && typeof item?.key === "string");
+}
+
+export function latestChecklistGoalState(entries: any[]): ChecklistGoalState | null {
+  let latest: ChecklistGoalState | null = null;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (entry?.type !== "custom" || entry?.customType !== CHECKLIST_STATE_TYPE) continue;
+    if (validChecklistGoalState(entry.data)) latest = cloneChecklistGoalState(entry.data);
+  }
+  return latest;
+}
+
+export function parseAcceptanceChecklist(text: unknown): AcceptanceChecklist | null {
   const s = String(text || "");
   const idx = s.lastIndexOf(CHECKLIST_HEADER);
   if (idx < 0) return null;
-  const open: string[] = [];
-  let done = 0;
-  let deferred = 0;
-  for (const m of s.slice(idx).matchAll(/^\s*[-*]\s*\[( |x|X|~)\]\s*(.+?)\s*$/gmu)) {
-    if (m[1] === " ") open.push(m[2]);
-    else if (m[1] === "~") deferred += 1;
-    else done += 1;
+  const items: AcceptanceChecklistItem[] = [];
+  const counts = new Map<string, number>();
+  for (const m of s.slice(idx).matchAll(/^\s*[-*]\s*\[([^\]\r\n]*)\]\s*(.+?)\s*$/gmu)) {
+    const marker = String(m[1] || "").trim();
+    const textValue = normalizeChecklistItem(m[2]);
+    if (!textValue) continue;
+    const key = textValue.toLocaleLowerCase();
+    const state = /^[xX]$/u.test(marker) ? "done" : marker === "" ? "open" : "invalid";
+    items.push({ text: textValue, key, marker, state });
+    counts.set(key, (counts.get(key) || 0) + 1);
   }
-  if (open.length + done + deferred === 0) return null;
-  return { open, done, deferred };
+  const duplicates = [...counts.entries()].filter(([, count]) => count > 1)
+    .map(([key]) => items.find((item) => item.key === key)?.text || key);
+  return {
+    items,
+    open: items.filter((item) => item.state !== "done").map((item) => item.text),
+    done: items.filter((item) => item.state === "done").length,
+    invalid: items.filter((item) => item.state === "invalid")
+      .map((item) => `[${item.marker}] ${item.text}`),
+    duplicates,
+  };
+}
+
+export function checklistBlockerFingerprint(text: unknown, openItems: string[]): string {
+  // 清单项目本身可能写着“修复工具不可用”，不能把任务名误当成真实阻塞；只看清单外叙述。
+  const source = stripAcceptanceChecklist(text);
+  if (!EXPLICIT_BLOCKER.test(source)) return "";
+  const category = /(?:凭据|登录|认证|密钥|token|口令)/iu.test(source) ? "credentials"
+    : /(?:权限|授权|管理员|访问被拒)/u.test(source) ? "permission"
+    : /(?:网络|连接|不可达|超时|DNS|TLS|SSH)/iu.test(source) ? "network"
+    : /(?:工具|通道|调用|执行层)/u.test(source) ? "tooling"
+    : /(?:需要你|请你|等待用户|未提供)/u.test(source) ? "user-input"
+    : "external";
+  const keys = [...new Set(openItems.map((item) => normalizeChecklistItem(item).toLocaleLowerCase()))].sort();
+  return `${category}:${keys.join("|")}`;
 }
 
 export function checklistGateDecision(input: {
-  assistantText: unknown; stopReason: unknown; pendingMessages: boolean;
-  hasGoalGate: boolean; attempts: number; max: number;
-}): { trigger: boolean; reason: string; open: string[] } {
-  const none = (reason: string) => ({ trigger: false, reason, open: [] as string[] });
-  if (input.stopReason !== "stop") return none("not-stop");
-  if (input.pendingMessages) return none("pending-messages");
-  if (input.hasGoalGate) return none("goal-gate-owns-completion");
-  const text = String(input.assistantText || "");
-  const checklist = parseAcceptanceChecklist(text);
-  if (!checklist) return none("no-checklist");
-  if (!checklist.open.length) return none("checklist-closed");
-  if (EXPLICIT_BLOCKER.test(text)) return none("explicit-blocker");
-  if (input.attempts >= input.max) return none("exhausted");
-  return { trigger: true, reason: "open-items", open: checklist.open };
+  assistantText: unknown;
+  stopReason: unknown;
+  pendingMessages: boolean;
+  hasGoalGate: boolean;
+  state?: ChecklistGoalState | null;
+  objective?: unknown;
+  taskUserEntryId?: unknown;
+  contractText?: unknown;
+  deterministicVerified?: boolean;
+  blockerTurnsRequired?: number;
+}): ChecklistGateResult {
+  const unchanged = (reason: string, state: ChecklistGoalState | null = input.state || null): ChecklistGateResult =>
+    ({ trigger: false, reason, open: [], violations: [], state });
+  if (input.stopReason !== "stop") return unchanged("not-stop");
+  if (input.pendingMessages) return unchanged("pending-messages");
+  if (input.hasGoalGate) return unchanged("goal-gate-owns-completion");
+
+  let state = input.state ? cloneChecklistGoalState(input.state) : null;
+  if (input.deterministicVerified) {
+    if (state) state = { ...state, status: "complete", blockerKey: "", blockerTurns: 0 };
+    return unchanged("deterministic-host-verified", state);
+  }
+  if (state?.status === "inactive") return unchanged("goal-inactive", state);
+  if (state?.status === "complete") return unchanged("goal-complete", state);
+  if (state?.status === "blocked") return unchanged("goal-blocked", state);
+
+  const parsed = parseAcceptanceChecklist(input.assistantText);
+  const initialContract = parseAcceptanceChecklist(input.contractText) || parsed;
+  if (!state) {
+    if (!initialContract) return unchanged("no-checklist", null);
+    state = createChecklistGoalState(input.objective, input.taskUserEntryId);
+  }
+
+  const violations: string[] = [];
+  const parsedItems = parsed?.items || [];
+  const contractItems = initialContract?.items || [];
+  const parsedByKey = new Map<string, AcceptanceChecklistItem>();
+  for (const item of parsedItems) if (!parsedByKey.has(item.key)) parsedByKey.set(item.key, item);
+
+  if (!state.items.length && contractItems.length) {
+    const frozen = new Map<string, AcceptanceChecklistItem>();
+    for (const item of contractItems) if (!frozen.has(item.key)) frozen.set(item.key, item);
+    state.items = [...frozen.values()].map((item) => ({ text: item.text, key: item.key }));
+  } else if (state.items.length && state.allowExpansion) {
+    const existing = new Set(state.items.map((item) => item.key));
+    for (const item of parsedItems) {
+      if (existing.has(item.key)) continue;
+      state.items.push({ text: item.text, key: item.key });
+      existing.add(item.key);
+    }
+    state.allowExpansion = false;
+  }
+
+  const contractKeys = new Set(state.items.map((item) => item.key));
+  if (parsed) {
+    for (const item of parsedItems) {
+      if (!contractKeys.has(item.key)) violations.push(`验收项目被新增或改名: ${item.text}`);
+      if (item.state === "invalid") violations.push(`禁止的第三状态 [${item.marker}]: ${item.text}`);
+    }
+    for (const item of parsed.duplicates) violations.push(`重复验收项目: ${item}`);
+  } else {
+    violations.push("回复遗漏了冻结的【验收清单】");
+  }
+
+  const open: string[] = [];
+  if (!state.items.length) {
+    open.push("先给出仅含 [ ]/[x] 的可验证验收清单并冻结合同");
+  } else {
+    for (const contract of state.items) {
+      const current = parsedByKey.get(contract.key);
+      if (!current || current.state !== "done") open.push(contract.text);
+    }
+  }
+  open.push(...violations);
+  const uniqueOpen = [...new Set(open)];
+  if (!uniqueOpen.length) {
+    state.status = "complete";
+    state.blockerKey = "";
+    state.blockerTurns = 0;
+    return { trigger: false, reason: "goal-complete", open: [], violations: [], state };
+  }
+
+  state.status = "active";
+  const blockerKey = checklistBlockerFingerprint(input.assistantText, uniqueOpen);
+  if (blockerKey) {
+    state.blockerTurns = state.blockerKey === blockerKey ? state.blockerTurns + 1 : 1;
+    state.blockerKey = blockerKey;
+    if (state.blockerTurns >= Math.max(1, input.blockerTurnsRequired || CHECKLIST_BLOCKER_TURNS)) {
+      state.status = "blocked";
+      return { trigger: false, reason: "same-blocker-three-turns", open: uniqueOpen, violations, state };
+    }
+  } else {
+    state.blockerKey = "";
+    state.blockerTurns = 0;
+  }
+  state.continuationCount += 1;
+  return {
+    trigger: true,
+    reason: blockerKey ? "blocker-retry" : parsed ? "open-items" : "missing-checklist",
+    open: uniqueOpen,
+    violations,
+    state,
+  };
 }
 
 export function goalGateVerdict(input: {
@@ -433,7 +618,7 @@ export default function (pi: ExtensionAPI) {
   let completionRetryActive = false;
   let goalGateRetryActive = false;
   let checklistRetryActive = false;
-  let checklistGateAttempts = 0;
+  let checklistGoal: ChecklistGoalState | null = null;
   let runHadTool = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
   let goalGate: { command: string; attempts: number } | null = null;
@@ -462,6 +647,34 @@ export default function (pi: ExtensionAPI) {
   // S6 打回轮标记:等价 Claude 侧 stop_hook_active,防预审递归打回。
   let advRedelivery = false;
   let advDeliveredTurn = false; // 本轮已投递过预审 context,防每次 tool_call 重复注入
+
+  function setChecklistGoal(next: ChecklistGoalState | null, reason: string): void {
+    const before = checklistGoal ? JSON.stringify(checklistGoal) : "";
+    const after = next ? JSON.stringify(next) : "";
+    checklistGoal = next ? cloneChecklistGoalState(next) : null;
+    if (before === after) return;
+    try {
+      const persisted = next || { ...createChecklistGoalState(), status: "inactive" as const };
+      (pi as any).appendEntry?.(CHECKLIST_STATE_TYPE, persisted);
+      log(`CHECKLIST_GOAL STATE status=${persisted.status} reason=${reason} items=${persisted.items.length} turns=${persisted.continuationCount}`);
+    } catch (error) {
+      log(`CHECKLIST_GOAL STATE_FAIL ${String(error).slice(0, 160)}`);
+    }
+  }
+
+  function restoreChecklistGoal(ctx: any): void {
+    try {
+      const restored = latestChecklistGoalState(ctx?.sessionManager?.getBranch?.() || []);
+      checklistGoal = restored;
+      if (restored) log(`CHECKLIST_GOAL RESTORE status=${restored.status} items=${restored.items.length} turns=${restored.continuationCount}`);
+    } catch (error) {
+      checklistGoal = null;
+      log(`CHECKLIST_GOAL RESTORE_FAIL ${String(error).slice(0, 160)}`);
+    }
+  }
+
+  pi.on("session_start", async (_event: any, ctx: any) => restoreChecklistGoal(ctx));
+  pi.on("session_tree", async (_event: any, ctx: any) => restoreChecklistGoal(ctx));
 
   pi.on("context", (event: any, ctx: any) => {
     const original = Array.isArray(event?.messages) ? event.messages : [];
@@ -600,12 +813,12 @@ export default function (pi: ExtensionAPI) {
   }
   pi.on("session_compact", () => { trimActive = false; lastTrimCount = -1; });
 
-  pi.on("before_agent_start", async (event: any) => {
+  pi.on("before_agent_start", async (event: any, ctx: any) => {
     const prompt = String(event?.prompt || "");
     if (!prompt) return;
     if (advRedelivery) { log("S6 REDELIVERY TURN skip inject"); return; }
     if (goalGateRetryActive) { log(`GOAL_GATE retry=${goalGate?.attempts || 0}/${GOAL_GATE_MAX} skip reinject`); return; }
-    if (checklistRetryActive) { log(`CHECKLIST_GATE retry=${checklistGateAttempts}/${CHECKLIST_GATE_MAX} skip reinject`); return; }
+    if (checklistRetryActive) { log(`CHECKLIST_GOAL continuation=${checklistGoal?.continuationCount || 0} skip reinject`); return; }
     if (historyRetryActive) { log(`S3 USAGE_RETRY ${historyRetryCount}/2 skip reinject`); return; }
     if (completionRetryActive) { log("COMPLETION_GUARD retry skip reinject"); return; }
     turnStartedAt = performance.now();
@@ -617,7 +830,6 @@ export default function (pi: ExtensionAPI) {
     advDeliveredTurn = false;
     historyRetryCount = 0;
     completionRetryActive = false;
-    checklistGateAttempts = 0;
     lastResolved = null;
     lastPrompt = prompt;
     // 目标门声明/关闭只认真实用户消息;续跑注入轮 prompt 为空,走不到这里,
@@ -631,6 +843,32 @@ export default function (pi: ExtensionAPI) {
       goalGate = null;
     } else if (goalGate) {
       goalGate.attempts = 0;
+    }
+
+    // Codex goal-loop 同语义:真实执行请求激活目标;上下文型“继续”保留合同并可从
+    // blocked 恢复;用户追加执行要求时只开放一次合同扩展,旧项目仍不可删除/改名。
+    const userTurn = latestUserTurn(ctx?.sessionManager?.getBranch?.() || []);
+    if (isContextDependentHistoryPrompt(prompt)) {
+      if (checklistGoal?.status === "blocked") {
+        setChecklistGoal({
+          ...checklistGoal, status: "active", blockerKey: "", blockerTurns: 0,
+        }, "user-resume");
+      }
+    } else if (isExecutionRequest(prompt) || gateDirective.action === "set") {
+      if ((checklistGoal?.status === "active" || checklistGoal?.status === "blocked") && checklistGoal.items.length) {
+        setChecklistGoal({
+          ...checklistGoal,
+          status: "active",
+          objective: `${checklistGoal.objective}\n\n用户追加要求: ${prompt}`.trim(),
+          allowExpansion: true,
+          blockerKey: "",
+          blockerTurns: 0,
+        }, "user-extends-active-goal");
+      } else {
+        setChecklistGoal(createChecklistGoalState(prompt, userTurn.id), "user-starts-goal");
+      }
+    } else if (checklistGoal?.status === "active" || checklistGoal?.status === "blocked") {
+      setChecklistGoal({ ...checklistGoal, status: "inactive" }, "user-redirects-away");
     }
     const contexts: string[] = [];
     const phase: Record<string, unknown> = {};
@@ -940,8 +1178,11 @@ export default function (pi: ExtensionAPI) {
       } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
     }
     const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
-    const lastAssistant = [...msgs].reverse().find((message) => message?.role === "assistant");
+    const assistantMessages = msgs.filter((message) => message?.role === "assistant");
+    const lastAssistant = assistantMessages.at(-1);
     const text = assistantText(lastAssistant);
+    const firstChecklistText = assistantMessages.map(assistantText)
+      .find((candidate) => candidate.includes(CHECKLIST_HEADER)) || "";
     let branch: any[] = [];
     try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
     const userTurn = latestUserTurn(branch);
@@ -974,43 +1215,69 @@ export default function (pi: ExtensionAPI) {
         }
       } else {
         goalGateRetryActive = false;
+        if (verdict === "pass" && checklistGoal?.status === "active") {
+          setChecklistGoal({ ...checklistGoal, status: "complete", blockerKey: "", blockerTurns: 0 }, "deterministic-goal-gate-pass");
+        } else if ((verdict === "exhausted" || verdict === "fail-open") && checklistGoal?.status === "active") {
+          setChecklistGoal({ ...checklistGoal, status: "blocked" }, `deterministic-goal-gate-${verdict}`);
+        }
         if (verdict === "exhausted") {
           metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
         }
       }
     }
-    // 验收清单门:模型自列清单的确定性闭合检查(每任务自动,无需用户声明)。
+    // 两态验收目标:首份清单冻结,active 时永续 follow-up;complete 或同一真实阻塞
+    // 连续三轮后的 blocked 才允许停。确定性目标门在场时仍独占完成判据。
     const checklistGate = checklistGateDecision({
       assistantText: text,
       stopReason: lastAssistant?.stopReason,
       pendingMessages: Boolean(ctx?.hasPendingMessages?.()),
       hasGoalGate: Boolean(goalGate),
-      attempts: checklistGateAttempts,
-      max: CHECKLIST_GATE_MAX,
+      state: checklistGoal,
+      objective: prompt,
+      taskUserEntryId: userTurn.id,
+      contractText: firstChecklistText,
+      deterministicVerified: deterministicDraftActive,
+      blockerTurnsRequired: CHECKLIST_BLOCKER_TURNS,
     });
-    if (checklistGate.reason === "exhausted") {
+    if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
+    if (checklistGate.reason === "same-blocker-three-turns") {
       checklistRetryActive = false;
-      log(`CHECKLIST_GATE EXHAUSTED attempts=${checklistGateAttempts}/${CHECKLIST_GATE_MAX}`);
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGate: "exhausted" });
+      log(`CHECKLIST_GOAL BLOCKED blockerTurns=${checklistGate.state?.blockerTurns || 0} open=${checklistGate.open.length}`);
+      metric({
+        sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
+        checklistGoal: "blocked", checklistOpen: checklistGate.open.length,
+        checklistBlockerTurns: checklistGate.state?.blockerTurns || 0,
+      });
     } else if (checklistGate.trigger) {
-      checklistGateAttempts += 1;
       checklistRetryActive = true;
-      log(`CHECKLIST_GATE RETRY attempts=${checklistGateAttempts}/${CHECKLIST_GATE_MAX} open=${checklistGate.open.length}`);
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGate: "retry", checklistOpen: checklistGate.open.length });
+      const continuation = checklistGate.state?.continuationCount || 1;
+      log(`CHECKLIST_GOAL CONTINUE turn=${continuation} reason=${checklistGate.reason} open=${checklistGate.open.length}`);
+      metric({
+        sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
+        checklistGoal: "active", checklistReason: checklistGate.reason,
+        checklistContinuation: continuation, checklistOpen: checklistGate.open.length,
+      });
       try {
         pi.sendMessage({
           customType: CHECKLIST_GATE_TYPE,
-          content: `验收清单未闭合(自动续跑 ${checklistGateAttempts}/${CHECKLIST_GATE_MAX}),剩余未完成项:\n${checklistGate.open.map((item) => `- ${item}`).join("\n")}\n\n继续执行这些项并在回复中带上更新后的清单;只有可验证完成才勾选 [x];确实无法完成的项改为 "- [~] 项: 原因" 显式延期,由用户决定。`,
+          content: `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。冻结验收合同中仍未完成或非法的项目:\n${checklistGate.open.map((item) => `- [ ] ${item}`).join("\n")}\n\n继续执行原始任务并在回复中完整重复冻结清单。清单只允许两种状态:“- [ ]”表示未完成,“- [x]”表示已有可验证证据的完成。禁止 [~] 或任何第三状态,禁止删除、改名、缩减项目；如果确有外部阻塞,保留 [ ] 并报告同一项的可验证阻塞证据。`,
           display: false,
-          details: { open: checklistGate.open, attempts: checklistGateAttempts },
+          details: {
+            status: "active", open: checklistGate.open,
+            continuation, violations: checklistGate.violations,
+          },
         }, { deliverAs: "followUp", triggerTurn: true });
         return;
       } catch (e) {
         checklistRetryActive = false;
-        log(`CHECKLIST_GATE FAIL_OPEN ${String(e).slice(0, 160)}`);
+        log(`CHECKLIST_GOAL FAIL_OPEN ${String(e).slice(0, 160)}`);
       }
     } else {
       checklistRetryActive = false;
+      if (checklistGate.reason === "goal-complete" || checklistGate.reason === "deterministic-host-verified") {
+        log(`CHECKLIST_GOAL COMPLETE reason=${checklistGate.reason}`);
+        metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGoal: "complete" });
+      }
     }
     const guard = completionGuardDecision({
       prompt,
