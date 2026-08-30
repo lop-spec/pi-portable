@@ -31,6 +31,7 @@ const {
   latestChecklistGoalState,
   parseAcceptanceChecklist,
   parseGoalGateDirective,
+  runtimeVersionFromSource,
   s6BlockDisposition,
   scopeLopChainContext,
   stripAcceptanceChecklist,
@@ -185,6 +186,7 @@ assert.equal(completionGuardAlreadyQueued([
 ]), false);
 
 const handlers = new Map();
+const commands = new Map();
 const sent = [];
 const fakePi = {
   on(name, handler) {
@@ -192,10 +194,12 @@ const fakePi = {
     list.push(handler);
     handlers.set(name, list);
   },
+  registerCommand(name, command) { commands.set(name, command); },
   sendMessage(message, options) { sent.push({ message, options }); },
   sendUserMessage() { throw new Error("unexpected user-message fallback"); },
 };
 lopChainExtension(fakePi);
+assert.equal(commands.has("lop-chain-reload"), true);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -292,7 +296,13 @@ const parsedTilde = parseAcceptanceChecklist(forbiddenTildeText);
 assert.deepEqual(parsedTilde.open, ["验证端口"]);
 assert.equal(parsedTilde.done, 2);
 assert.deepEqual(parsedTilde.invalid, ["[~] 验证端口"]);
-assert.equal(parseAcceptanceChecklist(`${openChecklistText}\n\n更新:\n${fullyClosedChecklistText}`).done, 3);
+// 只解析标题后紧邻的清单块，不能把后文代码示例或普通列表误判为开放项。
+const closedWithLaterExamples = `${fullyClosedChecklistText}\n\n两态示例:\n\u0060\u0060\u0060text\n- [ ] 未完成\n- [x] 已完成\n\u0060\u0060\u0060\n\n普通列表:\n- [ ] 也不是冻结清单`;
+assert.deepEqual(parseAcceptanceChecklist(closedWithLaterExamples).open, []);
+assert.equal(parseAcceptanceChecklist(closedWithLaterExamples).done, 3);
+assert.equal(stripAcceptanceChecklist(closedWithLaterExamples).includes("- [ ] 未完成"), true);
+const fencedFakeChecklist = `${fullyClosedChecklistText}\n\n\u0060\u0060\u0060text\n【验收清单】\n- [ ] 示例未完成\n\u0060\u0060\u0060`;
+assert.deepEqual(parseAcceptanceChecklist(fencedFakeChecklist).open, []);
 
 // 两个历史停止答复必须回归为 active，而不是把 [~] 当闭合。
 const douyinHistoricalStop = [
@@ -506,11 +516,15 @@ await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机�
 assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
+assert.equal(runtimeVersionFromSource(source), "two-state-goal-v4");
+assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
 assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /CHECKLIST_GOAL CONTINUE/u);
+assert.match(source, /RUNTIME_DRIFT loaded=/u);
+assert.match(source, /sendUserMessage\("\/lop-chain-reload", \{ deliverAs: "followUp" \}\)/u);
 assert.ok(source.indexOf("freeze-first-checklist-before-s6") < source.indexOf("consumeBackgroundReview"));
 assert.doesNotMatch(source, /CHECKLIST_GATE_MAX/u);
 assert.doesNotMatch(source, /deferred\s*[:=]/u);

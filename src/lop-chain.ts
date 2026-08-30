@@ -8,9 +8,12 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v4";
+const MODULE_FILE = fileURLToPath(import.meta.url);
+
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
 // 数据面(语料/实体/账本)首启为空,可由用户自行导入;缺失时对应能力自动降级 fail-open。
-const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const MODULE_DIR = path.dirname(MODULE_FILE);
 const HOME = process.env.PI_PORTABLE_HOME || path.resolve(MODULE_DIR, "..");
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
 const CHAIN_DIR = path.join(HOME, "src", "chain");
@@ -177,10 +180,15 @@ function usageTerms(value: unknown): string[] {
   return [...terms].slice(0, 300);
 }
 
+export function runtimeVersionFromSource(value: unknown): string {
+  return String(value || "").match(/LOP_CHAIN_RUNTIME_VERSION\s*=\s*["']([^"']+)["']/u)?.[1] || "";
+}
+
 export function stripAcceptanceChecklist(value: unknown): string {
-  return String(value || "")
-    .replace(/(?:^|\n)\s*【验收清单】\s*\n(?:\s*[-*]\s*\[[^\]\r\n]*\]\s*[^\n]*(?:\n|$))+/gu, "\n")
-    .replace(/^\s+|\s+$/gu, "");
+  const source = String(value || "");
+  const block = firstAcceptanceChecklistBlock(source);
+  if (!block) return source.trim();
+  return `${source.slice(0, block.start)}\n${source.slice(block.end)}`.trim();
 }
 
 export function historyUsageDecision(resolved: any, answer: unknown) {
@@ -436,15 +444,57 @@ export function latestChecklistGoalState(entries: any[]): ChecklistGoalState | n
   return latest;
 }
 
+type AcceptanceChecklistBlock = {
+  start: number;
+  end: number;
+  items: Array<{ marker: string; text: string }>;
+};
+
+function firstAcceptanceChecklistBlock(value: unknown): AcceptanceChecklistBlock | null {
+  const source = String(value || "");
+  const lines: Array<{ body: string; start: number; end: number }> = [];
+  let offset = 0;
+  while (offset < source.length) {
+    const newline = source.indexOf("\n", offset);
+    const end = newline < 0 ? source.length : newline + 1;
+    const raw = source.slice(offset, end);
+    lines.push({ body: raw.replace(/\r?\n$/u, ""), start: offset, end });
+    offset = end;
+  }
+  let fence: "`" | "~" | "" = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fenceMatch = line.body.match(/^\s*(`{3,}|~{3,})/u);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0] as "`" | "~";
+      if (!fence) fence = marker;
+      else if (fence === marker) fence = "";
+      continue;
+    }
+    if (fence || line.body.trim() !== CHECKLIST_HEADER) continue;
+    const rawItems: Array<{ marker: string; text: string }> = [];
+    let end = line.end;
+    for (let itemIndex = index + 1; itemIndex < lines.length; itemIndex += 1) {
+      const itemLine = lines[itemIndex];
+      if (!itemLine.body.trim() && !rawItems.length) { end = itemLine.end; continue; }
+      const match = itemLine.body.match(/^\s*[-*]\s*\[([^\]\r\n]*)\]\s*(.+?)\s*$/u);
+      if (!match) break;
+      rawItems.push({ marker: String(match[1] || "").trim(), text: match[2] });
+      end = itemLine.end;
+    }
+    if (rawItems.length) return { start: line.start, end, items: rawItems };
+  }
+  return null;
+}
+
 export function parseAcceptanceChecklist(text: unknown): AcceptanceChecklist | null {
-  const s = String(text || "");
-  const idx = s.lastIndexOf(CHECKLIST_HEADER);
-  if (idx < 0) return null;
+  const block = firstAcceptanceChecklistBlock(text);
+  if (!block) return null;
   const items: AcceptanceChecklistItem[] = [];
   const counts = new Map<string, number>();
-  for (const m of s.slice(idx).matchAll(/^\s*[-*]\s*\[([^\]\r\n]*)\]\s*(.+?)\s*$/gmu)) {
-    const marker = String(m[1] || "").trim();
-    const textValue = normalizeChecklistItem(m[2]);
+  for (const raw of block.items) {
+    const marker = raw.marker;
+    const textValue = normalizeChecklistItem(raw.text);
     if (!textValue) continue;
     const key = textValue.toLocaleLowerCase();
     const state = /^[xX]$/u.test(marker) ? "done" : marker === "" ? "open" : "invalid";
@@ -627,6 +677,7 @@ export default function (pi: ExtensionAPI) {
   let completionRetryActive = false;
   let goalGateRetryActive = false;
   let checklistRetryActive = false;
+  let runtimeReloadQueued = false;
   let checklistGoal: ChecklistGoalState | null = null;
   let runHadTool = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
@@ -684,6 +735,16 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event: any, ctx: any) => restoreChecklistGoal(ctx));
   pi.on("session_tree", async (_event: any, ctx: any) => restoreChecklistGoal(ctx));
+
+  // 以后覆盖活动扩展文件时，旧 runner 在下一次真实用户轮检测到磁盘版本漂移，先排队
+  // 一个命令级 reload。pending message 会让旧完成门放行本轮，不再生成旧版自动续跑。
+  (pi as any).registerCommand?.("lop-chain-reload", {
+    description: "Reload lop-chain after the active extension file changes",
+    handler: async (_args: string, ctx: any) => {
+      await ctx.reload();
+      return;
+    },
+  });
 
   pi.on("context", (event: any, ctx: any) => {
     const original = Array.isArray(event?.messages) ? event.messages : [];
@@ -825,6 +886,18 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     const prompt = String(event?.prompt || "");
     if (!prompt) return;
+    if (!runtimeReloadQueued) {
+      try {
+        const diskVersion = runtimeVersionFromSource(fs.readFileSync(MODULE_FILE, "utf8"));
+        if (diskVersion && diskVersion !== LOP_CHAIN_RUNTIME_VERSION) {
+          runtimeReloadQueued = true;
+          log(`RUNTIME_DRIFT loaded=${LOP_CHAIN_RUNTIME_VERSION} disk=${diskVersion} queue=/lop-chain-reload`);
+          pi.sendUserMessage("/lop-chain-reload", { deliverAs: "followUp" });
+        }
+      } catch (error) {
+        log(`RUNTIME_DRIFT_CHECK_FAIL ${String(error).slice(0, 160)}`);
+      }
+    }
     if (advRedelivery) { log("S6 REDELIVERY TURN skip inject"); return; }
     if (goalGateRetryActive) { log(`GOAL_GATE retry=${goalGate?.attempts || 0}/${GOAL_GATE_MAX} skip reinject`); return; }
     if (checklistRetryActive) { log(`CHECKLIST_GOAL continuation=${checklistGoal?.continuationCount || 0} skip reinject`); return; }
