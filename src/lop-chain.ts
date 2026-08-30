@@ -398,6 +398,29 @@ function cloneChecklistGoalState(state: ChecklistGoalState): ChecklistGoalState 
   return { ...state, items: state.items.map((item) => ({ ...item })) };
 }
 
+export function freezeChecklistGoalContract(
+  state: ChecklistGoalState, checklistText: unknown,
+): ChecklistGoalState {
+  const next = cloneChecklistGoalState(state);
+  if (next.status !== "active") return next;
+  const parsed = parseAcceptanceChecklist(checklistText);
+  if (!parsed?.items.length) return next;
+  const candidates = new Map<string, AcceptanceChecklistItem>();
+  for (const item of parsed.items) if (!candidates.has(item.key)) candidates.set(item.key, item);
+  if (!next.items.length) {
+    next.items = [...candidates.values()].map((item) => ({ text: item.text, key: item.key }));
+  } else if (next.allowExpansion) {
+    const existing = new Set(next.items.map((item) => item.key));
+    for (const item of candidates.values()) {
+      if (existing.has(item.key)) continue;
+      next.items.push({ text: item.text, key: item.key });
+      existing.add(item.key);
+    }
+    next.allowExpansion = false;
+  }
+  return next;
+}
+
 function validChecklistGoalState(value: any): value is ChecklistGoalState {
   return value?.version === 1 && ["inactive", "active", "complete", "blocked"].includes(value?.status) &&
     Array.isArray(value?.items) && value.items.every((item: any) =>
@@ -487,26 +510,12 @@ export function checklistGateDecision(input: {
     if (!initialContract) return unchanged("no-checklist", null);
     state = createChecklistGoalState(input.objective, input.taskUserEntryId);
   }
+  state = freezeChecklistGoalContract(state, input.contractText || input.assistantText);
 
   const violations: string[] = [];
   const parsedItems = parsed?.items || [];
-  const contractItems = initialContract?.items || [];
   const parsedByKey = new Map<string, AcceptanceChecklistItem>();
   for (const item of parsedItems) if (!parsedByKey.has(item.key)) parsedByKey.set(item.key, item);
-
-  if (!state.items.length && contractItems.length) {
-    const frozen = new Map<string, AcceptanceChecklistItem>();
-    for (const item of contractItems) if (!frozen.has(item.key)) frozen.set(item.key, item);
-    state.items = [...frozen.values()].map((item) => ({ text: item.text, key: item.key }));
-  } else if (state.items.length && state.allowExpansion) {
-    const existing = new Set(state.items.map((item) => item.key));
-    for (const item of parsedItems) {
-      if (existing.has(item.key)) continue;
-      state.items.push({ text: item.text, key: item.key });
-      existing.add(item.key);
-    }
-    state.allowExpansion = false;
-  }
 
   const contractKeys = new Set(state.items.map((item) => item.key));
   if (parsed) {
@@ -1142,6 +1151,25 @@ export default function (pi: ExtensionAPI) {
 
   // S8 完成态落账 + 全链耗时落 metrics;S6 预审消费在落账前(block 则打回一轮,不落账)
   pi.on("agent_end", async (event: any, ctx: any) => {
+    const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
+    const assistantMessages = msgs.filter((message) => message?.role === "assistant");
+    const lastAssistant = assistantMessages.at(-1);
+    const text = assistantText(lastAssistant);
+    const firstChecklistText = assistantMessages.map(assistantText)
+      .find((candidate) => candidate.includes(CHECKLIST_HEADER)) || "";
+    let branch: any[] = [];
+    try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
+    const userTurn = latestUserTurn(branch);
+    const prompt = lastPrompt || userTurn.text;
+
+    // S6 可能在本次 agent_end 直接打回。必须在消费 S6 前冻结首份清单，否则打回轮
+    // 可改写验收项目并冒充“首份合同”(本机 live smoke 已复现)。
+    if (!goalGate && !deterministicDraftActive && firstChecklistText &&
+        (!checklistGoal || checklistGoal.status === "active")) {
+      const base = checklistGoal || createChecklistGoalState(prompt, userTurn.id);
+      setChecklistGoal(freezeChecklistGoalContract(base, firstChecklistText), "freeze-first-checklist-before-s6");
+    }
+
     if (advRedelivery) {
       // 打回轮收尾:重置标记,顺带 consume 触发 envelope cleanup(已投递态返回 pass)
       advRedelivery = false;
@@ -1177,16 +1205,6 @@ export default function (pi: ExtensionAPI) {
         if (review?.status && review.status !== "skip") log(`S6 ${review.status} ${String(review.reason || "").slice(0, 120)}`);
       } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
     }
-    const msgs: any[] = Array.isArray(event?.messages) ? event.messages : [];
-    const assistantMessages = msgs.filter((message) => message?.role === "assistant");
-    const lastAssistant = assistantMessages.at(-1);
-    const text = assistantText(lastAssistant);
-    const firstChecklistText = assistantMessages.map(assistantText)
-      .find((candidate) => candidate.includes(CHECKLIST_HEADER)) || "";
-    let branch: any[] = [];
-    try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
-    const userTurn = latestUserTurn(branch);
-    const prompt = lastPrompt || userTurn.text;
     // 目标门先于 completion guard:门存在时它就是完成判据,与 guard 的"承诺未执行"
     // 检测互不依赖(guard 管零工具假完成,门管"如实汇报未达标后停轮")。
     if (goalGate && lastAssistant?.stopReason === "stop" && !ctx?.hasPendingMessages?.()) {

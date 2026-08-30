@@ -24,6 +24,7 @@ const {
   completionGuardDecision,
   createChecklistGoalState,
   expandPrompt,
+  freezeChecklistGoalContract,
   goalGateVerdict,
   historyUsageDecision,
   isContextDependentHistoryPrompt,
@@ -345,6 +346,19 @@ const firstReplyFrozen = checklistGateDecision({
 });
 assert.equal(firstReplyFrozen.state.status, "complete");
 assert.deepEqual(firstReplyFrozen.state.items.map((item) => item.text), ["读取配置", "部署服务", "验证端口"]);
+// S6 在清单判定前打回时，首份清单也必须先冻结；打回轮改写项目不能成为新合同。
+const beforeS6 = freezeChecklistGoalContract(
+  createChecklistGoalState("S6 首轮冻结", "u-s6"), openChecklistText,
+);
+const rewrittenByS6 = checklistGateDecision({
+  ...checklistBase,
+  state: beforeS6,
+  assistantText: "【验收清单】\n- [x] 范围审查\n- [x] 证据审查\n- [x] 验证端口",
+});
+assert.equal(rewrittenByS6.trigger, true);
+assert.deepEqual(rewrittenByS6.state.items.map((item) => item.text), ["读取配置", "部署服务", "验证端口"]);
+assert.match(rewrittenByS6.open.join("\n"), /读取配置/u);
+assert.match(rewrittenByS6.open.join("\n"), /新增或改名/u);
 assert.equal(checklistGateDecision({ ...checklistBase, stopReason: "aborted" }).reason, "not-stop");
 assert.equal(checklistGateDecision({ ...checklistBase, pendingMessages: true }).reason, "pending-messages");
 assert.equal(checklistGateDecision({ ...checklistBase, hasGoalGate: true }).reason, "goal-gate-owns-completion");
@@ -497,6 +511,7 @@ assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
 assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /CHECKLIST_GOAL CONTINUE/u);
+assert.ok(source.indexOf("freeze-first-checklist-before-s6") < source.indexOf("consumeBackgroundReview"));
 assert.doesNotMatch(source, /CHECKLIST_GATE_MAX/u);
 assert.doesNotMatch(source, /deferred\s*[:=]/u);
 assert.match(source, /windowsHide:\s*true/u);
