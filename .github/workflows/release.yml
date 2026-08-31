@@ -33,6 +33,7 @@ jobs:
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node tests/lop-chain-contract.mjs
+          node --test tests/goal-redirector-contract.mjs
           node --test tests/run-supervisor.mjs
           node tests/rules-snapshot-contract.mjs
           node tests/deploy-rules-remote-contract.mjs
