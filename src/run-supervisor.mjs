@@ -1095,7 +1095,18 @@ export async function runSupervisorMain() {
   }
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+// 运行面用 junction 布局时(portable\src → 仓库 src),argv[1] 是链接路径而 import.meta.url
+// 已被 ESM loader 解析成真实路径,按字面比较必然不等 → 进程静默 exit 0、stderr 全空,
+// launcher 只看到"监督器未就绪"就杀整棵树。判定必须两侧都过 realpath。
+export function isDirectRun(argvPath, moduleUrl) {
+  if (!argvPath) return false;
+  const real = (target) => {
+    try { return fs.realpathSync(target); } catch { return path.resolve(target); }
+  };
+  return real(argvPath).toLowerCase() === real(fileURLToPath(moduleUrl)).toLowerCase();
+}
+
+const isMain = isDirectRun(process.argv[1], import.meta.url);
 if (isMain) runSupervisorMain().catch((error) => {
   console.error(error?.stack || error);
   process.exit(1);
