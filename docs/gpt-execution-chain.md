@@ -36,8 +36,9 @@ Pi Portable 对每个真实用户回合执行同一条链。历史、规则和�
    - 后台对抗预审只检查开工前的 scope/cheaper/evidence；它不读取最终产物，也不冒充完工验收器。S5 已取得当前证据时，审查任务被确认并主动取消，避免无价值的第二次模型调用和悬挂连接。
    - 执行任务按最近一个真实 user 消息之后的首份 `【验收清单】` 冻结分支持久合同；只接受 `[ ]` 与 `[x]`。解析范围严格限于标题后紧邻的连续清单块，旧任务清单、后文代码示例和普通列表不参与当前任务冻结。
    - 合同未完成项与格式违规诊断分离：只有合同项使用复选框，第三状态、漏清单、删项、改名和缩减仅作为普通诊断文本，禁止模型复制成新项目。合法未完成项保持 `active` 且不设续跑上限；同一格式违规连续三轮则熔断自动 follow-up，合同仍为 `active`，不能伪装完成。
-   - 同一外部阻塞与同一未完成集合连续出现三轮才转 `blocked`；用户发送上下文型“继续”可恢复 `active`。全部冻结项目均 `[x]` 且无格式违规才转 `complete`。状态以 `lop-checklist-goal-state` custom entry 写入当前分支，恢复/分叉后按分支重建。
-   - 扩展内嵌 `LOP_CHAIN_RUNTIME_VERSION`。活动文件被覆盖后，旧 runner 在下一次真实用户轮检测版本漂移并排队 `/lop-chain-reload`；旧门因已有 pending message 不再追加过期 follow-up。
+   - 同一外部阻塞与同一未完成集合连续出现三轮才转 `blocked`；用户发送“继续”会明确推翻旧 `complete` 并恢复 `active`。全部冻结项目均 `[x]` 且无格式违规才转 `complete`；状态以 `lop-checklist-goal-state` custom entry 写入当前分支，恢复/分叉后按分支重建。
+   - 对“不达到 X 不允许交付”“直到 X”或显式保持任务开放的持续终态，host 会向冻结合同加入终态项。核验失败、执行禁止交付、保持任务开放只是过程状态；即使模型将这些项目标为 `[x]`，正文仍自报未达到或缺少正向达成证据时也必须自动续跑。只有终态正向证据与完整冻结清单同时闭合才转 `complete`；持续终态诊断不计入格式违规熔断。
+   - 扩展内嵌 `LOP_CHAIN_RUNTIME_VERSION`。活动文件被覆盖后，旧 runner 在下一次真实用户轮检测版本漂移并排队 `/lop-chain-reload`；旧门因已有 pending message 不再追加过期 follow-up。`agent_end` 还会用真实 user entry id 二次对账，覆盖本轮中途 reload 或 `before_agent_start` 尚未落入当前用户消息的窗口。
    - 显式 `【目标门】` 命令仍拥有最高完成优先级；宿主已确定验证的 deterministic fast path 可直接置 `complete`。目标循环不安装或调用 subagent。
 8. **S7 工具门**
    - 每个普通工具调用通过 `rules-pretool.mjs`；可确定修正则最多自动修正一次，阻断则返回结构化错误。

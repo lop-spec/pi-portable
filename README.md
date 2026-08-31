@@ -76,7 +76,7 @@ node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-
 node tests/rules-snapshot-contract.mjs # 唯一真值→bootstrap/受管源→生成物契约
 node tests/deploy-rules-remote-contract.mjs # canonical-only SSH 下发、备份、原子生成、只读 check 契约
 node tests/windows-launcher-contract.mjs # GUI 子系统→无 cmd/WSH→Node 监督与 SFX 入口契约
-node --test tests/lop-chain-contract.mjs # 两态清单冻结、目标循环、历史 [~] 回归、目标门优先
+node --test tests/lop-chain-contract.mjs # 两态清单冻结、持续终态/“继续”重开、历史绕过回归、目标门优先
 node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs
 node tools/pi-five-chain-benchmark.mjs --dry-run # 高频排序、基线和门定义自检
 node test/s2-full.mjs                # S2 隔离实例完整验收

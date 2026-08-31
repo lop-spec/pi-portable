@@ -33,6 +33,10 @@ const {
   latestChecklistGoalState,
   parseAcceptanceChecklist,
   parseGoalGateDirective,
+  persistentOutcomeDecision,
+  persistentOutcomeDirective,
+  resumeChecklistGoalState,
+  renderChecklistContinuation,
   runtimeVersionFromSource,
   s6BlockDisposition,
   scopeLopChainContext,
@@ -202,6 +206,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
+assert.match(commands.get("lop-chain-reload").description, /two-state-goal-v6/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -334,6 +339,103 @@ for (const [text, invalidCount] of [[douyinHistoricalStop, 3], [eastmoneyHistori
   assert.equal(decision.trigger, true);
   assert.equal(decision.state.status, "active");
 }
+
+// 2026-08-31 两个真实停止会话的新绕过：模型把“目标未达到但已禁止交付”写成 [x]，
+// 旧状态机便错误 complete；之后用户明确“继续”也无法推翻 sticky complete。
+const persistentObjective = [
+  "最近一年三档费用均≥100倍：尚未达到，严禁交付。",
+  "researchTaskClosed = false",
+  "继续，不达到100倍不允许交付",
+].join("\n");
+assert.match(persistentOutcomeDirective(persistentObjective), /100倍/u);
+assert.equal(persistentOutcomeDecision({
+  objective: persistentObjective,
+  assistantText: "当前仍未达到100倍，因此继续禁止交付；researchTaskClosed = false。",
+}).attained, false);
+assert.equal(persistentOutcomeDecision({
+  objective: persistentObjective,
+  assistantText: "当前三档费用均已达到100倍，独立验证通过，researchTaskClosed = true。",
+}).attained, true);
+const genericPersistentObjective = "直到 PERSISTENT_SMOKE_20260831 完成才允许结束";
+assert.equal(persistentOutcomeDirective(genericPersistentObjective), "PERSISTENT_SMOKE_20260831 完成");
+assert.equal(persistentOutcomeDecision({
+  objective: genericPersistentObjective,
+  assistantText: "当前仍未完成持续目标 PERSISTENT_SMOKE_20260831。",
+}).attained, false);
+assert.equal(persistentOutcomeDecision({
+  objective: genericPersistentObjective,
+  assistantText: "当前已完成持续目标 PERSISTENT_SMOKE_20260831，证据已复核。",
+}).attained, true);
+assert.equal(persistentOutcomeDecision({
+  objective: genericPersistentObjective,
+  assistantText: "第一阶段曾报告当前仍未完成持续目标。最终结论：当前已完成持续目标 PERSISTENT_SMOKE_20260831，证据已复核。",
+}).attained, true);
+
+const prematureAllDone = [
+  "【验收清单】",
+  "- [x] 已完成历史数据复算",
+  "- [x] 最近一年三档费用≥100倍：历史门未通过，继续禁止交付",
+  "",
+  "当前仍未达到100倍，策略继续禁止交付，researchTaskClosed = false。",
+].join("\n");
+const persistentStart = createChecklistGoalState(persistentObjective, "u-persistent");
+const prematureDecision = checklistGateDecision({
+  assistantText: prematureAllDone,
+  stopReason: "stop",
+  pendingMessages: false,
+  hasGoalGate: false,
+  state: persistentStart,
+});
+assert.equal(prematureDecision.trigger, true);
+assert.equal(prematureDecision.reason, "persistent-outcome-unmet");
+assert.equal(prematureDecision.state.status, "active");
+assert.match(prematureDecision.open.join("\n"), /持续终态/u);
+assert.ok(prematureDecision.state.items.some((item) => /持续终态/u.test(item.text)));
+const continuationMessage = renderChecklistContinuation(prematureDecision, 1);
+assert.match(continuationMessage, /^目标仍为 ACTIVE/u);
+assert.match(continuationMessage, /^- \[ \] 冻结持续终态/mu);
+assert.match(continuationMessage, /格式违规诊断（不是验收项目/u);
+assert.doesNotMatch(continuationMessage, /^- \[ \] 回复正文明确报告/mu);
+const silentFailureDecision = checklistGateDecision({
+  assistantText: prematureAllDone.replace(
+    "当前仍未达到100倍，策略继续禁止交付，researchTaskClosed = false。",
+    "历史门已复核，保护期继续封闭，本轮没有可交付策略。",
+  ),
+  stopReason: "stop",
+  pendingMessages: false,
+  hasGoalGate: false,
+  state: persistentStart,
+});
+assert.equal(silentFailureDecision.trigger, true);
+assert.equal(silentFailureDecision.reason, "persistent-outcome-unverified");
+assert.equal(silentFailureDecision.state.status, "active");
+
+const hostOutcomeItem = prematureDecision.state.items.find((item) => /持续终态/u.test(item.text));
+const attainedChecklist = [
+  "【验收清单】",
+  "- [x] 已完成历史数据复算",
+  "- [x] 最近一年三档费用≥100倍：历史门未通过，继续禁止交付",
+  `- [x] ${hostOutcomeItem.text}`,
+  "",
+  "当前三档费用均已达到100倍，独立验证通过，researchTaskClosed = true。",
+].join("\n");
+const attainedDecision = checklistGateDecision({
+  assistantText: attainedChecklist,
+  stopReason: "stop",
+  pendingMessages: false,
+  hasGoalGate: false,
+  state: prematureDecision.state,
+});
+assert.equal(attainedDecision.trigger, false);
+assert.equal(attainedDecision.reason, "goal-complete");
+assert.equal(attainedDecision.state.status, "complete");
+
+const reopenedComplete = resumeChecklistGoalState(attainedDecision.state, "继续，不达到100倍不允许交付", "u-next");
+assert.equal(reopenedComplete.status, "active");
+assert.equal(reopenedComplete.taskUserEntryId, "u-next");
+assert.equal(reopenedComplete.allowExpansion, true);
+assert.match(reopenedComplete.objective, /用户继续要求/u);
+assert.equal(resumeChecklistGoalState({ ...attainedDecision.state, status: "blocked" }, "继续", "u-resume").status, "active");
 
 // 冻结合同与 active/complete/blocked 状态机纯函数。
 const freshGoal = createChecklistGoalState("部署并验证服务", "u-checklist");
@@ -610,12 +712,47 @@ await restoreHandlers.get("agent_end")[0]({
 }, restoreCtx);
 assert.equal(restoreSent.filter((item) => item.message.customType === "lop-checklist-gate").length, 1);
 
+// 集成复现 2026-08-31 sticky complete：恢复已 complete 分支后，人工“继续”必须
+// 在模型执行前持久化为 active，而不是让 agent_end 的 goal-complete 直接放行。
+const reopenHandlers = new Map();
+const reopenEntries = [{
+  type: "custom", customType: "lop-checklist-goal-state",
+  data: { ...attainedDecision.state, status: "complete", taskUserEntryId: "u-old" },
+}, {
+  type: "message", id: "u-reopen",
+  message: { role: "user", content: "继续，不达到100倍不允许交付" },
+}];
+const reopenPi = {
+  on(name, handler) {
+    const list = reopenHandlers.get(name) || [];
+    list.push(handler);
+    reopenHandlers.set(name, list);
+  },
+  appendEntry(customType, data) { reopenEntries.push({ type: "custom", customType, data }); },
+  registerCommand() {},
+  sendMessage() {},
+  sendUserMessage() { throw new Error("unexpected runtime drift in sticky-complete replay"); },
+};
+lopChainExtension(reopenPi);
+const reopenCtx = {
+  hasPendingMessages: () => false,
+  sessionManager: { getBranch: () => reopenEntries },
+};
+await reopenHandlers.get("session_start")[0]({ reason: "resume" }, reopenCtx);
+await reopenHandlers.get("before_agent_start")[0]({
+  prompt: "继续，不达到100倍不允许交付",
+}, reopenCtx);
+const reopenedEntry = reopenEntries.filter((entry) => entry.customType === "lop-checklist-goal-state").at(-1).data;
+assert.equal(reopenedEntry.status, "active");
+assert.equal(reopenedEntry.taskUserEntryId, "u-reopen");
+assert.match(reopenedEntry.persistentOutcome, /100倍/u);
+
 await clHandlers.get("before_agent_start")[0]({ prompt: "跑到过为止\n【目标门】node -e \"process.exit(0)\"" }, clCtx);
 await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机让位
 assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "two-state-goal-v5");
+assert.equal(runtimeVersionFromSource(source), "two-state-goal-v6");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);

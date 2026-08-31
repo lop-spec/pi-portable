@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v5";
+export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v6";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -246,7 +246,8 @@ const EXECUTION_ACTION = /(?:看下|看一下|查下|查一下|检查|查看|排
 const EXPLANATION_REQUEST = /(?:怎么|如何|为什么|是什么|有什么|有哪些|有没有|能否|是否|可不可以|推荐|说明|解释|原理|方案|区别)/u;
 const DIRECT_EXECUTION = /(?:直接|帮我|请你|给我|都做|做完|改好|修好|落地|执行|运行|部署|上传|提交|推送)/u;
 const FUTURE_ACTION_COMMITMENT = /(?:接下来|下一步|然后|随后|现在)?\s*(?:我会|我将|我先|我接着|我继续|将会)\s*(?:直接|先|继续)?[\s\S]{0,24}(?:读取|检查|查看|排查|定位|修复|修改|执行|运行|验证|测试|部署|安装|提交|推送|上传|连接|打开|搜索|处理)/u;
-const EXPLICIT_BLOCKER = /(?:需要你|请(?:你)?(?:提供|确认|回复|授权|登录|打开|选择)|等待(?:你|用户)|缺少(?:权限|凭据|信息|参数)|无法(?:安全)?(?:继续|访问|连接|执行|读取|写入|调用)|被阻塞|需要授权|未提供(?:权限|凭据|信息|参数)|(?:工具|调用|执行)(?:通道|层)?(?:异常|不可用|被拦截)|(?:当前会话|本轮).{0,24}(?:没有|未暴露|缺少).{0,24}(?:工具|通道|权限))/u;
+const EXPLICIT_BLOCKER = /(?:需要你|请(?:你)?(?:提供|确认|回复|授权|登录|打开|选择)|等待(?:你|用户)|缺少(?:权限|凭据|信息|参数)|无法(?:安全)?(?:继续|访问|连接|执行|读取|写入|调用)|被阻塞|需要授权|未提供(?:权限|凭据|信息|参数)|(?:工具|调用|执行)(?:通道|层)?(?:异常|不可用|被拦截)|(?:当前会话|本轮).{0,24}(?:没有|未暴露|缺少).{0,24}(?:工具|通道|权限)|(?:需要|必须|只能|只有)(?:等待|积累|收集).{0,48}(?:数据|样本|交易日|工作日|天|日)|当前.{0,24}(?:数据|样本).{0,24}(?:不足|不够))/u;
+const FAILURE_REPORT = /(?:没用|无效|不起作用|不生效|仍然|依然|还是).{0,32}(?:停止|停了|停住|失败|报错|问题|没用|无效)/u;
 const COMPLETION_EVIDENCE = /(?:已(?:完成|修复|修改|执行|运行|验证|部署|安装|提交|推送|上传|处理|落地)|(?:测试|验证)(?:已经)?通过|结果如下|修改如下|代码如下)/u;
 
 export function isContextDependentHistoryPrompt(value: unknown): boolean {
@@ -286,9 +287,16 @@ export function scopeLopChainContext(messages: any[]): any[] {
   return scoped;
 }
 
+function isGoalContinuationPrompt(value: unknown): boolean {
+  const text = String(value || "").normalize("NFKC").trim();
+  return /^(?:继续|重试|再试|接着做|继续做|继续执行)/u.test(text);
+}
+
 function isExecutionRequest(value: unknown): boolean {
   const text = String(value || "").normalize("NFKC");
-  return EXECUTION_ACTION.test(text) && (!EXPLANATION_REQUEST.test(text) || DIRECT_EXECUTION.test(text));
+  return FAILURE_REPORT.test(text) || Boolean(persistentOutcomeDirective(text)) || (
+    EXECUTION_ACTION.test(text) && (!EXPLANATION_REQUEST.test(text) || DIRECT_EXECUTION.test(text))
+  );
 }
 
 export function completionGuardDecision(input: {
@@ -377,6 +385,10 @@ export type ChecklistGoalState = {
   violationKey: string;
   violationTurns: number;
   allowExpansion: boolean;
+  // 用户显式要求“直到/不达到不允许结束”时，由 host 持有的终态合同；旧 v1 entry
+  // 没有这两个字段，clone 时按 objective 原位迁移。
+  persistentOutcome: string;
+  outcomeItemKey: string;
 };
 export type ChecklistGateResult = {
   trigger: boolean;
@@ -400,13 +412,95 @@ function checklistViolationFingerprint(violations: string[]): string {
   return [...new Set(violations.map(normalizeChecklistItem).filter(Boolean))].sort().join("|");
 }
 
+const NUMERIC_OUTCOME = /(?:[<>≤≥]=?|至少|不低于|超过|达到)\s*\d+(?:\.\d+)?\s*(?:倍|%|％|个|次|项|分)?/u;
+const UNMET_OUTCOME = /(?:尚未|仍未|当前未|本轮未|未达到|未满足|未通过|未完成|不达标|没有合格|保持开放|没有关闭|未关闭)/u;
+
+function concisePersistentOutcome(value: string): string {
+  const text = normalizeChecklistItem(value);
+  const prohibited = text.match(/不((?:达到|完成|通过|满足)[^。；;]{0,80}?)(?:不允许|不准|不得|禁止)(?:交付|停止|结束|关闭|收尾)/u);
+  if (prohibited?.[1]) return prohibited[1];
+  const until = text.match(/(?:直到|直至)\s*([^。；;]{1,168}?)(?=(?:才|方)?(?:允许|可以|能够)?(?:交付|结束|停止|关闭|收尾)|[。；;]|$)/u);
+  if (until?.[1]) return until[1].trim();
+  const colon = text.search(/[:：]/u);
+  if (colon > 0 && NUMERIC_OUTCOME.test(text.slice(0, colon))) return text.slice(0, colon).trim();
+  return [...text].slice(0, 220).join("");
+}
+
+export function persistentOutcomeDirective(value: unknown): string {
+  const source = String(value || "").normalize("NFKC").trim();
+  if (!source) return "";
+  const lines = source.split(/\r?\n/u).map((line) => normalizeChecklistItem(
+    line.replace(/^\s*[-*]\s*\[[^\]]*\]\s*/u, ""),
+  )).filter(Boolean);
+  const explicit = lines.find((line) =>
+    /(?:直到|直至)[^。；;]{0,120}(?:达到|完成|通过|满足)/u.test(line) ||
+    /不(?:达到|完成|通过|满足)[^。；;]{0,80}(?:不允许|不准|不得|禁止)(?:交付|停止|结束|关闭|收尾)/u.test(line));
+  if (explicit) return concisePersistentOutcome(explicit);
+
+  const taskOpen = lines.find((line) =>
+    /researchTaskClosed\s*=\s*false/iu.test(line) ||
+    /(?:任务|研究任务).{0,32}(?:保持开放|没有关闭|不关闭|未关闭)/u.test(line));
+  const continued = /(?:^|\n)\s*继续(?:[，,。.!！\s].*)?\s*$/u.test(source);
+  const numericUnmet = lines.find((line) => NUMERIC_OUTCOME.test(line) && UNMET_OUTCOME.test(line));
+  if ((taskOpen || continued) && numericUnmet) return concisePersistentOutcome(numericUnmet);
+  if (taskOpen) return "任务达到用户声明的终态并关闭";
+  return "";
+}
+
+function persistentOutcomeItemText(target: string): string {
+  return `冻结持续终态已有可验证的正向达成证据：${[...normalizeChecklistItem(target)].slice(0, 180).join("")}`;
+}
+
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+export function persistentOutcomeDecision(input: {
+  objective: unknown; assistantText: unknown; target?: unknown;
+}): { required: boolean; attained: boolean; unmet: boolean; target: string; reason: string } {
+  const target = normalizeChecklistItem(input.target || persistentOutcomeDirective(input.objective));
+  if (!target) return { required: false, attained: true, unmet: false, target: "", reason: "not-required" };
+  const body = stripAcceptanceChecklist(input.assistantText);
+  const compactBody = body.replace(/\s+/gu, "");
+  const lastMatchIndex = (value: string, pattern: RegExp): number => {
+    let last = -1;
+    for (const match of value.matchAll(pattern)) last = Math.max(last, Number(match.index ?? -1));
+    return last;
+  };
+  const lastUnmet = lastMatchIndex(body,
+    /(?:当前|本轮|最终|至今|仍|尚).{0,32}(?:未达到|未满足|未通过|未完成|不达标|没有合格)|(?:未达到|未满足|未通过|未完成|不达标|没有合格).{0,48}(?:继续|禁止|不能|不得|封闭|失败)|researchTaskClosed\s*=\s*false|strategyDeliverable\s*=\s*false|(?:任务|研究任务).{0,20}(?:没有|尚未|仍未|保持)(?:关闭|完成|开放)/giu);
+  const numericTargets = [...target.matchAll(/\d+(?:\.\d+)?\s*(?:倍|%|％|个|次|项|分)/gu)]
+    .map((match) => match[0].replace(/\s+/gu, ""));
+  let lastAttained = lastMatchIndex(body,
+    /(?:(?:当前|本轮|最终)(?:(?!未|不).){0,20}(?:已经|均已|全部已|已)|(?:现已|已经|均已|全部已))(?:达到|超过|满足|通过|完成).{0,48}(?:目标|门槛|要求|验收)|researchTaskClosed\s*=\s*true|strategyDeliverable\s*=\s*true/giu);
+  if (numericTargets.length) {
+    const numericIndexes = numericTargets.map((token) => lastMatchIndex(compactBody, new RegExp(
+      `(?:已|已经|现已|均已|全部已).{0,24}(?:达到|超过|满足|通过).{0,48}${regexEscape(token)}|${regexEscape(token)}.{0,32}(?:目标|门槛|要求).{0,16}(?:已)?(?:达到|达成|通过|满足)`,
+      "giu",
+    )));
+    lastAttained = numericIndexes.every((index) => index >= 0) ? Math.max(...numericIndexes) : -1;
+  }
+  const attained = lastAttained >= 0 && lastAttained > lastUnmet;
+  const unmet = lastUnmet >= 0 && lastUnmet > lastAttained;
+  return {
+    required: true,
+    attained,
+    unmet,
+    target,
+    reason: attained ? "persistent-outcome-attained" : unmet ? "persistent-outcome-unmet" : "persistent-outcome-unverified",
+  };
+}
+
 export function createChecklistGoalState(
   objective: unknown = "", taskUserEntryId: unknown = "",
 ): ChecklistGoalState {
+  const objectiveText = String(objective || "").trim();
+  const persistentOutcome = persistentOutcomeDirective(objectiveText);
+  const outcomeText = persistentOutcome ? persistentOutcomeItemText(persistentOutcome) : "";
   return {
     version: 1,
     status: "active",
-    objective: String(objective || "").trim(),
+    objective: objectiveText,
     taskUserEntryId: String(taskUserEntryId || ""),
     items: [],
     continuationCount: 0,
@@ -415,22 +509,65 @@ export function createChecklistGoalState(
     violationKey: "",
     violationTurns: 0,
     allowExpansion: false,
+    persistentOutcome,
+    outcomeItemKey: outcomeText ? normalizeChecklistItem(outcomeText).toLocaleLowerCase() : "",
   };
 }
 
 function cloneChecklistGoalState(state: ChecklistGoalState): ChecklistGoalState {
+  const objective = String(state.objective || "");
+  const persistentOutcome = normalizeChecklistItem(state.persistentOutcome || persistentOutcomeDirective(objective));
+  const outcomeText = persistentOutcome ? persistentOutcomeItemText(persistentOutcome) : "";
   return {
     ...state,
+    objective,
+    persistentOutcome,
+    outcomeItemKey: outcomeText ? normalizeChecklistItem(outcomeText).toLocaleLowerCase() : "",
     items: state.items.map((item) => ({ ...item })),
     violationKey: String(state.violationKey || ""),
     violationTurns: Math.max(0, Number(state.violationTurns || 0)),
   };
 }
 
+export function resumeChecklistGoalState(
+  state: ChecklistGoalState, prompt: unknown, taskUserEntryId: unknown = "",
+): ChecklistGoalState {
+  const next = cloneChecklistGoalState(state);
+  const promptText = String(prompt || "").trim();
+  const objective = promptText
+    ? `${next.objective}\n\n用户继续要求: ${promptText}`.trim()
+    : next.objective;
+  const persistentOutcome = next.persistentOutcome || persistentOutcomeDirective(objective);
+  const outcomeText = persistentOutcome ? persistentOutcomeItemText(persistentOutcome) : "";
+  return {
+    ...next,
+    status: "active",
+    objective,
+    taskUserEntryId: String(taskUserEntryId || next.taskUserEntryId || ""),
+    allowExpansion: true,
+    blockerKey: "",
+    blockerTurns: 0,
+    violationKey: "",
+    violationTurns: 0,
+    persistentOutcome,
+    outcomeItemKey: outcomeText ? normalizeChecklistItem(outcomeText).toLocaleLowerCase() : "",
+  };
+}
+
+function ensurePersistentOutcomeItem(state: ChecklistGoalState): ChecklistGoalState {
+  const next = cloneChecklistGoalState(state);
+  if (!next.persistentOutcome || !next.outcomeItemKey) return next;
+  if (!next.items.some((item) => item.key === next.outcomeItemKey)) {
+    const text = persistentOutcomeItemText(next.persistentOutcome);
+    next.items.push({ text, key: next.outcomeItemKey });
+  }
+  return next;
+}
+
 export function freezeChecklistGoalContract(
   state: ChecklistGoalState, checklistText: unknown,
 ): ChecklistGoalState {
-  const next = cloneChecklistGoalState(state);
+  let next = cloneChecklistGoalState(state);
   if (next.status !== "active") return next;
   const parsed = parseAcceptanceChecklist(checklistText);
   if (!parsed?.items.length) return next;
@@ -447,11 +584,14 @@ export function freezeChecklistGoalContract(
     }
     next.allowExpansion = false;
   }
+  next = ensurePersistentOutcomeItem(next);
   return next;
 }
 
 function validChecklistGoalState(value: any): value is ChecklistGoalState {
   return value?.version === 1 && ["inactive", "active", "complete", "blocked"].includes(value?.status) &&
+    (value?.persistentOutcome === undefined || typeof value.persistentOutcome === "string") &&
+    (value?.outcomeItemKey === undefined || typeof value.outcomeItemKey === "string") &&
     Array.isArray(value?.items) && value.items.every((item: any) =>
       typeof item?.text === "string" && typeof item?.key === "string");
 }
@@ -612,6 +752,21 @@ export function checklistGateDecision(input: {
       if (!current || current.state !== "done") open.push(contract.text);
     }
   }
+  const formatViolations = [...violations];
+  let persistentReason = "";
+  const outcome = persistentOutcomeDecision({
+    objective: state.objective,
+    assistantText: input.assistantText,
+    target: state.persistentOutcome,
+  });
+  if (outcome.required && !outcome.attained) {
+    persistentReason = outcome.reason;
+    const outcomeItem = state.items.find((item) => item.key === state.outcomeItemKey);
+    open.push(outcomeItem?.text || persistentOutcomeItemText(outcome.target));
+    violations.push(outcome.unmet
+      ? "回复正文明确报告持续终态仍未达到，禁止用保护动作或 [x] 冒充完成"
+      : "持续终态缺少正向达成证据，不能标记 complete");
+  }
   const uniqueOpen = [...new Set(open)];
   if (!uniqueOpen.length && !violations.length) {
     state.status = "complete";
@@ -623,7 +778,7 @@ export function checklistGateDecision(input: {
   }
 
   state.status = "active";
-  const violationKey = checklistViolationFingerprint(violations);
+  const violationKey = checklistViolationFingerprint(formatViolations);
   if (violationKey) {
     state.violationTurns = state.violationKey === violationKey ? state.violationTurns + 1 : 1;
     state.violationKey = violationKey;
@@ -657,7 +812,8 @@ export function checklistGateDecision(input: {
   state.continuationCount += 1;
   return {
     trigger: true,
-    reason: blockerKey ? "blocker-retry" : !parsed ? "missing-checklist" : violations.length ? "invalid-checklist" : "open-items",
+    reason: blockerKey ? "blocker-retry" : persistentReason ||
+      (!parsed ? "missing-checklist" : formatViolations.length ? "invalid-checklist" : "open-items"),
     open: uniqueOpen,
     violations,
     state,
@@ -674,8 +830,10 @@ export function formatChecklistGateContinuation(result: ChecklistGateResult, con
   const diagnostics = result.violations.length
     ? `\n\n格式违规诊断（不是验收项目，禁止复制进清单）:\n${result.violations.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。以下是唯一冻结合同，回复时必须完整重复且只更新 [ ]/[x] 状态:\n${contractBlock}${diagnostics}\n\n继续执行原始任务。已有可验证证据的项目标为 [x]；未完成项目保留 [ ]。禁止 [~] 或任何第三状态，禁止删除、改名、缩减合同项目；如果确有外部阻塞，保留对应 [ ] 并报告可验证证据。`;
+  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。以下是唯一冻结合同，回复时必须完整重复且只更新 [ ]/[x] 状态:\n${contractBlock}${diagnostics}\n\n继续执行原始任务。已有可验证证据的项目标为 [x]；未完成项目保留 [ ]。禁止 [~] 或任何第三状态，禁止删除、改名、缩减合同项目；如果确有外部阻塞，保留对应 [ ] 并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。`;
 }
+
+export const renderChecklistContinuation = formatChecklistGateContinuation;
 
 export function goalGateVerdict(input: {
   exitCode: number | null; timedOut?: boolean; attempts: number; max: number;
@@ -811,7 +969,7 @@ export default function (pi: ExtensionAPI) {
   // 以后覆盖活动扩展文件时，旧 runner 在下一次真实用户轮检测到磁盘版本漂移，先排队
   // 一个命令级 reload。pending message 会让旧完成门放行本轮，不再生成旧版自动续跑。
   (pi as any).registerCommand?.("lop-chain-reload", {
-    description: "Reload lop-chain after the active extension file changes",
+    description: `Reload lop-chain after the active extension file changes (${LOP_CHAIN_RUNTIME_VERSION})`,
     handler: async (_args: string, ctx: any) => {
       await ctx.reload();
       return;
@@ -999,15 +1157,17 @@ export default function (pi: ExtensionAPI) {
       goalGate.attempts = 0;
     }
 
-    // Codex goal-loop 同语义:真实执行请求激活目标;上下文型“继续”保留合同并可从
-    // blocked 恢复;用户追加执行要求时只开放一次合同扩展,旧项目仍不可删除/改名。
+    // Codex goal-loop 同语义:真实执行请求激活目标;用户说“继续”即明确否决上一轮
+    // complete，必须重新 active；blocked 仍可恢复。追加要求只开放一次合同扩展，
+    // 旧项目不可删除/改名。
     const userTurn = latestUserTurn(ctx?.sessionManager?.getBranch?.() || []);
     if (isContextDependentHistoryPrompt(prompt)) {
-      if (checklistGoal?.status === "blocked") {
-        setChecklistGoal({
-          ...checklistGoal, status: "active", blockerKey: "", blockerTurns: 0,
-          violationKey: "", violationTurns: 0,
-        }, "user-resume");
+      if (checklistGoal?.status === "blocked" ||
+          (checklistGoal?.status === "complete" && isGoalContinuationPrompt(prompt))) {
+        setChecklistGoal(
+          resumeChecklistGoalState(checklistGoal, prompt, userTurn.id),
+          checklistGoal.status === "complete" ? "user-reopens-complete-goal" : "user-resume",
+        );
       }
     } else if (isExecutionRequest(prompt) || gateDirective.action === "set") {
       if ((checklistGoal?.status === "active" || checklistGoal?.status === "blocked") && checklistGoal.items.length) {
@@ -1029,6 +1189,14 @@ export default function (pi: ExtensionAPI) {
     }
     const contexts: string[] = [];
     const phase: Record<string, unknown> = {};
+    if (checklistGoal?.persistentOutcome) {
+      contexts.push([
+        "<persistent-outcome-gate>",
+        "用户冻结了持续终态；核验‘未达到’、执行禁止交付或保持任务开放，只是过程状态，绝不能冒充终态完成。",
+        `验收清单必须原样包含以下 host 项；终态未取得正向证据时保持 [ ]，只有正文给出正向达成证据后才可改为 [x]：${persistentOutcomeItemText(checklistGoal.persistentOutcome)}`,
+        "</persistent-outcome-gate>",
+      ].join("\n"));
+    }
 
     // S2 个性化扩写硬门:扩写文本必须达到原问题字符数3倍,并保留可归因术语。
     const t2 = performance.now();
@@ -1308,6 +1476,23 @@ export default function (pi: ExtensionAPI) {
     try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
     const userTurn = latestUserTurn(branch);
     const prompt = lastPrompt || userTurn.text;
+
+    // 防 before_agent_start 时分支尚未落入当前 user entry，也防本轮中途 reload：
+    // agent_end 再按 user entry id 对账。新人工执行请求不能继承旧 complete；“继续”
+    // 则原合同重开，自动 follow-up 没有新 user id，不会误触发。
+    const newUserTurn = Boolean(userTurn.id && userTurn.id !== checklistGoal?.taskUserEntryId);
+    if (newUserTurn && checklistGoal?.status === "complete") {
+      if (isGoalContinuationPrompt(prompt)) {
+        setChecklistGoal(resumeChecklistGoalState(checklistGoal, prompt, userTurn.id), "agent-end-reopens-complete-goal");
+      } else if (isExecutionRequest(prompt)) {
+        setChecklistGoal(createChecklistGoalState(prompt, userTurn.id), "agent-end-starts-new-goal");
+      }
+    } else if (newUserTurn && checklistGoal?.status === "blocked" &&
+               (isContextDependentHistoryPrompt(prompt) || isExecutionRequest(prompt))) {
+      setChecklistGoal(resumeChecklistGoalState(checklistGoal, prompt, userTurn.id), "agent-end-resumes-blocked-goal");
+    } else if (newUserTurn && checklistGoal?.status === "active") {
+      setChecklistGoal({ ...checklistGoal, taskUserEntryId: userTurn.id }, "bind-current-user-turn");
+    }
 
     // S6 可能在本次 agent_end 直接打回。必须在消费 S6 前冻结首份清单，否则打回轮
     // 可改写验收项目并冒充“首份合同”(本机 live smoke 已复现)。
