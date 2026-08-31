@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v7";
+export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v8";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -234,8 +234,8 @@ const GOAL_GATE_LINE = /^\s*(?:【目标门】|\[goal-gate\])\s*(.*?)\s*$/miu;
 // 两态验收目标:桥 persistence 注入要求模型对执行型任务自列【验收清单】。
 // 首份清单冻结为会话分支上的持久合同;只有 [ ](未完成) 与 [x](已验证完成),任何
 // 第三状态、删项、改名、漏清单都保持 active；合法未完成项不设固定续跑上限。
-// 格式违规诊断与合同项分离，同一诊断连续 3 轮仍未修正时熔断自动 follow-up，
-// 保留 active 合同等待真实用户消息，防止门禁自身递归。显式目标门始终拥有更高完成优先级。
+// 格式违规诊断与合同项分离；重复诊断只作计数与普通文本反馈，不得变成固定重试耗尽。
+// 合同保持 active 并继续 follow-up；显式目标门始终拥有更高完成优先级。
 const CHECKLIST_BLOCKER_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_BLOCKER_TURNS || 3));
 const CHECKLIST_VIOLATION_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_VIOLATION_TURNS || 3));
 const CHECKLIST_HEADER = "【验收清单】";
@@ -779,20 +779,12 @@ export function checklistGateDecision(input: {
 
   state.status = "active";
   const violationKey = checklistViolationFingerprint(formatViolations);
+  let repeatedViolation = false;
   if (violationKey) {
     state.violationTurns = state.violationKey === violationKey ? state.violationTurns + 1 : 1;
     state.violationKey = violationKey;
-    if (state.violationTurns >= Math.max(1, input.violationTurnsRequired || CHECKLIST_VIOLATION_TURNS)) {
-      state.blockerKey = "";
-      state.blockerTurns = 0;
-      return {
-        trigger: false,
-        reason: "repeated-checklist-violation-circuit-open",
-        open: uniqueOpen,
-        violations,
-        state,
-      };
-    }
+    repeatedViolation = state.violationTurns >=
+      Math.max(1, input.violationTurnsRequired || CHECKLIST_VIOLATION_TURNS);
   } else {
     state.violationKey = "";
     state.violationTurns = 0;
@@ -813,7 +805,8 @@ export function checklistGateDecision(input: {
   return {
     trigger: true,
     reason: blockerKey ? "blocker-retry" : persistentReason ||
-      (!parsed ? "missing-checklist" : formatViolations.length ? "invalid-checklist" : "open-items"),
+      (repeatedViolation ? "repeated-checklist-violation" :
+        !parsed ? "missing-checklist" : formatViolations.length ? "invalid-checklist" : "open-items"),
     open: uniqueOpen,
     violations,
     state,
@@ -1590,16 +1583,7 @@ export default function (pi: ExtensionAPI) {
       blockerTurnsRequired: CHECKLIST_BLOCKER_TURNS,
     });
     if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
-    if (checklistGate.reason === "repeated-checklist-violation-circuit-open") {
-      checklistRetryActive = false;
-      log(`CHECKLIST_GOAL CIRCUIT_OPEN violationTurns=${checklistGate.state?.violationTurns || 0} violations=${checklistGate.violations.length}`);
-      metric({
-        sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
-        checklistGoal: "active", checklistReason: checklistGate.reason,
-        checklistViolationTurns: checklistGate.state?.violationTurns || 0,
-      });
-      try { ctx?.ui?.notify?.("验收门已熔断重复格式违规；合同保持 active，等待真实用户消息。", "warning"); } catch {}
-    } else if (checklistGate.reason === "same-blocker-three-turns") {
+    if (checklistGate.reason === "same-blocker-three-turns") {
       checklistRetryActive = false;
       log(`CHECKLIST_GOAL BLOCKED blockerTurns=${checklistGate.state?.blockerTurns || 0} open=${checklistGate.open.length}`);
       metric({

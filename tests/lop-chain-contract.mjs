@@ -206,7 +206,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /two-state-goal-v7/u);
+assert.match(commands.get("lop-chain-reload").description, /two-state-goal-v8/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -538,7 +538,7 @@ assert.deepEqual(scopedExpansion.state.items.map((item) => item.text), [
 ]);
 assert.deepEqual(scopedExpansion.violations, []);
 
-// 违规诊断不得伪装成合同复选项；复制旧诊断也必须规范化，连续三次后熔断自动续跑。
+// 违规诊断不得伪装成合同复选项；复制旧诊断也必须规范化，重复违规仍保持 active 续跑。
 const copiedDiagnosticText = [
   fullyClosedChecklistText,
   "- [x] 验收项目被新增或改名: 验收项目被新增或改名: 回复遗漏了冻结的【验收清单】",
@@ -560,13 +560,13 @@ assert.equal(diagnosticLoop.trigger, true);
 diagnosticLoop = checklistGateDecision({
   ...checklistBase, state: diagnosticLoop.state, assistantText: copiedDiagnosticText,
 });
-assert.equal(diagnosticLoop.trigger, false);
-assert.equal(diagnosticLoop.reason, "repeated-checklist-violation-circuit-open");
+assert.equal(diagnosticLoop.trigger, true);
+assert.equal(diagnosticLoop.reason, "repeated-checklist-violation");
 assert.equal(diagnosticLoop.state.status, "active");
-const recoveredAfterCircuit = checklistGateDecision({
+const recoveredAfterViolation = checklistGateDecision({
   ...checklistBase, state: diagnosticLoop.state, assistantText: fullyClosedChecklistText,
 });
-assert.equal(recoveredAfterCircuit.reason, "goal-complete");
+assert.equal(recoveredAfterViolation.reason, "goal-complete");
 
 // 不再有固定两轮后 exhausted：第 20 轮仍保持 active 并续跑。
 let longRunning = frozen;
@@ -652,7 +652,7 @@ await clEnd(fullyClosedChecklistText);
 assert.equal(clMessages().length, 5);
 assert.equal(clEntries.at(-1).data.status, "complete");
 
-// 集成:模型误抄诊断时最多再自动续跑两次；第三次相同违规熔断且不再 sendMessage。
+// 集成:模型误抄诊断时诊断保持普通文本；第三次相同违规仍续跑，不得变相耗尽。
 const loopHandlers = new Map();
 const loopSent = [];
 const loopEntries = [];
@@ -686,11 +686,14 @@ for (let index = 0; index < 3; index += 1) {
   await loopHandlers.get("before_agent_start")[0]({ prompt: loopMessages().at(-1).message.content }, loopCtx);
   await loopEnd(copiedDiagnosticText);
 }
-assert.equal(loopMessages().length, 3);
-assert.equal(loopNotifications.at(-1).level, "warning");
-assert.match(loopNotifications.at(-1).message, /已熔断重复格式违规/u);
+assert.equal(loopMessages().length, 4);
+assert.equal(loopNotifications.length, 0);
 assert.equal(loopEntries.at(-1).data.status, "active");
 assert.equal(loopEntries.at(-1).data.violationTurns, 3);
+await loopHandlers.get("before_agent_start")[0]({ prompt: loopMessages().at(-1).message.content }, loopCtx);
+await loopEnd(fullyClosedChecklistText);
+assert.equal(loopMessages().length, 4);
+assert.equal(loopEntries.at(-1).data.status, "complete");
 
 // 新扩展实例从会话 custom entry 恢复 active 合同，漏清单仍会续跑。
 const restoreHandlers = new Map();
@@ -756,7 +759,7 @@ await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机�
 assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "two-state-goal-v7");
+assert.equal(runtimeVersionFromSource(source), "two-state-goal-v8");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
