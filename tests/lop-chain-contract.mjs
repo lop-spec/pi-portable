@@ -546,6 +546,46 @@ await clEnd(fullyClosedChecklistText);
 assert.equal(clMessages().length, 5);
 assert.equal(clEntries.at(-1).data.status, "complete");
 
+// 集成:模型误抄诊断时最多再自动续跑两次；第三次相同违规熔断且不再 sendMessage。
+const loopHandlers = new Map();
+const loopSent = [];
+const loopEntries = [];
+const loopNotifications = [];
+const loopPi = {
+  on(name, handler) {
+    const list = loopHandlers.get(name) || [];
+    list.push(handler);
+    loopHandlers.set(name, list);
+  },
+  appendEntry(customType, data) { loopEntries.push({ type: "custom", customType, data }); },
+  sendMessage(message, options) { loopSent.push({ message, options }); },
+  sendUserMessage() { throw new Error("unexpected user-message fallback"); },
+};
+lopChainExtension(loopPi);
+const loopCtx = {
+  hasPendingMessages: () => false,
+  ui: { notify(message, level) { loopNotifications.push({ message, level }); } },
+  sessionManager: { getBranch: () => [{
+    type: "message", id: "loop-user", message: { role: "user", content: "部署并验证服务" },
+  }, ...loopEntries] },
+};
+const loopEnd = (text) => loopHandlers.get("agent_end")[0]({
+  messages: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }],
+}, loopCtx);
+const loopMessages = () => loopSent.filter((item) => item.message.customType === "lop-checklist-gate");
+await loopHandlers.get("before_agent_start")[0]({ prompt: "部署并验证服务" }, loopCtx);
+await loopEnd(openChecklistText);
+assert.equal(loopMessages().length, 1);
+for (let index = 0; index < 3; index += 1) {
+  await loopHandlers.get("before_agent_start")[0]({ prompt: loopMessages().at(-1).message.content }, loopCtx);
+  await loopEnd(copiedDiagnosticText);
+}
+assert.equal(loopMessages().length, 3);
+assert.equal(loopNotifications.at(-1).level, "warning");
+assert.match(loopNotifications.at(-1).message, /已熔断重复格式违规/u);
+assert.equal(loopEntries.at(-1).data.status, "active");
+assert.equal(loopEntries.at(-1).data.violationTurns, 3);
+
 // 新扩展实例从会话 custom entry 恢复 active 合同，漏清单仍会续跑。
 const restoreHandlers = new Map();
 const restoreSent = [];
