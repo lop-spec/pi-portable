@@ -913,7 +913,23 @@ export default function (pi: ExtensionAPI) {
   let toolDurationMs = 0;
   const toolStarts = new Map<string, number>();
   // 扩展装载即后台补扫,第一条 prompt 只等待尚未完成的尾部;后续 S3 不再扫描。
-  const memoryReady = process.env.PI_CHAIN_SKIP_STARTUP_SCAN === "1"
+  // S3 出关键路径(2026-08-31 循环验收):status 新鲜(默认 ≤10min)直接跳扫——
+  // 多会话日实测 97 扫/日全为重复枚举;parseSignature 迁移日单扫 60-164s 且阻塞首轮。
+  const SCAN_FRESH_MS = Number(process.env.LOP_SCAN_FRESH_MS || 600000);
+  const scanFreshAge = (() => {
+    try {
+      const home = process.env.LOP_MEMORY_HOME;
+      if (!home) return Infinity;
+      const s = JSON.parse(fs.readFileSync(path.join(home, "status.json"), "utf8"));
+      const at = Date.parse(String(s?.updatedAt || ""));
+      return Number.isFinite(at) ? Date.now() - at : Infinity;
+    } catch { return Infinity; }
+  })();
+  const scanFresh = scanFreshAge < SCAN_FRESH_MS;
+  if (scanFresh) log(`S3 STARTUP_SCAN skip-fresh age=${Math.round(scanFreshAge / 1000)}s`);
+  // 首轮超时放行后 memoryReady 可能在无等待者时 reject,吞掉防 unhandledRejection
+  // (真实错误已由 STARTUP_SCAN_FAIL 日志承载)。
+  const memoryReady = process.env.PI_CHAIN_SKIP_STARTUP_SCAN === "1" || scanFresh
     ? Promise.resolve({ physicalSources: 0, changedSources: 0, canonicalized: 0 })
     : (async () => {
     const started = performance.now();
@@ -927,6 +943,7 @@ export default function (pi: ExtensionAPI) {
       throw error;
     }
   })();
+  memoryReady.catch(() => {});
   // S6 打回轮标记:等价 Claude 侧 stop_hook_active,防预审递归打回。
   let advRedelivery = false;
   let advDeliveredTurn = false; // 本轮已投递过预审 context,防每次 tool_call 重复注入
@@ -1217,7 +1234,14 @@ export default function (pi: ExtensionAPI) {
     // S3 历史硬门:先原问题,miss 后仍按原意评分,只用3×扩写扩大候选。
     const t3 = performance.now();
     try {
-      const scan = await memoryReady;
+      // S3 出关键路径:首条 prompt 对扫描最多等 2s,超时即放行(查询用现有索引,
+      // 新鲜度由后台扫描补齐;扫描自身完成/失败仍由 STARTUP_SCAN 日志记录)。
+      const scan: any = await Promise.race([
+        memoryReady.catch((error) => ({ scanFailed: String(error).slice(0, 120) })),
+        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }),
+          Number(process.env.LOP_SCAN_FIRST_WAIT_MS || 2000))),
+      ]);
+      if (scan?.timedOut) log("S3 SCAN_WAIT timeout=2s 放行(后台继续)");
       phase.s3ScanSources = Number(scan?.physicalSources || 0);
       phase.s3ScanChanged = Number(scan?.changedSources || 0);
       if (isContextDependentHistoryPrompt(prompt)) {
