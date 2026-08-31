@@ -206,7 +206,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /two-state-goal-v6/u);
+assert.match(commands.get("lop-chain-reload").description, /two-state-goal-v7/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -369,6 +369,10 @@ assert.equal(persistentOutcomeDecision({
 assert.equal(persistentOutcomeDecision({
   objective: genericPersistentObjective,
   assistantText: "第一阶段曾报告当前仍未完成持续目标。最终结论：当前已完成持续目标 PERSISTENT_SMOKE_20260831，证据已复核。",
+}).attained, true);
+assert.equal(persistentOutcomeDecision({
+  objective: genericPersistentObjective,
+  assistantText: "当前已取得正向达成证据：read 返回精确 marker PERSISTENT_SMOKE_20260831，持续目标完成。",
 }).attained, true);
 
 const prematureAllDone = [
@@ -752,7 +756,7 @@ await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机�
 assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "two-state-goal-v6");
+assert.equal(runtimeVersionFromSource(source), "two-state-goal-v7");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);

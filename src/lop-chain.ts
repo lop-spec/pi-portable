@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v6";
+export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v7";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -472,7 +472,7 @@ export function persistentOutcomeDecision(input: {
   const numericTargets = [...target.matchAll(/\d+(?:\.\d+)?\s*(?:倍|%|％|个|次|项|分)/gu)]
     .map((match) => match[0].replace(/\s+/gu, ""));
   let lastAttained = lastMatchIndex(body,
-    /(?:(?:当前|本轮|最终)(?:(?!未|不).){0,20}(?:已经|均已|全部已|已)|(?:现已|已经|均已|全部已))(?:达到|超过|满足|通过|完成).{0,48}(?:目标|门槛|要求|验收)|researchTaskClosed\s*=\s*true|strategyDeliverable\s*=\s*true/giu);
+    /(?:(?:当前|本轮|最终)(?:(?!未|不).){0,20}(?:已经|均已|全部已|已)|(?:现已|已经|均已|全部已))(?:达到|超过|满足|通过|完成).{0,48}(?:目标|门槛|要求|验收)|(?:当前|本轮|最终)(?:(?!未|不).){0,24}(?:已取得|已获得|已有)(?:(?!未|不).){0,32}(?:正向(?:达成)?证据|可验证证据)|(?:持续|最终|冻结)(?:终态|目标)(?:已经|已)?(?:完成|达成|通过)(?=[。；;，,\s]|$)|researchTaskClosed\s*=\s*true|strategyDeliverable\s*=\s*true/giu);
   if (numericTargets.length) {
     const numericIndexes = numericTargets.map((token) => lastMatchIndex(compactBody, new RegExp(
       `(?:已|已经|现已|均已|全部已).{0,24}(?:达到|超过|满足|通过).{0,48}${regexEscape(token)}|${regexEscape(token)}.{0,32}(?:目标|门槛|要求).{0,16}(?:已)?(?:达到|达成|通过|满足)`,
