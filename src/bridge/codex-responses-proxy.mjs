@@ -23,6 +23,7 @@ fs.mkdirSync(PORTABLE_DATA, { recursive: true });
 import { compressUpstreamBody, rewriteCodexRequestBody } from "./codex-cache-policy.mjs";
 import { ExactResponseMemo } from "./codex-response-memo.mjs";
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
+import { createModelFallbackPlan, requestWithOverloadRetry } from "./codex-overload-retry.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
 const HOST = "127.0.0.1";
@@ -35,8 +36,19 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
 const FORCE_REASONING_EFFORT = process.env.CODEX_FORCE_REASONING_EFFORT || "max";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.11.0";
+const POLICY_VERSION = "gpt56-chain-replay-v7.13.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
+const numberEnv = (name, fallback) => {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+};
+const OVERLOAD_MAX_RETRIES = Math.trunc(numberEnv("CODEX_OVERLOAD_MAX_RETRIES", 3));
+const OVERLOAD_BASE_DELAY_MS = numberEnv("CODEX_OVERLOAD_BASE_DELAY_MS", 1200);
+const OVERLOAD_MAX_DELAY_MS = numberEnv("CODEX_OVERLOAD_MAX_DELAY_MS", 8000);
+const OVERLOAD_PREFIX_MAX_BYTES = Math.max(1024, numberEnv("CODEX_OVERLOAD_PREFIX_MAX_BYTES", 256 * 1024));
+const OVERLOAD_PRIMARY_MODEL = process.env.CODEX_OVERLOAD_PRIMARY_MODEL || "gpt-5.6-sol";
+const OVERLOAD_FALLBACK_MODELS = (process.env.CODEX_OVERLOAD_FALLBACK_MODELS ?? "gpt-5.6-terra,gpt-5.6-luna,gpt-reserve")
+  .split(",").map((model) => model.trim()).filter(Boolean);
 // persistence 注入:Codex 官方 prompt(codex-rs/core/gpt_5_2_prompt.md)的 Autonomy and
 // Persistence 段原文。gpt-5.x 按这份提示训练对齐"不提前收尾";pi 等 responses 方言
 // 客户端的 instructions 缺该段,同模型在 pi 壳里就会出现"承诺后 stop/如实汇报未达标
@@ -256,6 +268,28 @@ function upstreamGet(path, headers) {
   });
 }
 
+function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, error, exhausted, nextModel = "" }) {
+  const meta = response?.lopMeta || {};
+  const egress = meta.egress || currentEgress();
+  fs.appendFile(METRICS_FILE, JSON.stringify({
+    ts: new Date().toISOString(),
+    egressKey: egress.key || "",
+    egressPort: egress.port || 0,
+    originator: String(req.headers.originator || ""),
+    status: response?.statusCode || 200,
+    sseStatus: 529,
+    errorKind: String(error?.code || "server_is_overloaded").slice(0, 60),
+    overloadAttempt: attempt,
+    overloadMaxRetries: maxRetries,
+    overloadDelayMs: delayMs,
+    overloadExhausted: Boolean(exhausted),
+    requestedModel: String(meta.requestedModel || ""),
+    attemptedModel: String(meta.upstreamModel || ""),
+    nextModel: String(nextModel || ""),
+    ttfbMs: Math.round(meta.ttfbMs || 0),
+  }) + "\n", () => {});
+}
+
 // 请求策略注入：一次解压/解析应用可选 Tier 兜底，以及 GPT-5.6 的稳定 key + 显式断点。
 // Tier 缺省为 off：请求未选择时不注入，交给上游；请求已带 service_tier 时永不覆盖。
 // 断点只放在动态 environment/history/user 之前的 developer 块；无安全边界或解析失败时
@@ -347,19 +381,80 @@ async function handleResponses(req, res) {
       log("body: " + JSON.stringify(shallow).slice(0, 900));
     } catch { log("body 不是 JSON，长度 " + body.length); }
   }
-  // 上行重压缩：改写后的明文大包恢复 gzip 再出网（透传体/小包在函数内自动跳过）。
-  let upBody = body;
-  let upHeaders = fwdHeaders;
-  if (UPSTREAM_GZIP) {
-    const compressed = compressUpstreamBody(body, fwdHeaders);
-    if (compressed.compressed) {
-      log(`上行 gzip：${body.length}B→${compressed.body.length}B`);
-      ({ body: upBody, headers: upHeaders } = compressed);
+  // 上行重压缩：每个候选模型只生成一次 body；fallback 只改顶层 model。
+  const modelPlan = createModelFallbackPlan(body, {
+    primaryModel: OVERLOAD_PRIMARY_MODEL,
+    fallbackModels: OVERLOAD_FALLBACK_MODELS,
+  });
+  const preparedPayloads = new Map();
+  const upstreamPayloadForAttempt = (attempt) => {
+    const candidate = modelPlan.payloadForAttempt(attempt);
+    const key = candidate.model || "__raw__";
+    const cached = preparedPayloads.get(key);
+    if (cached) return cached;
+    let candidateBody = candidate.body;
+    let candidateHeaders = fwdHeaders;
+    let compressed = false;
+    if (UPSTREAM_GZIP) {
+      const encoded = compressUpstreamBody(candidateBody, candidateHeaders);
+      compressed = encoded.compressed;
+      ({ body: candidateBody, headers: candidateHeaders } = encoded);
     }
-  }
-  let upRes;
-  try { upRes = await upstreamOnce(upBody, upHeaders); }
-  catch (e) {
+    const prepared = { ...candidate, body: candidateBody, headers: candidateHeaders, compressed };
+    preparedPayloads.set(key, prepared);
+    return prepared;
+  };
+  const initialPayload = upstreamPayloadForAttempt(0);
+  if (initialPayload.compressed) log(`上行 gzip：${body.length}B→${initialPayload.body.length}B`);
+  let activeUpRes = null;
+  let clientClosed = false;
+  // gate 等待中客户端也可能中止；立即停掉当前上游流，且不得继续退避重发。
+  res.once("close", () => {
+    clientClosed = true;
+    if (activeUpRes && !activeUpRes.readableEnded) activeUpRes.destroy();
+  });
+  let selected;
+  try {
+    selected = await requestWithOverloadRetry(async (attempt) => {
+      const candidate = upstreamPayloadForAttempt(attempt);
+      activeUpRes = await upstreamOnce(candidate.body, candidate.headers);
+      activeUpRes.lopMeta.requestedModel = modelPlan.primaryModel;
+      activeUpRes.lopMeta.upstreamModel = candidate.model;
+      activeUpRes.lopMeta.modelFallback = candidate.fallback;
+      return activeUpRes;
+    }, {
+      maxRetries: OVERLOAD_MAX_RETRIES,
+      baseDelayMs: OVERLOAD_BASE_DELAY_MS,
+      maxDelayMs: OVERLOAD_MAX_DELAY_MS,
+      maxPrefixBytes: OVERLOAD_PREFIX_MAX_BYTES,
+      shouldAbort: () => clientClosed,
+      onRetry: ({ retryNumber, maxRetries, delayMs, error, response }) => {
+        const nextModel = modelPlan.payloadForAttempt(retryNumber).model;
+        log(`上游容量过载：code=${error.code} model=${response.lopMeta?.upstreamModel || "?"} next=${nextModel || "same"} bridgeRetry=${retryNumber}/${maxRetries} delay=${delayMs}ms`);
+        recordSseOverload(req, response, {
+          attempt: retryNumber,
+          maxRetries,
+          delayMs,
+          error,
+          exhausted: false,
+          nextModel,
+        });
+      },
+      onExhausted: ({ attempts, overloadRetries, error, response }) => {
+        log(`上游容量过载重试耗尽：model=${response.lopMeta?.upstreamModel || "?"} attempts=${attempts} retries=${overloadRetries}，原样透传最终 SSE`);
+        recordSseOverload(req, response, {
+          attempt: attempts,
+          maxRetries: overloadRetries,
+          error,
+          exhausted: true,
+        });
+      },
+    });
+  } catch (e) {
+    if (clientClosed || e?.code === "CLIENT_CLOSED") {
+      log("客户端在上游首个有效事件前关闭，取消容量重试");
+      return;
+    }
     log(`上游连接失败：${String(e.message).slice(0, 120)}`);
     // 失败也记账：guard 靠它识别「连接风暴型劣化」（成功流的 tok/s 看不见这种故障）。
     const egress = currentEgress();
@@ -374,27 +469,36 @@ async function handleResponses(req, res) {
     res.writeHead(502, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ error: { message: "上游连接失败" } }));
   }
+  const upRes = selected.response;
+  activeUpRes = upRes;
+  const finalMeta = upRes.lopMeta || {};
+  const usedModelFallback = Boolean(finalMeta.requestedModel && finalMeta.upstreamModel && finalMeta.requestedModel !== finalMeta.upstreamModel);
   const out = { ...upRes.headers };
   delete out["content-encoding"];
   delete out["content-length"];
   delete out["transfer-encoding"];
+  if (finalMeta.requestedModel) out["x-lop-requested-model"] = finalMeta.requestedModel;
+  if (finalMeta.upstreamModel) out["x-lop-upstream-model"] = finalMeta.upstreamModel;
+  if (usedModelFallback) out["x-lop-model-fallback"] = "overload";
   res.writeHead(upRes.statusCode, out);
   // 客户端半途断开（pi 中止/页面刷新）：吞掉 error 防击穿，并停止继续拉上游流。
   res.on("error", (error) => log(`客户端响应流失败：${String(error?.message || error).slice(0, 120)}`));
-  res.on("close", () => { if (!upRes.readableEnded) upRes.destroy(); });
   const chunks = [];
   const tail = createTailRing();
-  upRes.on("data", (chunk) => {
+  let finished = false;
+  const writeChunk = (chunk) => {
     const data = Buffer.from(chunk);
     chunks.push(data);
     tail.push(data);
     res.write(data);
-  });
-  upRes.on("end", () => {
+  };
+  const finishResponse = () => {
+    if (finished) return;
+    finished = true;
     res.end();
     // 流吞吐观测：真实 usage 来自 SSE 尾部的 response.completed，观测失败不影响转发。
     try {
-      const meta = upRes.lopMeta || {};
+      const meta = finalMeta;
       const usage = extractUsage(tail.text());
       const { streamMs, tokPerSec } = computeThroughput({
         firstByteAt: meta.startedAt + meta.ttfbMs,
@@ -415,11 +519,15 @@ async function handleResponses(req, res) {
         inTok: usage.inputTokens,
         cachedTok: usage.cachedInputTokens,
         tokPerSec,
+        requestedModel: meta.requestedModel || "",
+        upstreamModel: meta.upstreamModel || "",
+        modelFallback: Boolean(meta.modelFallback),
       };
-      log(`流吞吐：egress=${record.egressKey || "?"}:${record.egressPort} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
+      log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} egress=${record.egressKey || "?"}:${record.egressPort} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
       fs.appendFile(METRICS_FILE, JSON.stringify(record) + "\n", () => {});
     } catch { /* 观测永不阻断转发 */ }
-    if (!replay?.enabled) return;
+    // 过载失败绝不进入 exact memo，否则会把瞬时故障固化到 TTL 内反复重放。
+    if (!replay?.enabled || selected.exhausted || usedModelFallback) return;
     const body = Buffer.concat(chunks);
     const stored = responseMemo.set(replay.key, {
       statusCode: upRes.statusCode,
@@ -428,11 +536,19 @@ async function handleResponses(req, res) {
       usageToken: replay.usageToken,
     });
     log(`response memo ${stored ? "STORE" : "SKIP"} key=${replay.key.slice(0, 16)} bytes=${body.length} entries=${responseMemo.size}`);
-  });
-  upRes.on("error", (error) => {
+  };
+  for (const chunk of selected.prefixChunks) writeChunk(chunk);
+  if (upRes.readableEnded) {
+    finishResponse();
+    return;
+  }
+  upRes.on("data", writeChunk);
+  upRes.once("end", finishResponse);
+  upRes.once("error", (error) => {
     log(`上游响应流失败：${String(error?.message || error).slice(0, 120)}`);
     res.destroy(error);
   });
+  upRes.resume();
 }
 
 const server = http.createServer(async (req, res) => {
@@ -454,6 +570,14 @@ const server = http.createServer(async (req, res) => {
       upstreamProxy: `${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}`,
       upstreamAgent: { maxSockets: 16, maxFreeSockets: 8 },
       upstreamGzip: UPSTREAM_GZIP,
+      overloadRetry: {
+        maxRetries: OVERLOAD_MAX_RETRIES,
+        baseDelayMs: OVERLOAD_BASE_DELAY_MS,
+        maxDelayMs: OVERLOAD_MAX_DELAY_MS,
+        maxPrefixBytes: OVERLOAD_PREFIX_MAX_BYTES,
+        primaryModel: OVERLOAD_PRIMARY_MODEL,
+        fallbackModels: OVERLOAD_FALLBACK_MODELS,
+      },
       egress: currentEgress(),
       metricsFile: METRICS_FILE,
     }));
@@ -505,6 +629,7 @@ server.listen(PORT, HOST, () => {
   log(`推理强度：GPT-5.6 全请求强制 reasoning=${FORCE_REASONING_EFFORT}`);
   log(`响应复用：严格 exact 全语义键，TTL=${RESPONSE_MEMO_TTL_MS}ms，最多 64 条/512KiB 每条`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
+  log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);
   const bootEgress = currentEgress();
   log(`身份：Codex 官方登录透明传递；出口跟随 ${EGRESS_STATE_FILE}（当前 ${bootEgress.key}:${bootEgress.port}，缺省 ${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}）`);
   log(`流吞吐观测：SSE 尾部真实 usage → ${METRICS_FILE}`);

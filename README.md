@@ -68,7 +68,8 @@ node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-
 - **Windows 工具子进程静默**:启动器向 Git Bash 注入 `MSYS=enable_pcon`，原生 `python.exe` 及其后代进入 ConPTY；保持等待、退出码和输出管道，同时不新建可见控制台、不抢焦点。
 - **出口是换机头号变量**:chatgpt.com 在部分网络环境**直连不可达**(TLS 超时),必须走代理。发行版不能假设直连——`egress-autodetect` 按 直连 → 常见本机代理端口 → 用户自定义端口 顺序探测,数秒内定位可用出口并持久化;全失败则由 UI 引导输入。
 - 桥的本机耦合只有 4 处(日志/指标写点、egress 状态文件、代理端口默认),全部参数化后隔离实例真实出网 200。
-- 端口避让:8796 是本机 codex-app-gateway,8793 占用;测试用 8899。
+- **Sol 容量池降级**:仅当首个有效 SSE 前收到结构化 `server_is_overloaded`，按 `gpt-5.6-sol → gpt-5.6-terra → gpt-5.6-luna → gpt-reserve` 有界降级；任何有效输出后绝不重发。实际模型通过响应头、日志和 metrics 留痕，fallback 结果不写入 Sol 的 exact memo。
+- 端口避让:8796 是本机 codex-app-gateway,8793/8797/8798 由既有服务占用;隔离测试必须先探测空闲高位端口。
 
 ## 本地验收
 
@@ -77,7 +78,7 @@ node tests/rules-snapshot-contract.mjs # 唯一真值→bootstrap/受管源→�
 node tests/deploy-rules-remote-contract.mjs # canonical-only SSH 下发、备份、原子生成、只读 check 契约
 node tests/windows-launcher-contract.mjs # GUI 子系统→无 cmd/WSH→Node 监督与 SFX 入口契约
 node --test tests/lop-chain-contract.mjs # 两态清单冻结、持续终态/“继续”重开、历史绕过回归、目标门优先
-node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs
+node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs tests/codex-overload-retry.mjs
 node tools/pi-five-chain-benchmark.mjs --dry-run # 高频排序、基线和门定义自检
 node test/s2-full.mjs                # S2 隔离实例完整验收
 node src/egress-autodetect.mjs <dir> --force   # 单测出口探测
