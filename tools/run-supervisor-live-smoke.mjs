@@ -190,6 +190,8 @@ await new Promise((resolve, reject) => {
 
 const commonEnv = {
   ...process.env,
+  PATH: [path.dirname(nodeExe), process.env.PATH || ""].filter(Boolean).join(path.delimiter),
+  Path: [path.dirname(nodeExe), process.env.Path || process.env.PATH || ""].filter(Boolean).join(path.delimiter),
   PORT: String(internalWebPort),
   PI_WEB_PORT: String(internalWebPort),
   PI_RUN_SUPERVISOR_PUBLIC_PORT: String(webPort),

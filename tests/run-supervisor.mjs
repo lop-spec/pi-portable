@@ -298,6 +298,12 @@ test("runtime dispatches one persisted recovery per leaf within the recovery tar
   assert.equal(posts.length, 1, "same leaf must not dispatch twice");
 });
 
+test("live smoke prepends the selected portable node so provider apiKey shell commands resolve", () => {
+  const source = fs.readFileSync(new URL("../tools/run-supervisor-live-smoke.mjs", import.meta.url), "utf8");
+  assert.match(source, /PATH:\s*\[path\.dirname\(nodeExe\)/u);
+  assert.match(source, /Path:\s*\[path\.dirname\(nodeExe\)/u);
+});
+
 test("runtime version and recovery markers are explicit", () => {
   assert.equal(RUN_SUPERVISOR_VERSION, "run-supervisor-v1");
   assert.equal(RECOVERY_PREFIX, "[lop-run-supervisor recovery]");
