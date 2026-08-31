@@ -10,6 +10,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 - `src/bridge/` — 受版本控制的便携桥层；随生产桥同步升级，并在本仓维护 Pi user-role 历史与 exact response memo 适配。
 - `src/lop-chain.ts` — 执行链扩展；包含确定性目标门，以及无 subagent 的两态验收目标循环（冻结合同、active/complete/blocked、分支持久恢复）。
+- `src/run-supervisor.mjs` — 会话级持久化运行监督器；在转发前保存 prompt/Abort，监听 Pi Web 运行注册表与 session JSONL，并从最后叶节点续接，绝不直接重放工具调用。
 - `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；以 `DETACHED_PROCESS` 和显式标准流拉起主 Node，并作为 bridge/web 子 Node 的无控制台进程宿主；同时监督重启并用 Job Object 兜底清理进程树。相同云构建还发布独立的 `windows-silent-exec-host.exe`，供交互会话中的计划任务静默启动任意精确路径程序。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。
 - `src/rules-snapshot.mjs` — 规则单向生成器；bootstrap/受管源经校验后原子生成 `data/rules.jsonl`。
@@ -70,6 +71,7 @@ node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-
 3. 双击 exe:7z SFX 直接进入 Win32 GUI 宿主(`pi-portable-launcher.exe`)，不经过 Explorer/cmd/VBScript；宿主用无控制台进程启动 launcher，后者校验受管语料并原子生成 `data/rules.jsonl`，再自动完成出口探测 → 起桥 → 起 pi-web → 打开独立 app 窗口，同时托盘常驻 pi 图标
 4. 托盘交互:**单击图标 = 进入(重开窗口)**;右键菜单 = 打开 Pi Web / 重启(整套换代重启)/ 彻底退出(整棵进程树回收零残留)。关闭窗口只驻留托盘,不再整体退出
 5. 托盘不可用时自动回退旧语义:关闭窗口 = 彻底退出;`PI_TRAY=0` 可显式关闭托盘。托盘宿主是 Windows 自带 PowerShell NotifyIcon(`src/tray.ps1`,纯 ASCII 契约,中文菜单由 launcher argv 传入),图标运行时取 `@agegr/pi-web/public/icons/icon-192.png`,零新增资产
+6. launcher 同时守护 Pi Web 与 `run-supervisor`;对外地址仍是 `127.0.0.1:30141`，但先进入 supervisor 的透明持久化代理，Pi Web 私有上游改为 `127.0.0.1:30140`。这样 prompt 在转发前已写入 `data/run-supervisor/state.json`，不受 Pi“首个 assistant 前不落 session JSONL”的窗口影响。Pi Web 异常退出会原位重启，健康面默认 `http://127.0.0.1:30142/health`，事件证据写入 `data/run-supervisor.log`。同一叶节点只投递一次恢复，连续三次相同失败转 `blocked`；UI Abort、显式 `/lop-goal-cancel`、`取消当前目标` 或 `停止自动续跑` 会写 durable cancel marker 并禁止恢复。
 
 无头验证(SSH 远程,不开窗口):`runtime\node.exe tools\remote-verify.mjs "<测试 prompt>"`——出口/桥 health/pi 全链/S6 预审日志一次回显。
 
@@ -90,6 +92,7 @@ node tests/rules-snapshot-contract.mjs # 唯一真值→bootstrap/受管源→�
 node tests/deploy-rules-remote-contract.mjs # canonical-only SSH 下发、备份、原子生成、只读 check 契约
 node tests/windows-launcher-contract.mjs # GUI 子系统→无 cmd/WSH→Node 监督与 SFX 入口契约
 node --test tests/lop-chain-contract.mjs # 两态清单冻结、持续终态/“继续”重开、历史绕过回归、目标门优先
+node --test tests/run-supervisor.mjs # session 增量索引、持久状态、去重/熔断、取消和恢复时延
 node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs tests/codex-overload-retry.mjs
 node tools/pi-five-chain-benchmark.mjs --dry-run # 高频排序、基线和门定义自检
 node test/s2-full.mjs                # S2 隔离实例完整验收

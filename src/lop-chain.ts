@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "goal-redirector-v9";
+export const LOP_CHAIN_RUNTIME_VERSION = "goal-redirector-durable-v10";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -223,9 +223,11 @@ const HISTORY_GUARD_TYPE = "lop-history-disposition-guard";
 const ADVERSARY_REDELIVERY_TYPE = "lop-adversary-redelivery";
 const CHECKLIST_GATE_TYPE = "lop-checklist-gate";
 const CHECKLIST_STATE_TYPE = "lop-checklist-goal-state";
+const RUN_CONTROL_TYPE = "lop-run-control";
+const RUN_SUPERVISOR_RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 const TURN_SCOPED_CUSTOM_TYPES = new Set([
   "lop-chain", COMPLETION_GUARD_TYPE, GOAL_GATE_TYPE, HISTORY_GUARD_TYPE,
-  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE,
+  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE, RUN_CONTROL_TYPE,
 ]);
 // 目标门:用户在消息里显式声明一条可执行校验命令,agent_end 时 exit!=0 就自动续跑。
 // 只认显式声明(【目标门】/[goal-gate] 行),不做任何语义猜测——"不达标不许交付"类
@@ -244,7 +246,7 @@ const CHECKLIST_HEADER = "【验收清单】";
 const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
 const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
 const CONTEXT_REFERENCE = /(?:这个|那个|这些|那些|上面|前面|刚才|其余|剩下|第\s*\d+\s*项|不做\s*\d+)/u;
-const EXECUTION_ACTION = /(?:看下|看一下|查下|查一下|检查|查看|排查|定位|修复|修改|改|执行|运行|部署|安装|更新|提交|推送|上传|下载|验证|测试|创建|删除|迁移|接入|配置|重启|停止|启动|处理|完成|落地|做)/u;
+const EXECUTION_ACTION = /(?:看下|看一下|查下|查一下|检查|查看|排查|定位|修复|修改|改|执行|运行|部署|安装|添加|加上|授权|更新|提交|推送|上传|下载|验证|测试|创建|删除|迁移|接入|配置|重启|停止|启动|继续|接着|处理|完成|落地|做)/u;
 const EXPLANATION_REQUEST = /(?:怎么|如何|为什么|是什么|有什么|有哪些|有没有|能否|是否|可不可以|推荐|说明|解释|原理|方案|区别)/u;
 const DIRECT_EXECUTION = /(?:直接|帮我|请你|给我|都做|做完|改好|修好|落地|执行|运行|部署|上传|提交|推送)/u;
 const FUTURE_ACTION_COMMITMENT = /(?:接下来|下一步|然后|随后|现在)?\s*(?:我会|我将|我先|我接着|我继续|将会)\s*(?:直接|先|继续)?[\s\S]{0,24}(?:读取|检查|查看|排查|定位|修复|修改|执行|运行|验证|测试|部署|安装|提交|推送|上传|连接|打开|搜索|处理)/u;
@@ -292,6 +294,11 @@ export function scopeLopChainContext(messages: any[]): any[] {
 function isGoalContinuationPrompt(value: unknown): boolean {
   const text = String(value || "").normalize("NFKC").trim();
   return /^(?:继续|重试|再试|接着做|继续做|继续执行)/u.test(text);
+}
+
+export function isGoalCancellationPrompt(value: unknown): boolean {
+  const text = String(value || "").normalize("NFKC").trim();
+  return /^(?:\/lop-goal-cancel|取消(?:当前)?目标|放弃(?:当前)?目标|停止自动续跑|不要再继续(?:这个|该)?任务)[。.!！\s]*$/u.test(text);
 }
 
 function isExecutionRequest(value: unknown): boolean {
@@ -986,6 +993,17 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function appendRunControl(action: "cancel", reason: string, userEntryId = ""): void {
+    try {
+      (pi as any).appendEntry?.(RUN_CONTROL_TYPE, {
+        version: 1, action, reason, userEntryId, at: new Date().toISOString(),
+      });
+      log(`RUN_CONTROL action=${action} reason=${reason} user=${userEntryId || "-"}`);
+    } catch (error) {
+      log(`RUN_CONTROL FAIL ${String(error).slice(0, 160)}`);
+    }
+  }
+
   function restoreChecklistGoal(ctx: any): void {
     try {
       const restored = latestChecklistGoalState(ctx?.sessionManager?.getBranch?.() || []);
@@ -1007,6 +1025,15 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args: string, ctx: any) => {
       await ctx.reload();
       return;
+    },
+  });
+  (pi as any).registerCommand?.("lop-goal-cancel", {
+    description: "Cancel the active checklist goal and suppress durable automatic recovery",
+    handler: async (_args: string, ctx: any) => {
+      const userTurn = latestUserTurn(ctx?.sessionManager?.getBranch?.() || []);
+      if (checklistGoal) setChecklistGoal({ ...checklistGoal, status: "inactive" }, "explicit-user-cancel-command");
+      appendRunControl("cancel", "command", userTurn.id);
+      ctx?.ui?.notify?.("当前目标已取消；异常恢复监督器不会续跑本目标。", "info");
     },
   });
 
@@ -1150,6 +1177,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     const prompt = String(event?.prompt || "");
     if (!prompt) return;
+    const supervisorRecovery = prompt.startsWith(RUN_SUPERVISOR_RECOVERY_PREFIX);
     if (!runtimeReloadQueued) {
       try {
         const diskVersion = runtimeVersionFromSource(fs.readFileSync(MODULE_FILE, "utf8"));
@@ -1187,41 +1215,41 @@ export default function (pi: ExtensionAPI) {
     } else if (gateDirective.action === "clear") {
       if (goalGate) log("GOAL_GATE CLEAR");
       goalGate = null;
-    } else if (goalGate) {
+    } else if (goalGate && !supervisorRecovery) {
       goalGate.attempts = 0;
       goalGate.rounds = [];
       goalGate.level = 0;
     }
 
-    // Codex goal-loop 同语义:真实执行请求激活目标;用户说“继续”即明确否决上一轮
-    // complete，必须重新 active；blocked 仍可恢复。追加要求只开放一次合同扩展，
-    // 旧项目不可删除/改名。
+    // 目标一旦 active 就跨普通追问/授权回复保持 active；不再用动作词把它自动降为 inactive。
+    // 动作识别只负责首次建目标，异常续接由宿主持久化 supervisor 兜底。只有显式取消
+    // 文本或 /lop-goal-cancel 才写入 durable cancel marker。
     const userTurn = latestUserTurn(ctx?.sessionManager?.getBranch?.() || []);
-    if (isContextDependentHistoryPrompt(prompt)) {
-      if (checklistGoal?.status === "blocked" ||
-          (checklistGoal?.status === "complete" && isGoalContinuationPrompt(prompt))) {
-        setChecklistGoal(
-          resumeChecklistGoalState(checklistGoal, prompt, userTurn.id),
-          checklistGoal.status === "complete" ? "user-reopens-complete-goal" : "user-resume",
-        );
-      }
-    } else if (isExecutionRequest(prompt) || gateDirective.action === "set") {
-      if ((checklistGoal?.status === "active" || checklistGoal?.status === "blocked") && checklistGoal.items.length) {
+    if (supervisorRecovery) {
+      log("RUN_SUPERVISOR recovery keeps existing goal state");
+    } else if (isGoalCancellationPrompt(prompt)) {
+      if (checklistGoal) setChecklistGoal({ ...checklistGoal, status: "inactive" }, "explicit-user-cancel-text");
+      appendRunControl("cancel", "text", userTurn.id);
+    } else if (checklistGoal?.status === "blocked") {
+      setChecklistGoal(resumeChecklistGoalState(checklistGoal, prompt, userTurn.id), "user-resume");
+    } else if (checklistGoal?.status === "active") {
+      if ((isExecutionRequest(prompt) || isContextDependentHistoryPrompt(prompt)) && checklistGoal.items.length) {
         setChecklistGoal({
           ...checklistGoal,
-          status: "active",
           objective: `${checklistGoal.objective}\n\n用户追加要求: ${prompt}`.trim(),
+          taskUserEntryId: userTurn.id || checklistGoal.taskUserEntryId,
           allowExpansion: true,
           blockerKey: "",
           blockerTurns: 0,
           violationKey: "",
           violationTurns: 0,
         }, "user-extends-active-goal");
-      } else {
-        setChecklistGoal(createChecklistGoalState(prompt, userTurn.id), "user-starts-goal");
       }
-    } else if (checklistGoal?.status === "active" || checklistGoal?.status === "blocked") {
-      setChecklistGoal({ ...checklistGoal, status: "inactive" }, "user-redirects-away");
+      // 普通问题/授权信息/短回复不改变 active 状态。
+    } else if (checklistGoal?.status === "complete" && isGoalContinuationPrompt(prompt)) {
+      setChecklistGoal(resumeChecklistGoalState(checklistGoal, prompt, userTurn.id), "user-reopens-complete-goal");
+    } else if (isExecutionRequest(prompt) || gateDirective.action === "set") {
+      setChecklistGoal(createChecklistGoalState(prompt, userTurn.id), "user-starts-goal");
     }
     const contexts: string[] = [];
     const phase: Record<string, unknown> = {};
@@ -1539,9 +1567,10 @@ export default function (pi: ExtensionAPI) {
 
     // S6 可能在本次 agent_end 直接打回。必须在消费 S6 前冻结首份清单，否则打回轮
     // 可改写验收项目并冒充“首份合同”(本机 live smoke 已复现)。
-    if (!goalGate && !deterministicDraftActive && firstChecklistText &&
-        (!checklistGoal || checklistGoal.status === "active")) {
-      const base = checklistGoal || createChecklistGoalState(prompt, userTurn.id);
+    if (!goalGate && !deterministicDraftActive && firstChecklistText && !isGoalCancellationPrompt(prompt) &&
+        (!checklistGoal || checklistGoal.status === "active" ||
+          (checklistGoal.status === "inactive" && newUserTurn))) {
+      const base = checklistGoal?.status === "active" ? checklistGoal : createChecklistGoalState(prompt, userTurn.id);
       setChecklistGoal(freezeChecklistGoalContract(base, firstChecklistText), "freeze-first-checklist-before-s6");
     }
 

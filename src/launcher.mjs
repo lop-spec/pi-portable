@@ -15,7 +15,12 @@ import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
 const BLOB = path.join(HOME, "assets.enc");
-const PORTS = { bridge: Number(process.env.PI_BRIDGE_PORT || 8794), web: Number(process.env.PI_WEB_PORT || 30141) };
+const PORTS = {
+  bridge: Number(process.env.PI_BRIDGE_PORT || 8794),
+  web: Number(process.env.PI_WEB_PORT || 30141), // user-facing supervisor proxy
+  webInternal: Number(process.env.PI_WEB_INTERNAL_PORT || (Number(process.env.PI_WEB_PORT || 30141) - 1)),
+  supervisor: Number(process.env.PI_RUN_SUPERVISOR_PORT || (Number(process.env.PI_WEB_PORT || 30141) + 1)),
+};
 const NODE = process.env.PI_NODE_EXE || path.join(HOME, "runtime", "node.exe");
 const PROCESS_HOST = process.platform === "win32" && process.env.PI_PROCESS_HOST && fs.existsSync(process.env.PI_PROCESS_HOST)
   ? process.env.PI_PROCESS_HOST : "";
@@ -263,34 +268,116 @@ async function main() {
   // 5 起 pi-web
   const webEnv = {
     ...portableEnv, PI_PORTABLE_DATA: DATA, PI_PORTABLE_HOME: HOME,
+    PI_CODING_AGENT_DIR: path.join(DATA, ".pi", "agent"),
     HOME: DATA, USERPROFILE: DATA, // pi 配置落在数据根(解密出的 pi/ 目录)
-    PORT: String(PORTS.web), NO_PROXY: "localhost,127.0.0.1",
+    PORT: String(PORTS.webInternal), NO_PROXY: "localhost,127.0.0.1",
   };
   const webLog = path.join(DATA, "pi-web.log");
   const { entry: webEntry, version: webVersion } = resolvePiWebEntry();
-  const webLogFd = fs.openSync(webLog, "w");
-  let web;
-  try {
-    web = spawnPortableNode(nodeExe, [webEntry, "--no-open"], {
-      env: webEnv, stdio: ["ignore", webLogFd, webLogFd], windowsHide: true,
-    });
-  } finally { fs.closeSync(webLogFd); }
-  children.push(web);
+  const webRestarts = [];
   let webExit = "";
-  web.once("error", (e) => { webExit = `启动错误:${e.message}`; log(`pi-web ${webExit}`); });
-  web.once("exit", (code, signal) => {
-    webExit = `进程退出 code=${code ?? "-"} signal=${signal ?? "-"}`;
-    if (!shuttingDown) log(`pi-web ${webExit}`);
-  });
-  log(`pi-web 启动 @agegr/pi-web@${webVersion} (${path.relative(HOME, webEntry)})`);
-  for (let i = 0; i < 40 && !webExit && !(await httpOk(`http://127.0.0.1:${PORTS.web}/`)); i++) await new Promise((r) => setTimeout(r, 500));
-  if (!(await httpOk(`http://127.0.0.1:${PORTS.web}/`))) {
+  let web = null;
+  function startWeb() {
+    const webLogFd = fs.openSync(webLog, "a");
+    try {
+      web = spawnPortableNode(nodeExe, [webEntry, "--no-open"], {
+        env: webEnv, stdio: ["ignore", webLogFd, webLogFd], windowsHide: true,
+      });
+    } finally { fs.closeSync(webLogFd); }
+    children.push(web);
+    web.once("error", (error) => { webExit = `启动错误:${error.message}`; log(`pi-web ${webExit}`); });
+    web.once("exit", (code, signal) => {
+      const exited = web;
+      const at = children.indexOf(exited);
+      if (at >= 0) children.splice(at, 1);
+      webExit = `进程退出 code=${code ?? "-"} signal=${signal ?? "-"}`;
+      if (shuttingDown) return;
+      log(`pi-web ${webExit}`);
+      const now = Date.now();
+      webRestarts.push(now);
+      while (webRestarts.length && now - webRestarts[0] > 60000) webRestarts.shift();
+      if (webRestarts.length > 5) {
+        log("pi-web 60s 内退出超 5 次,交回原生 launcher 重启整套运行面");
+        shutdown(4);
+        return;
+      }
+      setTimeout(() => {
+        if (shuttingDown) return;
+        webExit = "";
+        log("pi-web 自动重启…");
+        startWeb();
+      }, 1000);
+    });
+    log(`pi-web 启动 @agegr/pi-web@${webVersion} (${path.relative(HOME, webEntry)})`);
+    return web;
+  }
+  startWeb();
+  for (let i = 0; i < 40 && !webExit && !(await httpOk(`http://127.0.0.1:${PORTS.webInternal}/`)); i++) await new Promise((r) => setTimeout(r, 500));
+  if (!(await httpOk(`http://127.0.0.1:${PORTS.webInternal}/`))) {
     log(`pi-web 未就绪(${webExit || "20 秒超时"}),详见 ${webLog}`);
     shutdown(3);
   }
-  log(`pi-web 就绪 :${PORTS.web}`);
+  log(`pi-web 内部运行面就绪 :${PORTS.webInternal}`);
 
-  // 6 托盘 + 窗口:托盘在则关窗驻留(单击托盘再进入,菜单可重启/彻底退出);托盘不可用回退关窗即退
+  // 6 持久化运行监督器:prompt_error/runner 消失时续接，web 重启后从 state.json 恢复。
+  // supervisor 只投递恢复 prompt，绝不直接重放工具调用；自身崩溃由 launcher 熔断守护。
+  const supervisorScript = path.join(HOME, "src", "run-supervisor.mjs");
+  const supervisorErrLog = path.join(DATA, "run-supervisor-stderr.log");
+  const supervisorRestarts = [];
+  const supervisorEnv = {
+    ...portableEnv,
+    PI_PORTABLE_DATA: DATA,
+    PI_PORTABLE_HOME: HOME,
+    PI_CODING_AGENT_DIR: path.join(DATA, ".pi", "agent"),
+    PI_WEB_PORT: String(PORTS.webInternal),
+    PI_RUN_SUPERVISOR_PUBLIC_PORT: String(PORTS.web),
+    PI_RUN_SUPERVISOR_PORT: String(PORTS.supervisor),
+    NO_PROXY: "localhost,127.0.0.1",
+  };
+  function startRunSupervisor() {
+    if (!fs.existsSync(supervisorScript)) {
+      log(`运行监督器缺失:${supervisorScript}`);
+      return null;
+    }
+    const errFd = fs.openSync(supervisorErrLog, "a");
+    let supervisor;
+    try {
+      supervisor = spawnPortableNode(nodeExe, [supervisorScript], {
+        env: supervisorEnv, stdio: ["ignore", "ignore", errFd], windowsHide: true,
+      });
+    } finally { fs.closeSync(errFd); }
+    children.push(supervisor);
+    supervisor.once("exit", (code, signal) => {
+      const at = children.indexOf(supervisor);
+      if (at >= 0) children.splice(at, 1);
+      if (shuttingDown) return;
+      log(`运行监督器退出 code=${code ?? "-"} signal=${signal ?? "-"}(详见 ${supervisorErrLog})`);
+      const now = Date.now();
+      supervisorRestarts.push(now);
+      while (supervisorRestarts.length && now - supervisorRestarts[0] > 60000) supervisorRestarts.shift();
+      if (supervisorRestarts.length > 5) {
+        log("运行监督器 60s 内退出超 5 次,交回原生 launcher 重启整套运行面");
+        shutdown(5);
+        return;
+      }
+      setTimeout(() => { if (!shuttingDown) startRunSupervisor(); }, 1000);
+    });
+    return supervisor;
+  }
+  if (!(await httpOk(`http://127.0.0.1:${PORTS.supervisor}/health`))) startRunSupervisor();
+  for (let i = 0; i < 20 && !(await httpOk(`http://127.0.0.1:${PORTS.supervisor}/health`)); i++) await new Promise((r) => setTimeout(r, 250));
+  if (!(await httpOk(`http://127.0.0.1:${PORTS.supervisor}/health`))) {
+    log(`运行监督器未就绪,详见 ${supervisorErrLog}`);
+    shutdown(5);
+  }
+  for (let i = 0; i < 20 && !(await httpOk(`http://127.0.0.1:${PORTS.web}/`)); i++) await new Promise((r) => setTimeout(r, 250));
+  if (!(await httpOk(`http://127.0.0.1:${PORTS.web}/`))) {
+    log(`持久化 Web 代理未就绪 :${PORTS.web}`);
+    shutdown(5);
+  }
+  log(`运行监督器就绪 health=:${PORTS.supervisor} public=:${PORTS.web} upstream=:${PORTS.webInternal}`);
+
+  // 7 托盘 + 窗口:托盘在则关窗驻留(单击托盘再进入,菜单可重启/彻底退出);托盘不可用回退关窗即退
   if (process.env.PI_HEADLESS === "1") { log("无头模式:不开窗口,等待终止信号"); setInterval(() => {}, 1 << 30); return; }
   const hasTray = startTray();
   if (!hasTray) log("无托盘:关闭窗口即彻底退出");
@@ -400,7 +487,7 @@ function restartSelf() {
   log("重启:杀本实例进程树,拉起新实例…");
   for (const c of children) if (c?.pid) killTree(c.pid);
   (async () => {
-    for (let i = 0; i < 20 && ((await portAlive(PORTS.web)) || (await portAlive(PORTS.bridge))); i++)
+    for (let i = 0; i < 20 && ((await portAlive(PORTS.web)) || (await portAlive(PORTS.webInternal)) || (await portAlive(PORTS.supervisor)) || (await portAlive(PORTS.bridge))); i++)
       await new Promise((r) => setTimeout(r, 500));
     if (process.env.PI_LAUNCH_SUPERVISOR === "1") {
       log(`端口已释放:交由原生宿主重启(exit ${NATIVE_RESTART_EXIT_CODE})`);

@@ -12,6 +12,15 @@ assert.doesNotMatch(source, /node_modules["'], ["']\.bin|pi-web\.cmd/, "不得�
 assert.match(source, /PATH: \[path\.dirname\(nodeExe\), inheritedPath\]/, "子进程 PATH 应包含便携 Node 目录");
 assert.match(source, /withSilentWindowsProcessEnv\(withPortableNode\(process\.env, nodeExe\)\)/, "pi-web 环境必须启用 MSYS ConPTY，阻止 Bash 原生子进程弹控制台");
 assert.match(source, /path\.join\(DATA, "pi-web\.log"\)/, "pi-web stdout/stderr 必须持久化");
+assert.match(source, /function startWeb\(\)/, "pi-web 必须由 launcher 守护并可原位重启");
+assert.match(source, /pi-web 自动重启/u, "pi-web 异常退出必须自动重启");
+assert.match(source, /fs\.openSync\(webLog, "a"\)/, "pi-web 重启不得覆盖既有退出日志");
+assert.match(source, /path\.join\(HOME, "src", "run-supervisor\.mjs"\)/, "launcher 必须启动持久化运行监督器");
+assert.match(source, /PI_RUN_SUPERVISOR_PORT/, "监督器健康端口必须显式传递");
+assert.match(source, /PI_RUN_SUPERVISOR_PUBLIC_PORT/, "用户 prompt 必须先经过持久化监督器代理");
+assert.match(source, /webInternal/u, "Pi Web 上游必须与用户入口端口分离，消除首轮落盘竞态");
+assert.match(source, /PI_CODING_AGENT_DIR/u, "便携运行必须显式固定 agent 数据目录");
+assert.match(source, /运行监督器 60s 内退出超 5 次/u, "监督器崩溃循环必须熔断");
 assert.match(source, /function portableizeModelAuth\(\)/, "便携启动时必须迁移模型鉴权命令");
 assert.match(source, /process\.env\.PI_PORTABLE_DATA,'auth\.json'/, "模型鉴权必须读取便携 data/auth.json");
 assert.match(source, /function configurePortableBash\(\)/, "启动器必须配置非标准安装位置的 Git Bash");

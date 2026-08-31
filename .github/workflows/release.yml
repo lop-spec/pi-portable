@@ -33,6 +33,7 @@ jobs:
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node tests/lop-chain-contract.mjs
+          node --test tests/run-supervisor.mjs
           node tests/rules-snapshot-contract.mjs
           node tests/deploy-rules-remote-contract.mjs
           node --test tests/pi-history-contract.mjs
@@ -114,6 +115,7 @@ jobs:
           Copy-Item README.md stage/README.md
           if (-not (Test-Path stage/pi-portable-launcher.exe)) { throw "native launcher missing" }
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
+          if (-not (Test-Path stage/src/run-supervisor.mjs)) { throw "run supervisor missing" }
           if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
           if (-not (Test-Path stage/tools/deploy-rules-remote.mjs)) { throw "remote rules deployer missing" }
 

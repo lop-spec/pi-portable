@@ -30,6 +30,7 @@ const {
   goalGateVerdict,
   historyUsageDecision,
   isContextDependentHistoryPrompt,
+  isGoalCancellationPrompt,
   latestChecklistGoalState,
   parseAcceptanceChecklist,
   parseGoalGateDirective,
@@ -57,6 +58,10 @@ assert.equal(isContextDependentHistoryPrompt("具体怎么改，说明白"), tru
 assert.equal(isContextDependentHistoryPrompt("不做1，其余的都做，也改到异机"), true);
 assert.equal(isContextDependentHistoryPrompt("继续修复 8794 的 history 快路"), false);
 assert.equal(isContextDependentHistoryPrompt("确认 30141 端口是否监听"), false);
+assert.equal(isGoalCancellationPrompt("取消当前目标"), true);
+assert.equal(isGoalCancellationPrompt("/lop-goal-cancel"), true);
+assert.equal(isGoalCancellationPrompt("停止自动续跑"), true);
+assert.equal(isGoalCancellationPrompt("先停止服务再继续排查"), false);
 
 const expanded = expandPrompt("检查 SSH 互通历史规则");
 assert.ok(expanded.charRatio >= 3, JSON.stringify(expanded));
@@ -112,6 +117,7 @@ const oldGuard = { role: "custom", customType: "lop-completion-guard", content: 
 const oldGate = { role: "custom", customType: "lop-goal-gate", content: "old gate" };
 const oldHistoryGuard = { role: "custom", customType: "lop-history-disposition-guard", content: "old history guard" };
 const oldAdversary = { role: "custom", customType: "lop-adversary-redelivery", content: "old adversary" };
+const oldRunControl = { role: "custom", customType: "lop-run-control", content: "old cancel" };
 const currentChain = { role: "custom", customType: "lop-chain", content: "current" };
 const unrelated = { role: "custom", customType: "other-extension", content: "keep" };
 const oldSummary = {
@@ -125,6 +131,7 @@ const scoped = scopeLopChainContext([
   oldGate,
   oldHistoryGuard,
   oldAdversary,
+  oldRunControl,
   unrelated,
   oldSummary,
   { role: "assistant", content: [] },
@@ -137,6 +144,7 @@ assert.equal(scoped.includes(oldGuard), false);
 assert.equal(scoped.includes(oldGate), false);
 assert.equal(scoped.includes(oldHistoryGuard), false);
 assert.equal(scoped.includes(oldAdversary), false);
+assert.equal(scoped.includes(oldRunControl), false);
 assert.equal(scoped.includes(unrelated), true);
 assert.equal(scoped.includes(currentChain), true);
 const scopedSummary = scoped.find((message) => message.role === "compactionSummary");
@@ -206,7 +214,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /goal-redirector-v9/u);
+assert.match(commands.get("lop-chain-reload").description, /goal-redirector-durable-v10/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -609,6 +617,7 @@ assert.equal(latestChecklistGoalState([
 
 // 集成:未闭合/第三状态/漏清单在超过旧上限后仍续跑；完成才放行；目标门优先。
 const clHandlers = new Map();
+const clCommands = new Map();
 const clSent = [];
 const clEntries = [];
 const clPi = {
@@ -618,6 +627,7 @@ const clPi = {
     clHandlers.set(name, list);
   },
   appendEntry(customType, data) { clEntries.push({ type: "custom", customType, data }); },
+  registerCommand(name, command) { clCommands.set(name, command); },
   sendMessage(message, options) { clSent.push({ message, options }); },
   sendUserMessage() { throw new Error("unexpected user-message fallback"); },
 };
@@ -639,6 +649,11 @@ assert.match(clMessages()[0].message.content, /目标仍为 ACTIVE/u);
 assert.match(clMessages()[0].message.content, /禁止 \[~\]/u);
 assert.deepEqual(clMessages()[0].options, { deliverAs: "followUp", triggerTurn: true });
 const activeSnapshot = structuredClone(clEntries.at(-1).data);
+const activeEntryCount = clEntries.length;
+await clHandlers.get("before_agent_start")[0]({ prompt: "授权已经补充好了" }, clCtx);
+await clHandlers.get("before_agent_start")[0]({ prompt: "[lop-run-supervisor recovery] run=r attempt=1 leaf=t1\n继续" }, clCtx);
+assert.equal(clEntries.length, activeEntryCount, "ordinary and supervisor follow-ups must not mutate/deactivate an active goal");
+assert.equal(clEntries.at(-1).data.status, "active");
 for (const response of [forbiddenTildeText, openChecklistText, openChecklistText, "普通回复"]) {
   await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content }, clCtx);
   await clEnd(response);
@@ -758,8 +773,13 @@ await clHandlers.get("before_agent_start")[0]({ prompt: "跑到过为止\n【目
 await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机让位
 assert.equal(clMessages().length, 5);
 
+assert.ok(clCommands.has("lop-goal-cancel"));
+await clCommands.get("lop-goal-cancel").handler("", clCtx);
+assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goal-state").at(-1).data.status, "inactive");
+assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
+
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "goal-redirector-v9");
+assert.equal(runtimeVersionFromSource(source), "goal-redirector-durable-v10");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
@@ -768,6 +788,9 @@ assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /CHECKLIST_GOAL CONTINUE/u);
 assert.match(source, /RUNTIME_DRIFT loaded=/u);
 assert.match(source, /sendUserMessage\("\/lop-chain-reload", \{ deliverAs: "followUp" \}\)/u);
+assert.match(source, /普通问题\/授权信息\/短回复不改变 active 状态/u);
+assert.match(source, /RUN_SUPERVISOR recovery keeps existing goal state/u);
+assert.doesNotMatch(source, /user-redirects-away/u);
 assert.ok(source.indexOf("freeze-first-checklist-before-s6") < source.indexOf("consumeBackgroundReview"));
 assert.doesNotMatch(source, /CHECKLIST_GATE_MAX/u);
 assert.doesNotMatch(source, /deferred\s*[:=]/u);

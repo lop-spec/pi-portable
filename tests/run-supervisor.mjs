@@ -1,0 +1,304 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  RUN_SUPERVISOR_VERSION,
+  RECOVERY_PREFIX,
+  DurableRunStore,
+  RunSupervisor,
+  SessionFileIndex,
+  buildRecoveryPrompt,
+  buildTransientRecoveryPrompt,
+  decideRunAction,
+  failureFingerprint,
+  noteFailure,
+  recoveryDelayMs,
+} from "../src/run-supervisor.mjs";
+
+const header = (id = "01a05769-3ff4-779a-b9c6-f5364d206206") => ({
+  type: "session", version: 3, id, timestamp: "2026-08-31T10:00:00.000Z", cwd: "C:/work",
+});
+const entry = (id, parentId, value) => ({ id, parentId, timestamp: value.timestamp || "2026-08-31T10:00:01.000Z", ...value });
+const message = (id, parentId, role, extra = {}) => entry(id, parentId, {
+  type: "message",
+  message: { role, content: extra.content || [{ type: "text", text: extra.text || "" }], ...extra.message },
+  timestamp: extra.timestamp,
+});
+const custom = (id, parentId, customType, data, timestamp) => entry(id, parentId, {
+  type: "custom", customType, data, timestamp,
+});
+const writeRows = (file, rows) => fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+
+function fixture(rows) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-supervisor-test-"));
+  const file = path.join(root, "session.jsonl");
+  writeRows(file, rows);
+  return { root, file };
+}
+
+test("session index follows the active branch and exposes active goal plus pending tool result", () => {
+  const rows = [
+    header(),
+    message("u1", null, "user", { text: "实施并验证", timestamp: "2026-08-31T10:00:01.000Z" }),
+    custom("g1", "u1", "lop-checklist-goal-state", {
+      version: 1, status: "active", objective: "实施并验证", taskUserEntryId: "u1", items: [{ text: "完成", key: "完成" }],
+    }, "2026-08-31T10:00:02.000Z"),
+    message("a1", "g1", "assistant", {
+      message: { stopReason: "toolUse" },
+      content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "curl -X DELETE https://example.invalid/item/1" } }],
+      timestamp: "2026-08-31T10:00:03.000Z",
+    }),
+    entry("t1", "a1", { type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text: "ok" }] }, timestamp: "2026-08-31T10:00:04.000Z" }),
+  ];
+  const { file } = fixture(rows);
+  const index = new SessionFileIndex(file);
+  const snapshot = index.refresh();
+  assert.equal(snapshot.sessionId, header().id);
+  assert.equal(snapshot.leafId, "t1");
+  assert.equal(snapshot.lastMessage.role, "toolResult");
+  assert.equal(snapshot.goalState.status, "active");
+  assert.equal(snapshot.rootUserEntryId, "u1");
+  assert.deepEqual(snapshot.unresolvedToolCalls, []);
+  assert.equal(index.parseErrors, 0);
+});
+
+test("incremental index resolves a previously incomplete tool without reparsing old rows", () => {
+  const rows = [
+    header(),
+    message("u1", null, "user", { text: "执行" }),
+    message("a1", "u1", "assistant", {
+      message: { stopReason: "toolUse" },
+      content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "C:/tmp/a", content: "x" } }],
+    }),
+  ];
+  const { file } = fixture(rows);
+  const index = new SessionFileIndex(file);
+  let snapshot = index.refresh();
+  assert.equal(snapshot.unresolvedToolCalls.length, 1);
+  const beforeCount = index.entryCount;
+  fs.appendFileSync(file, JSON.stringify(entry("t1", "a1", {
+    type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "write", content: [{ type: "text", text: "ok" }] },
+  })) + "\n");
+  snapshot = index.refresh();
+  assert.equal(index.entryCount, beforeCount + 1);
+  assert.deepEqual(snapshot.unresolvedToolCalls, []);
+});
+
+test("durable cancellation wins even when before_agent_start writes it before the user entry", () => {
+  const rows = [
+    header(),
+    message("u1", null, "user", { text: "实施并验证", timestamp: "2026-08-31T10:00:01.000Z" }),
+    custom("g1", "u1", "lop-checklist-goal-state", { version: 1, status: "active", taskUserEntryId: "u1", items: [] }, "2026-08-31T10:00:02.000Z"),
+    custom("g2", "g1", "lop-checklist-goal-state", { version: 1, status: "inactive", taskUserEntryId: "u1", items: [] }, "2026-08-31T10:00:02.500Z"),
+    custom("c1", "g2", "lop-run-control", { version: 1, action: "cancel", reason: "text" }, "2026-08-31T10:00:03.000Z"),
+    message("u2", "c1", "user", { text: "取消当前目标", timestamp: "2026-08-31T10:00:04.000Z" }),
+  ];
+  const { file } = fixture(rows);
+  const index = new SessionFileIndex(file);
+  let snapshot = index.refresh();
+  assert.equal(snapshot.cancelled, true);
+  fs.appendFileSync(file, JSON.stringify(message("u3", "u2", "user", { text: "开始一个新任务", timestamp: "2026-08-31T10:00:05.000Z" })) + "\n");
+  snapshot = index.refresh();
+  assert.equal(snapshot.cancelled, false, "a later real user prompt starts a new run rather than inheriting cancellation");
+});
+
+test("decision recovers abnormal leaves and active goals, but completes ordinary terminal answers", () => {
+  const base = { sessionId: "s", rootUserEntryId: "u1", leafId: "t1", cancelled: false, blocked: false };
+  assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "toolResult" }, goalState: null }, running: false }).action, "recover");
+  assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "assistant", stopReason: "error", errorMessage: "terminated" }, goalState: null }, running: false }).action, "recover");
+  assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "assistant", stopReason: "stop" }, goalState: { status: "active" } }, running: false }).action, "recover");
+  assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "assistant", stopReason: "stop" }, goalState: null }, running: false }).action, "complete");
+  assert.equal(decideRunAction({ snapshot: { ...base, cancelled: true, lastMessage: { role: "toolResult" }, goalState: { status: "active" } }, running: false }).action, "cancel");
+  assert.equal(decideRunAction({ snapshot: { ...base, blocked: true, lastMessage: { role: "toolResult" }, goalState: { status: "blocked" } }, running: false }).action, "block");
+  assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "toolResult" }, goalState: null }, running: true }).action, "wait");
+});
+
+test("recovery prompt continues from the leaf and never embeds or replays tool arguments", () => {
+  const dangerous = "curl -X DELETE https://example.invalid/items/42";
+  const prompt = buildRecoveryPrompt({
+    sessionId: "s", leafId: "a1", lastMessage: { role: "assistant", stopReason: "toolUse" },
+    unresolvedToolCalls: [{ id: "call-1", name: "bash", argumentsPreview: dangerous }],
+  }, { runId: "r1", recoveryAttempt: 1 });
+  assert.match(prompt, new RegExp(`^${RECOVERY_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(prompt, /先只读核对副作用是否已经发生/);
+  assert.match(prompt, /bash/);
+  assert.doesNotMatch(prompt, /example\.invalid|DELETE|items\/42/);
+});
+
+test("same-leaf dispatch is single-flight and the third identical failure becomes blocked", () => {
+  assert.deepEqual([1, 2, 3].map(recoveryDelayMs), [2000, 5000, 15000]);
+  const fp = failureFingerprint({ lastMessage: { role: "assistant", stopReason: "error", errorMessage: "terminated" } });
+  let record = { status: "running", sameFailureFingerprint: "", sameFailureCount: 0, totalRecoveries: 0 };
+  record = noteFailure(record, fp);
+  assert.equal(record.status, "recovering");
+  record = noteFailure(record, fp);
+  assert.equal(record.status, "recovering");
+  record = noteFailure(record, fp);
+  assert.equal(record.status, "blocked");
+  assert.equal(record.sameFailureCount, 3);
+  assert.equal(record.blockReason, "same-failure-limit");
+});
+
+test("durable store writes atomically and preserves cancellation and blocked records", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-store-test-"));
+  const file = path.join(root, "run-supervisor", "state.json");
+  const store = new DurableRunStore(file, { now: () => Date.parse("2026-08-31T10:00:00.000Z") });
+  const state = store.load();
+  state.sessions.s1 = { status: "cancelled", runId: "r1" };
+  state.sessions.s2 = { status: "blocked", runId: "r2", sameFailureCount: 3 };
+  store.save(state);
+  const readback = new DurableRunStore(file).load();
+  assert.equal(readback.version, 1);
+  assert.equal(readback.sessions.s1.status, "cancelled");
+  assert.equal(readback.sessions.s2.sameFailureCount, 3);
+  assert.equal(fs.readdirSync(path.dirname(file)).filter((name) => name.includes(".tmp-")).length, 0);
+});
+
+test("public proxy journals prompt intent before forwarding and an explicit abort wins", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-intent-test-"));
+  const supervisor = new RunSupervisor({ dataRoot: root, sessionRoot: path.join(root, "sessions"), webPort: 39981, now: () => Date.parse("2026-08-31T10:00:00.000Z") });
+  const record = supervisor.captureKnownPromptIntent("s1", {
+    cwd: "C:/work", message: "原始请求", images: [{ type: "image", data: "base64-payload", mimeType: "image/png" }],
+  });
+  assert.equal(record.capturedBeforeForward, true);
+  assert.equal(record.rootPrompt, "原始请求");
+  assert.equal(record.imageCount, 1);
+  assert.equal(JSON.parse(fs.readFileSync(record.intentFile, "utf8")).images[0].data, "base64-payload");
+  let persisted = JSON.parse(fs.readFileSync(path.join(root, "run-supervisor", "state.json"), "utf8"));
+  assert.equal(persisted.sessions.s1.status, "forwarding");
+  supervisor.cancelKnownRun("s1", "public-api-abort");
+  persisted = JSON.parse(fs.readFileSync(path.join(root, "run-supervisor", "state.json"), "utf8"));
+  assert.equal(persisted.sessions.s1.status, "cancelled");
+  assert.equal(persisted.sessions.s1.explicitUserAbort, true);
+  const transientPrompt = buildTransientRecoveryPrompt({ runId: "r1", recoveryAttempt: 1, rootPrompt: "原始请求" });
+  assert.match(transientPrompt, /^\[lop-run-supervisor recovery\]/u);
+  assert.match(transientPrompt, /原始请求/u);
+  assert.match(transientPrompt, /尚未产生或执行任何工具调用/u);
+});
+
+test("new-session intent binds to the real id only after the upstream accepts it", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-new-intent-test-"));
+  const supervisor = new RunSupervisor({ dataRoot: root, sessionRoot: path.join(root, "sessions"), webPort: 39971, now: () => Date.parse("2026-08-31T10:00:00.000Z") });
+  const intentId = supervisor.capturePendingNewIntent({ cwd: "C:/work", message: "首轮请求" });
+  let persisted = JSON.parse(fs.readFileSync(path.join(root, "run-supervisor", "state.json"), "utf8"));
+  assert.equal(persisted.pendingIntents[intentId].rootPrompt, "首轮请求");
+  assert.equal(persisted.sessions.s2, undefined);
+  supervisor.finalizePendingNewIntent(intentId, "s2", true);
+  persisted = JSON.parse(fs.readFileSync(path.join(root, "run-supervisor", "state.json"), "utf8"));
+  assert.equal(persisted.pendingIntents[intentId], undefined);
+  assert.equal(persisted.sessions.s2.rootPrompt, "首轮请求");
+  assert.equal(persisted.sessions.s2.status, "running");
+});
+
+test("transparent public proxy persists prompt and abort intent before upstream receives them", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-proxy-test-"));
+  const stateFile = path.join(root, "run-supervisor", "state.json");
+  const observations = [];
+  const upstream = http.createServer((request, response) => {
+    if (request.method === "GET" && request.url === "/api/agent/running") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ runningSessionIds: [] }));
+      return;
+    }
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      observations.push({ url: request.url, type: body.type, state });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.url === "/api/agent/new" ? { sessionId: "s2", accepted: true } : { data: null }));
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = upstream.address().port;
+  const reserve = async () => {
+    const server = http.createServer();
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+    await new Promise((resolve) => server.close(resolve));
+    return port;
+  };
+  const publicPort = await reserve();
+  let healthPort = await reserve();
+  while (healthPort === publicPort) healthPort = await reserve();
+  const supervisor = new RunSupervisor({ dataRoot: root, sessionRoot: path.join(root, "sessions"), webPort: upstreamPort, publicWebPort: publicPort, healthPort, pollMs: 10000 });
+  await supervisor.start();
+  await fetch(`http://127.0.0.1:${publicPort}/api/agent/s1`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "prompt", cwd: "C:/work", message: "先持久化" }),
+  });
+  assert.equal(observations[0].state.sessions.s1.status, "forwarding");
+  assert.equal(observations[0].state.sessions.s1.rootPrompt, "先持久化");
+  await fetch(`http://127.0.0.1:${publicPort}/api/agent/s1`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "abort" }),
+  });
+  assert.equal(observations[1].state.sessions.s1.status, "cancelled");
+  await fetch(`http://127.0.0.1:${publicPort}/api/agent/new`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "prompt", cwd: "C:/work", message: "首轮也先持久化" }),
+  });
+  assert.equal(Object.keys(observations[2].state.pendingIntents).length, 1);
+  const finalState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  assert.equal(finalState.sessions.s2.rootPrompt, "首轮也先持久化");
+  await supervisor.close();
+  await new Promise((resolve) => upstream.close(resolve));
+});
+
+test("runtime dispatches one persisted recovery per leaf within the recovery target", async () => {
+  const id = "01a05769-3ff4-779a-b9c6-f5364d206206";
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-runtime-test-"));
+  const sessions = path.join(root, ".pi", "agent", "sessions", "--C--work--");
+  fs.mkdirSync(sessions, { recursive: true });
+  const file = path.join(sessions, `2026-08-31T10-00-00-000Z_${id}.jsonl`);
+  writeRows(file, [
+    header(id),
+    message("u1", null, "user", { text: "实施并验证", timestamp: "2026-08-31T10:00:01.000Z" }),
+  ]);
+  let now = Date.parse("2026-08-31T10:00:02.000Z");
+  let running = true;
+  const posts = [];
+  const fetchImpl = async (url, options = {}) => {
+    if (String(url).endsWith("/api/agent/running")) {
+      return new Response(JSON.stringify({ runningSessionIds: running ? [id] : [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (options.method === "POST" && String(url).includes(`/api/agent/${id}`)) {
+      posts.push({ at: now, body: JSON.parse(options.body) });
+      return new Response(JSON.stringify({ data: null }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const supervisor = new RunSupervisor({
+    dataRoot: root, sessionRoot: path.join(root, ".pi", "agent", "sessions"),
+    webPort: 39991, healthPort: 39992, graceMs: 1500, now: () => now, fetchImpl,
+  });
+  supervisor.ensureEventStream = () => {};
+  supervisor.discover(true);
+  await supervisor.tick();
+  assert.equal(supervisor.state.sessions[id].status, "running");
+  running = false;
+  await supervisor.tick();
+  now += 1000;
+  await supervisor.tick();
+  assert.equal(posts.length, 0);
+  now += 1500;
+  await supervisor.tick();
+  assert.equal(posts.length, 1);
+  assert.ok(posts[0].at - Date.parse("2026-08-31T10:00:02.000Z") <= 5000);
+  assert.equal(posts[0].body.type, "prompt");
+  assert.equal(posts[0].body.streamingBehavior, "followUp");
+  assert.match(posts[0].body.message, /^\[lop-run-supervisor recovery\]/u);
+  const persisted = JSON.parse(fs.readFileSync(path.join(root, "run-supervisor", "state.json"), "utf8"));
+  assert.equal(persisted.sessions[id].lastRecoveryLeafId, "u1");
+  await supervisor.tick();
+  assert.equal(posts.length, 1, "same leaf must not dispatch twice");
+});
+
+test("runtime version and recovery markers are explicit", () => {
+  assert.equal(RUN_SUPERVISOR_VERSION, "run-supervisor-v1");
+  assert.equal(RECOVERY_PREFIX, "[lop-run-supervisor recovery]");
+});
