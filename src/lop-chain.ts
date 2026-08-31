@@ -932,15 +932,26 @@ export default function (pi: ExtensionAPI) {
   const memoryReady = process.env.PI_CHAIN_SKIP_STARTUP_SCAN === "1" || scanFresh
     ? Promise.resolve({ physicalSources: 0, changedSources: 0, canonicalized: 0 })
     : (async () => {
-    const started = performance.now();
+    // 修正1(2026-08-31):scanHistory 内含大段同步 sqlite/解析,进程内跑会饿死事件循环
+    // (实测 2s 等待上限的 race 定时器打不进,首轮 s3 仍被压满整个扫描时长)。
+    // 改 detached+windowsHide 子进程,首轮零阻塞;并发由 scan.lock 互斥,新鲜度由
+    // status.json 跳扫收敛;扫描结果不再回填首轮(s3ScanSources 记 0)。
     try {
-      const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
-      const result = await mem.scanHistory({ render: false });
-      log(`S3 STARTUP_SCAN ${+(performance.now() - started).toFixed(1)}ms sources=${result?.physicalSources || 0} changed=${result?.changedSources || 0} canonicalized=${result?.canonicalized || 0}`);
-      return result;
+      const { spawn } = await import("node:child_process");
+      const runner = path.join(CHAIN_DIR, "scan-runner.mjs");
+      if (!fs.existsSync(runner)) {
+        log(`S3 STARTUP_SCAN_FAIL runner missing: ${runner}`);
+        return { physicalSources: 0, changedSources: 0, canonicalized: 0 };
+      }
+      const child = spawn(process.execPath, [runner], {
+        detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env },
+      });
+      child.unref();
+      log(`S3 STARTUP_SCAN spawned pid=${child.pid}`);
+      return { physicalSources: 0, changedSources: 0, canonicalized: 0, spawned: true };
     } catch (error) {
       log(`S3 STARTUP_SCAN_FAIL ${String(error).slice(0, 200)}`);
-      throw error;
+      return { physicalSources: 0, changedSources: 0, canonicalized: 0 };
     }
   })();
   memoryReady.catch(() => {});
