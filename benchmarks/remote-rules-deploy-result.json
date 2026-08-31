@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "verifiedAt": "2026-08-31T10:35:00+08:00",
+  "canonical": {
+    "source": "../vscodium/shared/registry/data/rules-corpus.jsonl",
+    "ruleCount": 84,
+    "sha256": "2d3974cb495b21393dcabf9d035e0fab533609bfccb4584196e0fd325a47f36b"
+  },
+  "rounds": [
+    {
+      "round": 0,
+      "result": "red",
+      "evidence": "deploy-rules-remote module absent"
+    },
+    {
+      "round": 1,
+      "result": "failed integration",
+      "evidence": "fresh remote data root lacked data/backups parent",
+      "correction": "create backup parent before exclusive timestamp directory"
+    },
+    {
+      "round": 2,
+      "result": "pass",
+      "evidence": {
+        "productionIdempotentDeploy": true,
+        "productionReadOnlyCheck": true,
+        "isolatedChangedDeploy": true,
+        "physicalBackupFiles": 4,
+        "oldRuleCount": 1,
+        "newRuleCount": 84,
+        "temporaryIncomingFiles": 0
+      }
+    },
+    {
+      "round": 3,
+      "result": "pass",
+      "evidence": {
+        "foreignLockPreserved": true,
+        "deploymentBlockedClosed": true,
+        "incomingCleanup": true,
+        "checkRejectsStaleLock": true
+      }
+    }
+  ],
+  "startupVerification": {
+    "mode": "isolated native supervisor, no window",
+    "webPort": 31142,
+    "bridgePort": 18894,
+    "webStatus": 200,
+    "bridgeHealthy": true,
+    "ruleCount": 84,
+    "managedEqualsGenerated": true,
+    "portsClosedAfterTest": true,
+    "temporaryDataRecycled": true
+  },
+  "gates": {
+    "canonicalPathGuard": true,
+    "localValidationBeforeNetwork": true,
+    "strictHostKeyChecking": true,
+    "atomicRemoteGeneration": true,
+    "physicalBackupOnChange": true,
+    "idempotentCheckMode": true,
+    "temporaryFilesAfterRun": 0,
+    "remoteManagedEqualsGenerated": true,
+    "focusedContractTestsPassing": true
+  }
+}

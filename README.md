@@ -13,6 +13,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 - `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；以 `DETACHED_PROCESS` 和显式标准流拉起主 Node，并作为 bridge/web 子 Node 的无控制台进程宿主；同时监督重启并用 Job Object 兜底清理进程树。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。
 - `src/rules-snapshot.mjs` — 规则单向生成器；bootstrap/受管源经校验后原子生成 `data/rules.jsonl`。
+- `tools/deploy-rules-remote.mjs` — 主机侧 canonical-only SSH 部署器；严格主机密钥校验、变更前物理备份、远端原子生成与只读漂移检查。
 - `tests/` — 可在 CI 运行的契约与隔离记忆测试。
 - `benchmarks/` — 高频五类任务、历史最佳阶段值和严格 `<50%` 性能门。
 - `tools/pi-five-chain-benchmark.mjs` — 两轮真实 GPT/工具/历史/规则/canonical 验收。
@@ -21,6 +22,15 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 ## 规则单一真值
 
 规则唯一可编辑源是 `vscodium/shared/registry/data/rules-corpus.jsonl`。发行包只携带 `src/rules-snapshot.mjs`，不嵌入规则或凭据；本机由 `vscodium/tools/sync.mjs` 生成 `~/.pi/agent/data/rules.jsonl`，异机由 SSH 把同一 canonical corpus 推到 `data/registry/rules-corpus.jsonl`，再原子生成 `data/rules.jsonl`。运行链只读生成物，绝不反写上游。旧包中若仍有 `assets.enc/rules.jsonl`，启动器只把它映射为 bootstrap；已有受管源优先，因此重启不会退回旧规则。
+
+主机侧使用唯一部署入口（默认源固定为相邻 `vscodium/shared/registry/data/rules-corpus.jsonl`；`--source` 也只接受该 canonical 目录后缀）：
+
+```bash
+node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-portable --identity C:/path/to/id_ed25519 --known-hosts C:/path/to/known_hosts
+node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-portable --identity C:/path/to/id_ed25519 --known-hosts C:/path/to/known_hosts --check
+```
+
+第一条命令在联网前校验 canonical JSONL；有变化时先在异机 `data/backups/rules-deploy-<时间戳>/` 做物理备份，再通过带互斥锁的临时文件调用远端 `rules-snapshot.mjs` 原子收敛。第二条命令全程只读，核对 canonical、受管源、生成物的规则数和 SHA-256，并拒绝残留 `.incoming` 文件或部署锁；远端进程被强制终止时保留锁并故障关闭，需先调查对应 SSH/Node 进程和备份清单，确认无部署在跑后再移除该锁。
 
 ## 进度(S1-S9,全绿才允许交付)
 
@@ -64,6 +74,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 ```bash
 node tests/rules-snapshot-contract.mjs # 唯一真值→bootstrap/受管源→生成物契约
+node tests/deploy-rules-remote-contract.mjs # canonical-only SSH 下发、备份、原子生成、只读 check 契约
 node tests/windows-launcher-contract.mjs # GUI 子系统→无 cmd/WSH→Node 监督与 SFX 入口契约
 node --test tests/lop-chain-contract.mjs # 两态清单冻结、目标循环、历史 [~] 回归、目标门优先
 node --test tests/pi-history-contract.mjs tests/deterministic-fast-path.mjs tests/bridge-response-replay.mjs

@@ -34,6 +34,7 @@ jobs:
           node tests/windows-launcher-contract.mjs
           node tests/lop-chain-contract.mjs
           node tests/rules-snapshot-contract.mjs
+          node tests/deploy-rules-remote-contract.mjs
           node --test tests/pi-history-contract.mjs
           node --test tests/deterministic-fast-path.mjs
           node --test tests/bridge-response-replay.mjs
@@ -103,11 +104,13 @@ jobs:
           Copy-Item -Recurse assets stage/assets
           New-Item -ItemType Directory -Force -Path stage/tools | Out-Null
           Copy-Item tools/remote-verify.mjs stage/tools/remote-verify.mjs
+          Copy-Item tools/deploy-rules-remote.mjs stage/tools/deploy-rules-remote.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
           if (-not (Test-Path stage/pi-portable-launcher.exe)) { throw "native launcher missing" }
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
           if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
+          if (-not (Test-Path stage/tools/deploy-rules-remote.mjs)) { throw "remote rules deployer missing" }
 
       - name: Assert no embedded assets
         shell: pwsh
