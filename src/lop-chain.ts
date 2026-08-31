@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v8";
+export const LOP_CHAIN_RUNTIME_VERSION = "goal-redirector-v9";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -23,6 +23,8 @@ const MEMORY_MJS = path.join(CHAIN_DIR, "lop-memory.mjs");
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(DATA, "rules-pretool.mjs");
 // S6 预审:便携版走包内 8794 桥的进程内实现(见 portable-adversary.mjs),同签名同判据。
 const ADVERSARY_MJS = path.join(CHAIN_DIR, "portable-adversary.mjs");
+// 目标门换向器:同路无进展时强制换方向而不是停跑(证据轮/禁忌换路/耗尽落账本)。
+const REDIRECTOR_MJS = path.join(CHAIN_DIR, "goal-redirector.mjs");
 const FAST_PATH_MJS = path.join(CHAIN_DIR, "deterministic-fast-path.mjs");
 const REGISTRY_MJS = path.join(CHAIN_DIR, "rule-registry.mjs");
 const CORPUS = path.join(DATA, "rules.jsonl");
@@ -836,10 +838,21 @@ export function goalGateVerdict(input: {
   return input.attempts >= input.max ? "exhausted" : "retry";
 }
 
-function execGoalGate(command: string): Promise<{ code: number | null; output: string; timedOut: boolean }> {
+// 换向器按需装载;装载失败置 false 永久跳过,门行为回落原状(fail-open)。
+let redirectorModule: any = null;
+async function loadRedirector() {
+  if (redirectorModule !== null) return redirectorModule;
+  try { redirectorModule = await import(pathToFileURL(REDIRECTOR_MJS).href); }
+  catch (error) { redirectorModule = false; log(`GOAL_REDIRECT LOAD_FAIL ${String(error).slice(0, 120)}`); }
+  return redirectorModule;
+}
+
+function execGoalGate(command: string, cwd?: string): Promise<{ code: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     const child = exec(command, {
       windowsHide: true, timeout: GOAL_GATE_TIMEOUT_MS, maxBuffer: 1024 * 1024, encoding: "utf8",
+      // 目标门命令在任务工作区执行;拿不到合法 cwd 时保持旧行为(继承宿主 cwd)。
+      ...(cwd && fs.existsSync(cwd) ? { cwd } : {}),
     }, (error: any, stdout, stderr) => {
       child.stdout?.unref?.();
       child.stderr?.unref?.();
@@ -904,7 +917,7 @@ export default function (pi: ExtensionAPI) {
   let checklistGoal: ChecklistGoalState | null = null;
   let runHadTool = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
-  let goalGate: { command: string; attempts: number } | null = null;
+  let goalGate: { command: string; attempts: number; rounds: any[]; level: number } | null = null;
   let turnStartedAt = 0;
   let modelTurnStartedAt = 0;
   let deterministicDraftActive = false;
@@ -1169,13 +1182,15 @@ export default function (pi: ExtensionAPI) {
     // 因此 attempts 预算只被新的人工消息重置。
     const gateDirective = parseGoalGateDirective(prompt);
     if (gateDirective.action === "set") {
-      goalGate = { command: gateDirective.command, attempts: 0 };
+      goalGate = { command: gateDirective.command, attempts: 0, rounds: [], level: 0 };
       log(`GOAL_GATE SET cmd=${gateDirective.command.slice(0, 160)}`);
     } else if (gateDirective.action === "clear") {
       if (goalGate) log("GOAL_GATE CLEAR");
       goalGate = null;
     } else if (goalGate) {
       goalGate.attempts = 0;
+      goalGate.rounds = [];
+      goalGate.level = 0;
     }
 
     // Codex goal-loop 同语义:真实执行请求激活目标;用户说“继续”即明确否决上一轮
@@ -1570,7 +1585,8 @@ export default function (pi: ExtensionAPI) {
     if (goalGate && lastAssistant?.stopReason === "stop" && !ctx?.hasPendingMessages?.()) {
       const gate = goalGate;
       const t9 = performance.now();
-      const result = await execGoalGate(gate.command).catch(() => ({ code: null, output: "", timedOut: false }));
+      const taskCwd = typeof (ctx as any)?.cwd === "string" ? (ctx as any).cwd : undefined;
+      const result = await execGoalGate(gate.command, taskCwd).catch(() => ({ code: null, output: "", timedOut: false }));
       const verdict = goalGateVerdict({
         exitCode: result.code, timedOut: result.timedOut, attempts: gate.attempts, max: GOAL_GATE_MAX,
       });
@@ -1579,12 +1595,30 @@ export default function (pi: ExtensionAPI) {
         gate.attempts += 1;
         goalGateRetryActive = true;
         metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
+        // 换向器:同路无进展时替换续跑文案强制换方向;自身异常 fail-open 回落原文案。
+        let redirectMode = "normal";
+        let content = `目标门命令未通过(exit=${result.code},自动续跑 ${gate.attempts}/${GOAL_GATE_MAX})。命令输出尾部:\n${result.output.slice(-600)}\n\n继续执行原始任务,直到目标门命令通过。禁止修改校验命令、其判定逻辑或伪造其输入数据。若有证据表明目标在当前约束下不可达,停止尝试并给出量化差距与原因,由用户决定是否放宽。`;
+        try {
+          const redirector = await loadRedirector();
+          if (redirector) {
+            const redirect = await redirector.evaluateGoalRound({
+              cwd: taskCwd, output: result.output, exitCode: result.code,
+              attempts: gate.attempts, max: GOAL_GATE_MAX,
+              prevRounds: gate.rounds || [], prevLevel: gate.level || 0,
+            });
+            gate.rounds = redirect.rounds;
+            gate.level = redirect.level;
+            redirectMode = redirect.mode;
+            if (redirect.content) content = redirect.content;
+            if (redirect.mode !== "normal") log(`GOAL_REDIRECT ${redirect.mode} trips=${redirect.tripped.join(",")} attempts=${gate.attempts}/${GOAL_GATE_MAX}`);
+          }
+        } catch (e) { log(`GOAL_REDIRECT FAIL_OPEN ${String(e).slice(0, 160)}`); }
         try {
           pi.sendMessage({
             customType: GOAL_GATE_TYPE,
-            content: `目标门命令未通过(exit=${result.code},自动续跑 ${gate.attempts}/${GOAL_GATE_MAX})。命令输出尾部:\n${result.output.slice(-600)}\n\n继续执行原始任务,直到目标门命令通过。禁止修改校验命令、其判定逻辑或伪造其输入数据。若有证据表明目标在当前约束下不可达,停止尝试并给出量化差距与原因,由用户决定是否放宽。`,
+            content,
             display: false,
-            details: { command: gate.command, attempts: gate.attempts, exitCode: result.code },
+            details: { command: gate.command, attempts: gate.attempts, exitCode: result.code, redirect: redirectMode },
           }, { deliverAs: "followUp", triggerTurn: true });
           return;
         } catch (e) {
@@ -1600,6 +1634,22 @@ export default function (pi: ExtensionAPI) {
         }
         if (verdict === "exhausted") {
           metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
+          // 预算顶:最后一轮也记入账本后落盘——已试路径+已排除假设,供人裁决或新会话蒸馏重启。
+          try {
+            const redirector = await loadRedirector();
+            if (redirector) {
+              const fin = await redirector.evaluateGoalRound({
+                cwd: taskCwd, output: result.output, exitCode: result.code,
+                attempts: gate.attempts, max: GOAL_GATE_MAX,
+                prevRounds: gate.rounds || [], prevLevel: gate.level || 0,
+              });
+              gate.rounds = fin.rounds;
+              const ledger = redirector.writeGoalLedger({
+                dir: path.join(DATA, "goal-gate-ledger"), sessionId, command: gate.command, rounds: gate.rounds,
+              });
+              if (ledger) log(`GOAL_GATE LEDGER ${ledger}`);
+            }
+          } catch (e) { log(`GOAL_REDIRECT LEDGER_FAIL ${String(e).slice(0, 160)}`); }
         }
       }
     }

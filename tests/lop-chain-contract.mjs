@@ -206,7 +206,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /two-state-goal-v8/u);
+assert.match(commands.get("lop-chain-reload").description, /goal-redirector-v9/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -759,7 +759,7 @@ await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机�
 assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "two-state-goal-v8");
+assert.equal(runtimeVersionFromSource(source), "goal-redirector-v9");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
