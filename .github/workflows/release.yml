@@ -76,7 +76,10 @@ jobs:
           $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
           if ($subsystem -ne 2) { throw "native launcher is not Windows GUI subsystem: $subsystem" }
           Write-Host "native GUI launcher $($launcher.Length) bytes; subsystem=$subsystem"
+          Copy-Item -LiteralPath $launcher.FullName -Destination windows-silent-exec-host.exe
+          (Get-FileHash windows-silent-exec-host.exe -Algorithm SHA256).Hash | Set-Content windows-silent-exec-host.exe.sha256
           & tests/native-launcher-smoke.ps1 -Launcher $launcher.FullName -Node (Resolve-Path stage/runtime/node.exe)
+          & tests/silent-exec-host-smoke.ps1 -Launcher (Resolve-Path windows-silent-exec-host.exe) -Node (Resolve-Path stage/runtime/node.exe)
 
       - name: Stage app layer (pi-web + pi)
         shell: pwsh
@@ -148,6 +151,8 @@ jobs:
           path: |
             pi-portable-*.exe
             pi-portable-*.exe.sha256
+            windows-silent-exec-host.exe
+            windows-silent-exec-host.exe.sha256
 
       - name: Publish release (tag only)
         if: github.ref_type == 'tag'
@@ -156,4 +161,6 @@ jobs:
           files: |
             pi-portable-*.exe
             pi-portable-*.exe.sha256
+            windows-silent-exec-host.exe
+            windows-silent-exec-host.exe.sha256
           generate_release_notes: true

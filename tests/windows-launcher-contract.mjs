@@ -16,10 +16,15 @@ assert.match(cpp, /wWinMain\(/, "native entry must use the Windows GUI subsystem
 assert.match(cpp, /#pragma comment\(lib, "user32\.lib"\)/, "GUI error reporting must declare its User32 linker dependency");
 assert.match(cpp, /#pragma comment\(lib, "shell32\.lib"\)/, "native argument parsing must declare its Shell32 linker dependency");
 assert.match(cpp, /--pi-node-host/, "the GUI binary must also host launcher child Node processes without a console");
+assert.match(cpp, /--pi-silent-exec/, "the cloud-built GUI binary must expose a standalone arbitrary-executable host for scheduled tasks");
+assert.match(cpp, /exec_host_mode/, "standalone host mode must be distinct from Pi supervisor and Node-host modes");
+assert.match(cpp, /child_executable/, "standalone mode must launch the exact caller-supplied executable rather than bundled Node");
+assert.match(cpp, /child_working_directory/, "standalone mode must preserve the caller-supplied working directory");
+assert.match(cpp, /show_error_ui/, "background host modes must suppress focus-stealing error dialogs");
 assert.match(cpp, /DETACHED_PROCESS/, "node child must be detached from every console");
 assert.match(cpp, /STARTF_USESTDHANDLES/, "detached node must receive explicit standard handles");
 assert.match(cpp, /CreateFileW\(L"NUL"/, "detached node standard streams must terminate at NUL, not a console host");
-assert.match(cpp, /CreateProcessW\(node\.c_str\(\)/, "portable node must be launched directly by exact path");
+assert.match(cpp, /CreateProcessW\(child_executable\.c_str\(\)/, "every mode must launch its resolved executable directly by exact path");
 assert.match(cpp, /runtime\\\\node\.exe/, "native entry must resolve bundled node.exe");
 assert.match(cpp, /src\\\\launcher\.mjs/, "native entry must resolve launcher.mjs");
 assert.match(cpp, /PI_PORTABLE_HOME/, "native entry must pin portable HOME to its executable directory");
@@ -33,6 +38,9 @@ assert.match(workflow, /tests\/windows-launcher-contract\.mjs/, "CI must execute
 assert.match(workflow, /cl\.exe/, "CI must compile the native launcher on windows-latest");
 assert.match(workflow, /\/SUBSYSTEM:WINDOWS/, "compiled launcher must be a GUI-subsystem executable");
 assert.match(workflow, /native-launcher-smoke\.ps1/, "CI must execute the cloud-built launcher and trace child processes");
+assert.match(workflow, /silent-exec-host-smoke\.ps1/, "CI must execute the standalone host without a bundled Pi runtime");
+assert.match(workflow, /windows-silent-exec-host\.exe/, "CI must publish the reusable host as a standalone release asset");
+assert.match(workflow, /windows-silent-exec-host\.exe\.sha256/, "standalone host release asset must carry a SHA-256 sidecar");
 assert.match(workflow, /msys-pcon-smoke\.ps1/, "CI must execute Git Bash native parent/child visibility smoke");
 assert.match(workflow, /stage[\\/]pi-portable-launcher\.exe/, "compiled launcher must be staged into the release payload");
 assert.doesNotMatch(workflow, /Copy-Item packaging\/pi-portable\.cmd|Copy-Item packaging\\pi-portable\.cmd/, "release must not stage the legacy batch entry");

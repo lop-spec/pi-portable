@@ -12,6 +12,7 @@
 namespace {
 constexpr DWORD kRestartExitCode = 75;
 constexpr wchar_t kNodeHostSwitch[] = L"--pi-node-host";
+constexpr wchar_t kExecHostSwitch[] = L"--pi-silent-exec";
 constexpr wchar_t kWindowTitle[] = L"Pi Portable";
 
 std::wstring ExecutablePath() {
@@ -39,6 +40,12 @@ bool IsFile(const std::wstring& value) {
     const DWORD attributes = GetFileAttributesW(value.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES &&
            (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool IsDirectory(const std::wstring& value) {
+    const DWORD attributes = GetFileAttributesW(value.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 std::wstring WindowsError(DWORD error) {
@@ -83,12 +90,15 @@ void AppendLog(const std::wstring& root, const std::wstring& message) {
     CloseHandle(file);
 }
 
-int Fail(const std::wstring& root, const std::wstring& operation, DWORD error) {
+int Fail(const std::wstring& root, const std::wstring& operation, DWORD error,
+         bool show_error_ui = true) {
     const std::wstring detail = operation + L" failed (" + std::to_wstring(error) +
                                 L"): " + WindowsError(error);
     AppendLog(root, L"ERROR " + detail);
-    MessageBoxW(nullptr, detail.c_str(), kWindowTitle,
-                MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    if (show_error_ui) {
+        MessageBoxW(nullptr, detail.c_str(), kWindowTitle,
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
     return 1;
 }
 
@@ -150,45 +160,85 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const std::wstring root = DirectoryName(executable);
     if (root.empty()) return Fail(L".", L"GetModuleFileNameW", GetLastError());
 
-    const std::wstring node = Join(root, L"runtime\\node.exe");
-    const std::wstring script = Join(root, L"src\\launcher.mjs");
-    if (!IsFile(node)) return Fail(root, L"portable node missing: " + node, ERROR_FILE_NOT_FOUND);
-
     int argument_count = 0;
     wchar_t** argument_values = CommandLineToArgvW(GetCommandLineW(), &argument_count);
     if (!argument_values) return Fail(root, L"CommandLineToArgvW", GetLastError());
     const bool node_host_mode = argument_count >= 2 &&
                                 std::wcscmp(argument_values[1], kNodeHostSwitch) == 0;
+    const bool exec_host_mode = argument_count >= 2 &&
+                                std::wcscmp(argument_values[1], kExecHostSwitch) == 0;
+    const bool show_error_ui = !node_host_mode && !exec_host_mode;
     if (node_host_mode && argument_count < 3) {
         LocalFree(argument_values);
-        return Fail(root, L"--pi-node-host requires a target", ERROR_INVALID_PARAMETER);
+        return Fail(root, L"--pi-node-host requires a target", ERROR_INVALID_PARAMETER,
+                    show_error_ui);
     }
-    if (!node_host_mode && !IsFile(script)) {
+    if (exec_host_mode && argument_count < 4) {
         LocalFree(argument_values);
-        return Fail(root, L"launcher missing: " + script, ERROR_FILE_NOT_FOUND);
+        return Fail(root,
+                    L"--pi-silent-exec requires a working directory and executable",
+                    ERROR_INVALID_PARAMETER, show_error_ui);
     }
 
+    const std::wstring node = Join(root, L"runtime\\node.exe");
+    const std::wstring script = Join(root, L"src\\launcher.mjs");
+    std::wstring child_executable;
+    std::wstring child_working_directory;
     std::vector<std::wstring> child_arguments;
-    if (node_host_mode) {
-        for (int index = 2; index < argument_count; ++index) {
+    if (exec_host_mode) {
+        child_working_directory = argument_values[2];
+        child_executable = argument_values[3];
+        for (int index = 4; index < argument_count; ++index) {
             child_arguments.emplace_back(argument_values[index]);
         }
+        if (!IsDirectory(child_working_directory)) {
+            LocalFree(argument_values);
+            return Fail(root, L"working directory missing: " + child_working_directory,
+                        ERROR_PATH_NOT_FOUND, show_error_ui);
+        }
+        if (!IsFile(child_executable)) {
+            LocalFree(argument_values);
+            return Fail(root, L"target executable missing: " + child_executable,
+                        ERROR_FILE_NOT_FOUND, show_error_ui);
+        }
     } else {
-        child_arguments.emplace_back(script);
-        for (int index = 1; index < argument_count; ++index) {
-            child_arguments.emplace_back(argument_values[index]);
+        if (!IsFile(node)) {
+            LocalFree(argument_values);
+            return Fail(root, L"portable node missing: " + node, ERROR_FILE_NOT_FOUND,
+                        show_error_ui);
+        }
+        if (!node_host_mode && !IsFile(script)) {
+            LocalFree(argument_values);
+            return Fail(root, L"launcher missing: " + script, ERROR_FILE_NOT_FOUND,
+                        show_error_ui);
+        }
+        child_executable = node;
+        child_working_directory = root;
+        if (node_host_mode) {
+            for (int index = 2; index < argument_count; ++index) {
+                child_arguments.emplace_back(argument_values[index]);
+            }
+        } else {
+            child_arguments.emplace_back(script);
+            for (int index = 1; index < argument_count; ++index) {
+                child_arguments.emplace_back(argument_values[index]);
+            }
         }
     }
     LocalFree(argument_values);
 
-    bool environment_ok = SetEnvironmentVariableW(L"PI_PORTABLE_HOME", root.c_str()) &&
-                          SetEnvironmentVariableW(L"PI_NODE_EXE", node.c_str()) &&
-                          SetEnvironmentVariableW(L"PI_PROCESS_HOST", executable.c_str());
-    if (!node_host_mode) {
-        environment_ok = environment_ok &&
-                         SetEnvironmentVariableW(L"PI_LAUNCH_SUPERVISOR", L"1");
+    if (!exec_host_mode) {
+        bool environment_ok = SetEnvironmentVariableW(L"PI_PORTABLE_HOME", root.c_str()) &&
+                              SetEnvironmentVariableW(L"PI_NODE_EXE", node.c_str()) &&
+                              SetEnvironmentVariableW(L"PI_PROCESS_HOST", executable.c_str());
+        if (!node_host_mode) {
+            environment_ok = environment_ok &&
+                             SetEnvironmentVariableW(L"PI_LAUNCH_SUPERVISOR", L"1");
+        }
+        if (!environment_ok) {
+            return Fail(root, L"SetEnvironmentVariableW", GetLastError(), show_error_ui);
+        }
     }
-    if (!environment_ok) return Fail(root, L"SetEnvironmentVariableW", GetLastError());
 
     SECURITY_ATTRIBUTES inherited{};
     inherited.nLength = sizeof(inherited);
@@ -196,14 +246,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     HANDLE null_input = CreateFileW(L"NUL", GENERIC_READ,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (null_input == INVALID_HANDLE_VALUE) return Fail(root, L"open NUL stdin", GetLastError());
+    if (null_input == INVALID_HANDLE_VALUE) {
+        return Fail(root, L"open NUL stdin", GetLastError(), show_error_ui);
+    }
     HANDLE null_output = CreateFileW(L"NUL", GENERIC_WRITE,
                                      FILE_SHARE_READ | FILE_SHARE_WRITE, &inherited,
                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (null_output == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         CloseHandle(null_input);
-        return Fail(root, L"open NUL stdout", error);
+        return Fail(root, L"open NUL stdout", error, show_error_ui);
     }
     auto inherited_standard_handle = [](DWORD identifier, HANDLE fallback) {
         HANDLE candidate = GetStdHandle(identifier);
@@ -223,31 +275,52 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                                    ? inherited_standard_handle(STD_ERROR_HANDLE, null_output)
                                    : null_output;
 
-    const std::wstring child_command = BuildCommand(node, child_arguments);
+    const std::wstring child_command = BuildCommand(child_executable, child_arguments);
     HANDLE job = CreateKillOnCloseJob(root);
+    if (exec_host_mode && !job) {
+        CloseHandle(null_input);
+        CloseHandle(null_output);
+        return Fail(root, L"strict task Job Object setup", ERROR_FUNCTION_FAILED,
+                    show_error_ui);
+    }
+    const std::wstring mode_name = exec_host_mode
+                                       ? L"silent-exec"
+                                       : (node_host_mode ? L"node-host" : L"supervisor");
     for (;;) {
         std::vector<wchar_t> mutable_command(child_command.begin(), child_command.end());
         mutable_command.push_back(L'\0');
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
-        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.wShowWindow = SW_HIDE;
         startup.hStdInput = child_input;
         startup.hStdOutput = child_output;
         startup.hStdError = child_error;
         PROCESS_INFORMATION process{};
         const DWORD flags = DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
-        if (!CreateProcessW(node.c_str(), mutable_command.data(), nullptr, nullptr, TRUE,
-                            flags, nullptr, root.c_str(), &startup, &process)) {
+        if (!CreateProcessW(child_executable.c_str(), mutable_command.data(), nullptr,
+                            nullptr, TRUE, flags, nullptr,
+                            child_working_directory.c_str(), &startup, &process)) {
             const DWORD error = GetLastError();
             if (job) CloseHandle(job);
             CloseHandle(null_input);
             CloseHandle(null_output);
-            return Fail(root, L"CreateProcessW", error);
+            return Fail(root, L"CreateProcessW", error, show_error_ui);
         }
 
         if (job && !AssignProcessToJobObject(job, process.hProcess)) {
+            const DWORD error = GetLastError();
+            if (exec_host_mode) {
+                TerminateProcess(process.hProcess, 1);
+                CloseHandle(process.hThread);
+                CloseHandle(process.hProcess);
+                CloseHandle(job);
+                CloseHandle(null_input);
+                CloseHandle(null_output);
+                return Fail(root, L"AssignProcessToJobObject", error, show_error_ui);
+            }
             AppendLog(root, L"WARN AssignProcessToJobObject failed: " +
-                                std::to_wstring(GetLastError()));
+                                std::to_wstring(error));
         }
         if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
             const DWORD error = GetLastError();
@@ -257,12 +330,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             if (job) CloseHandle(job);
             CloseHandle(null_input);
             CloseHandle(null_output);
-            return Fail(root, L"ResumeThread", error);
+            return Fail(root, L"ResumeThread", error, show_error_ui);
         }
         CloseHandle(process.hThread);
-        AppendLog(root, L"START mode=" +
-                            std::wstring(node_host_mode ? L"node-host" : L"supervisor") +
-                            L" child pid=" + std::to_wstring(process.dwProcessId));
+        AppendLog(root, L"START mode=" + mode_name + L" child pid=" +
+                            std::to_wstring(process.dwProcessId));
 
         const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
         DWORD exit_code = 1;
@@ -272,14 +344,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             if (job) CloseHandle(job);
             CloseHandle(null_input);
             CloseHandle(null_output);
-            return Fail(root, L"WaitForSingleObject/GetExitCodeProcess", error);
+            return Fail(root, L"WaitForSingleObject/GetExitCodeProcess", error,
+                        show_error_ui);
         }
         CloseHandle(process.hProcess);
-        AppendLog(root, L"EXIT mode=" +
-                            std::wstring(node_host_mode ? L"node-host" : L"supervisor") +
-                            L" child code=" + std::to_wstring(exit_code));
+        AppendLog(root, L"EXIT mode=" + mode_name + L" child code=" +
+                            std::to_wstring(exit_code));
 
-        if (!node_host_mode && exit_code == kRestartExitCode) {
+        if (!node_host_mode && !exec_host_mode && exit_code == kRestartExitCode) {
             AppendLog(root, L"RESTART requested by launcher");
             Sleep(200);
             continue;

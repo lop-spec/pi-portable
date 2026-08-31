@@ -10,7 +10,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 - `src/bridge/` — 受版本控制的便携桥层；随生产桥同步升级，并在本仓维护 Pi user-role 历史与 exact response memo 适配。
 - `src/lop-chain.ts` — 执行链扩展；包含确定性目标门，以及无 subagent 的两态验收目标循环（冻结合同、active/complete/blocked、分支持久恢复）。
-- `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；以 `DETACHED_PROCESS` 和显式标准流拉起主 Node，并作为 bridge/web 子 Node 的无控制台进程宿主；同时监督重启并用 Job Object 兜底清理进程树。
+- `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；以 `DETACHED_PROCESS` 和显式标准流拉起主 Node，并作为 bridge/web 子 Node 的无控制台进程宿主；同时监督重启并用 Job Object 兜底清理进程树。相同云构建还发布独立的 `windows-silent-exec-host.exe`，供交互会话中的计划任务静默启动任意精确路径程序。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。
 - `src/rules-snapshot.mjs` — 规则单向生成器；bootstrap/受管源经校验后原子生成 `data/rules.jsonl`。
 - `tools/deploy-rules-remote.mjs` — 主机侧 canonical-only SSH 部署器；严格主机密钥校验、变更前物理备份、远端原子生成与只读漂移检查。
@@ -18,6 +18,18 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 - `benchmarks/` — 高频五类任务、历史最佳阶段值和严格 `<50%` 性能门。
 - `tools/pi-five-chain-benchmark.mjs` — 两轮真实 GPT/工具/历史/规则/canonical 验收。
 - `tools/pi-chain-hard-gate-probes.mjs` — 扩写、规则全集和模型历史使用的反事实验收。
+
+## 跨机静默计划任务宿主
+
+每个 tag Release 同时发布 `windows-silent-exec-host.exe` 与 SHA-256 sidecar。该资产不依赖 Pi 目录或内置 Node，可随管理包复制到任意 Windows 机器。调用契约：
+
+```text
+windows-silent-exec-host.exe --pi-silent-exec <working-directory> <executable> [arguments...]
+```
+
+宿主自身是 Windows GUI subsystem；目标通过精确路径、`DETACHED_PROCESS`、隐藏 startup info、NUL 标准流及 suspend → Job Object → resume 顺序启动。宿主等待并透传退出码，宿主被终止时整棵目标进程树随 Job 回收。后台模式错误只写相邻 `data/launcher-bootstrap.log`，禁止弹出抢焦点对话框。
+
+交互登录 (`InteractiveToken`) 的计划任务不得直接登记 `node.exe`、`python.exe`、`cmd.exe`、`powershell.exe`、`pwsh.exe`、`bash.exe` 等 console-subsystem 入口；注册层必须将它们封装进上述宿主。确实需要可见交互时必须显式记录豁免理由，不能靠 Task Scheduler 的 `Hidden` 字段冒充窗口隐藏。
 
 ## 规则单一真值
 
