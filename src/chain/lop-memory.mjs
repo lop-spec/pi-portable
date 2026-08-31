@@ -1766,6 +1766,18 @@ export async function scanHistory(options = {}) {
         const unchanged = !force && old && old.path === source.path &&
           Number(old.size) === source.size && Number(old.mtime_ms) === source.mtimeMs;
         if (unchanged) continue;
+        // 哈希快路(2026-08-31 循环验收 S1):mtime 批量漂移会让数百来源被反复判"变更"
+        // 全量重解析(实测 changed≈845 复发、单扫 60-164s;签名=size 一字不变仅 mtime
+        // 后移)。size 相同且存有内容哈希时先哈希验证,一致即只回写 stat,不重解析。
+        if (!reparse && old && old.path === source.path &&
+            Number(old.size) === source.size && old.content_hash) {
+          const verifiedHash = await hashJsonl(source.path);
+          if (verifiedHash === old.content_hash) {
+            touchVerifiedSource(db, source, old, verifiedHash);
+            verifiedSources += 1;
+            continue;
+          }
+        }
         if (force && !reparse && old?.content_hash) {
           const verifiedHash = await hashJsonl(source.path);
           if (verifiedHash === old.content_hash) {
@@ -1784,7 +1796,16 @@ export async function scanHistory(options = {}) {
           seeds = seedTurns(db, source.sourceKey);
           appendedSources += 1;
         }
+        const parseStarted = Date.now();
+        if (process.env.PI_SCAN_DEBUG === '1') {
+          console.log(`[scan-debug] ENTER bytes=${source.size} start=${start} ${String(source.path).slice(-70)}`);
+        }
         const parsed = await parseSource(source, config, { start, seeds });
+        // 观测门控:PI_SCAN_DEBUG=1 时逐源打点,专抓扫描时间黑洞(2026-08-31 S1 归因用,零默认开销)
+        if (process.env.PI_SCAN_DEBUG === '1') {
+          const cost = Date.now() - parseStarted;
+          if (cost > 300) console.log(`[scan-debug] ${cost}ms bytes=${source.size} start=${start} ${String(source.path).slice(-70)}`);
+        }
         invalidLines += parsed.invalidLines;
         saveTurns(db, source, parsed);
         changedSourceKeys.add(source.sourceKey);
