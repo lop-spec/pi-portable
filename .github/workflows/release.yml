@@ -39,6 +39,7 @@ jobs:
           node --test tests/deterministic-fast-path.mjs
           node --test tests/bridge-response-replay.mjs
           node --test tests/tray-contract.mjs
+          node --test tests/patch-piweb-fold-contract.mjs
           node tools/pi-five-chain-benchmark.mjs --dry-run
 
       - name: Stage portable node runtime

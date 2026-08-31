@@ -1,0 +1,42 @@
+{
+  "task": "pi-web agent tool-card visibility",
+  "verifiedAt": "2026-08-31T15:25:00+08:00",
+  "result": "PASS",
+  "measurements": {
+    "formalEndpointHistoricalExpanded": {
+      "url": "http://127.0.0.1:30141/",
+      "agentToolCards": 0,
+      "finalAnswerMarkerVisible": true
+    },
+    "formalEndpointCurrentRunning": {
+      "url": "http://127.0.0.1:30141/",
+      "agentToolCards": 0,
+      "runningStopControlVisible": true
+    },
+    "controlledLiveRun": {
+      "agentToolCallsStoredWhilePending": 1,
+      "agentToolCardsRendered": 0,
+      "chineseProgressVisible": true,
+      "thinkingHeaderVisible": true,
+      "toolResultStoredAfterCompletion": 1,
+      "toolResultMarker": "ui-hide-tool-ok"
+    },
+    "historicalThinkingRun": {
+      "agentToolCardsRendered": 0,
+      "thinkingBlocksRendered": 1,
+      "finalChineseTextVisible": true
+    },
+    "contractTests": {
+      "passed": 4,
+      "failed": 0
+    }
+  },
+  "safety": {
+    "packageVersionLock": "0.8.11",
+    "secondRunSemanticEdits": 0,
+    "incrementalBackupCreated": true,
+    "oldChunkRetainedForRunningProcess": true,
+    "textRenderPathPreserved": true,
+    "thinkingRenderPathPreserved": true
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "task": "pi-web agent tool-card visibility",
+  "measuredAt": "2026-08-31T07:08:00+08:00",
+  "source": "controlled historical session: assistant ran `echo verify-ok`; Process details expanded in a real Chrome-rendered Pi Web page",
+  "baseline": {
+    "expandedAgentToolCards": 1,
+    "finalAnswerMarkerVisible": true,
+    "assistantToolCallStoredInSession": true
+  },
+  "target": {
+    "expandedAgentToolCards": 0,
+    "finalAnswerMarkerVisible": true,
+    "assistantToolCallStoredInSession": true,
+    "textAndThinkingRenderPathsPreserved": true
+  },
+  "hardGates": [
+    "Hide agent tool-call cards in live and historical rendering",
+    "Do not disable tool execution or remove tool-call/session data",
+    "Keep assistant text, thinking blocks, provider errors, and final answers renderable",
+    "Patch remains version-locked, fail-closed, re-runnable, and reversible"
+  ]
+}

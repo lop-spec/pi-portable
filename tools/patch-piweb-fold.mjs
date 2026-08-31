@@ -1,25 +1,47 @@
 #!/usr/bin/env node
-// pi-web 0.8.11 本地补丁：默认折叠 compaction 摘要 / 无终答分组 / 前导无锚过程段 + SW 缓存收敛
-// 用法: node patch-piweb-fold.mjs [--pkg <包目录>] [--backup <备份目录>] [--check]
-// 约束: 仅 0.8.11；任一锚点命中数不符 => 中止且零写入；可重入（历史打过 v1/v2 会自动补齐到 v3）。
-// 回滚: 备份目录整体拷回 .next 对应路径，删除 page-f01dc0de*.js / layout-f01dcafe*.js，重启服务。
+// pi-web 0.8.11 本地补丁：折叠历史过程，并从 Agent 消息中隐藏工具卡片（工具仍执行、会话仍留痕）。
+// 用法: node patch-piweb-fold.mjs [--pkg <包目录>] [--backup <原始备份目录>] [--upgrade-backup <升级前备份目录>] [--check]
+// 约束: 仅 0.8.11；任一锚点命中数不符 => 中止且零写入；可重入（v1-v3 自动补齐到 v4）。
+// 回滚: upgrade-backup 整体拷回 .next 对应路径并删除 page-f01dc0de20260831.js；或用原始 backup 全量回滚；随后重启服务。旧 chunk 会保留，避免运行中的旧进程 404。
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const TOOL_BLOCK_FILTER = /\.filter\(\(\{block:([\w$]+)\}\)=>!([\w$]+)\(\1,\{isStreaming:([\w$]+)\}\)\)/g;
+const PATCHED_TOOL_BLOCK_FILTER = /\.filter\(\(\{block:([\w$]+)\}\)=>!([\w$]+)\(\1,\{isStreaming:([\w$]+)\}\)&&"toolCall"!==\1\.type\)/g;
+
+export function applyHideAgentToolCalls(src, label = "bundle") {
+  const original = [...src.matchAll(TOOL_BLOCK_FILTER)];
+  const patched = [...src.matchAll(PATCHED_TOOL_BLOCK_FILTER)];
+  if (original.length === 0 && patched.length === 1) return { out: src, applied: false };
+  if (original.length !== 1 || patched.length !== 0) {
+    throw new Error(`${label}: R3 工具卡过滤锚点异常 original=${original.length} patched=${patched.length}`);
+  }
+  const out = src.replace(TOOL_BLOCK_FILTER, (_all, block, emptyThinking, streaming) =>
+    `.filter(({block:${block}})=>!${emptyThinking}(${block},{isStreaming:${streaming}})&&"toolCall"!==${block}.type)`);
+  return { out, applied: true };
+}
+
+function main() {
 const args = process.argv.slice(2);
 const argVal = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const CHECK = args.includes("--check");
 const PKG = argVal("--pkg", path.join(process.env.APPDATA ?? "", "npm", "node_modules", "@agegr", "pi-web"));
 const BACKUP = argVal("--backup", path.join(process.env.LOCALAPPDATA ?? "", "pi-web", "backup-0.8.11"));
+const UPGRADE_BACKUP = argVal("--upgrade-backup", path.join(process.env.LOCALAPPDATA ?? "", "pi-web", "backup-0.8.11-pre-hide-tools"));
 
 const VERSION = "0.8.11";
 const SW_MARK = "0.8.11-fold1";
-const PAGE_OLD = "5a48501b9f03fa46", PAGE_V1 = "f01dc0de20260829", PAGE_NEW = "f01dc0de20260830";
+const PAGE_OLD = "5a48501b9f03fa46", PAGE_V1 = "f01dc0de20260829", PAGE_V3 = "f01dc0de20260830", PAGE_NEW = "f01dc0de20260831";
 const LAY_OLD = "e785b697cfbbe825", LAY_NEW = "f01dcafe20260829";
-if (PAGE_OLD.length !== PAGE_NEW.length || PAGE_V1.length !== PAGE_NEW.length || LAY_OLD.length !== LAY_NEW.length) throw new Error("tail length mismatch");
+if ([PAGE_OLD, PAGE_V1, PAGE_V3].some((v) => v.length !== PAGE_NEW.length) || LAY_OLD.length !== LAY_NEW.length) throw new Error("tail length mismatch");
 
 const die = (m) => { console.error("[ABORT] " + m); process.exit(1); };
 const ID = "([\\w$]+)";
+const applyR3 = (src, label) => {
+  try { return applyHideAgentToolCalls(src, label); }
+  catch (error) { die(error instanceof Error ? error.message : String(error)); }
+};
 
 const pkgJson = JSON.parse(fs.readFileSync(path.join(PKG, "package.json"), "utf8"));
 if (pkgJson.version !== VERSION) die(`package version ${pkgJson.version} != ${VERSION}，拒绝执行`);
@@ -27,6 +49,7 @@ if (pkgJson.version !== VERSION) die(`package version ${pkgJson.version} != ${VE
 const chunkDir = path.join(PKG, ".next", "static", "chunks", "app");
 const pageClientOld = path.join(chunkDir, `page-${PAGE_OLD}.js`);
 const pageClientV1 = path.join(chunkDir, `page-${PAGE_V1}.js`);
+const pageClientV3 = path.join(chunkDir, `page-${PAGE_V3}.js`);
 const pageClientNew = path.join(chunkDir, `page-${PAGE_NEW}.js`);
 const layoutOld = path.join(chunkDir, `layout-${LAY_OLD}.js`);
 const layoutNew = path.join(chunkDir, `layout-${LAY_NEW}.js`);
@@ -105,36 +128,66 @@ function applyR2c(src, label) {
   return { out, applied: true };
 }
 
-// ---------- 可重入：v1/v2 已打时补齐并迁移文件名 ----------
-const alreadyV2 = fs.existsSync(pageClientNew), alreadyV1 = !alreadyV2 && fs.existsSync(pageClientV1);
-if (alreadyV2 || alreadyV1) {
-  const curClient = alreadyV2 ? pageClientNew : pageClientV1;
-  let cs = fs.readFileSync(curClient, "utf8");
+// ---------- 可重入升级：v1-v3 补齐语义补丁，并换 page chunk URL 绕过 SW cacheFirst ----------
+const stage = [
+  { name: "v4", file: pageClientNew, hash: PAGE_NEW },
+  { name: "v3", file: pageClientV3, hash: PAGE_V3 },
+  { name: "v1", file: pageClientV1, hash: PAGE_V1 },
+].find((candidate) => fs.existsSync(candidate.file));
+if (stage) {
+  let cs = fs.readFileSync(stage.file, "utf8");
   let ss = fs.readFileSync(pageServer, "utf8");
   const edits = [];
   for (const [get, set, label] of [[() => cs, (v) => (cs = v), "client"], [() => ss, (v) => (ss = v), "server"]]) {
     const b = applyR2b(get(), label); set(b.out); b.applied && edits.push(label + "-r2b");
     const c = applyR2c(get(), label); set(c.out); c.applied && edits.push(label + "-r2c");
+    const h = applyR3(get(), label); set(h.out); h.applied && edits.push(label + "-r3-hide-tools");
   }
-  if (CHECK) { console.log(JSON.stringify({ status: "check-ok", mode: "reentrant", edits })); process.exit(0); }
-  if (!edits.length) { console.log(JSON.stringify({ status: "already-patched", pkg: PKG })); process.exit(0); }
-  fs.writeFileSync(pageClientNew, cs);
-  fs.writeFileSync(pageServer, ss);
-  let renamed = 0;
-  if (alreadyV1) {
-    fs.unlinkSync(pageClientV1);
+
+  const needsRename = stage.hash !== PAGE_NEW;
+  const refEdits = [];
+  if (needsRename) {
     (function walk(d) {
       for (const e of fs.readdirSync(d, { withFileTypes: true })) {
         const p = path.join(d, e.name);
         if (e.isDirectory()) { walk(p); continue; }
         if (path.resolve(p) === path.resolve(pageServer)) continue;
         const s = fs.readFileSync(p, "utf8");
-        if (!s.includes(PAGE_V1)) continue;
-        fs.writeFileSync(p, s.replaceAll(PAGE_V1, PAGE_NEW)); renamed++;
+        const count = s.split(stage.hash).length - 1;
+        if (count > 0) refEdits.push({ file: p, count, out: s.replaceAll(stage.hash, PAGE_NEW) });
       }
     })(path.join(PKG, ".next", "server", "app"));
+    if (refEdits.reduce((sum, item) => sum + item.count, 0) < 1) die(`${stage.name}: page chunk 引用未找到，拒绝改名`);
+    ss = ss.replaceAll(stage.hash, PAGE_NEW);
   }
-  console.log(JSON.stringify({ status: "upgraded", edits, refFilesRenamed: renamed, pkg: PKG }));
+
+  if (CHECK) {
+    console.log(JSON.stringify({ status: "check-ok", mode: "reentrant", from: stage.name, target: "v4", edits, needsRename, refFiles: refEdits.length }));
+    process.exit(0);
+  }
+  if (!edits.length && !needsRename) {
+    console.log(JSON.stringify({ status: "already-patched", mode: "v4", hideAgentToolCalls: true, pkg: PKG }));
+    process.exit(0);
+  }
+
+  // 增量备份保留 v3 折叠行为，便于只回滚“隐藏工具卡”；已有备份绝不覆盖。
+  for (const file of [stage.file, pageServer, ...refEdits.map((item) => item.file)]) {
+    const rel = path.relative(PKG, file);
+    const dst = path.join(UPGRADE_BACKUP, rel);
+    if (fs.existsSync(dst)) continue;
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(file, dst);
+  }
+
+  fs.writeFileSync(pageClientNew, cs);
+  fs.writeFileSync(pageServer, ss);
+  for (const item of refEdits) fs.writeFileSync(item.file, item.out);
+  // 不删 stage.file：运行中的 Next 进程可能仍返回旧 hash；保留旧 chunk 才能零中断。
+  console.log(JSON.stringify({
+    status: "upgraded", from: stage.name, target: "v4", edits,
+    hideAgentToolCalls: true, pageRenamed: needsRename, previousPageRetained: needsRename,
+    refFilesRenamed: refEdits.length, upgradeBackup: UPGRADE_BACKUP, pkg: PKG,
+  }));
   process.exit(0);
 }
 for (const f of [pageClientOld, layoutOld, pageServer]) if (!fs.existsSync(f)) die("目标文件不存在: " + f);
@@ -173,7 +226,10 @@ function patchBundle(src, label) {
   const r2c = applyR2c(out, label);
   if (!r2c.applied) die(label + ": R2c 未生效");
   out = r2c.out;
-  return { out, idents: { jsx, pdg, tr, ey, em, refsMap, msgRefs } };
+  const r3 = applyR3(out, label);
+  if (!r3.applied) die(label + ": R3 工具卡过滤未生效");
+  out = r3.out;
+  return { out, idents: { jsx, pdg, tr, ey, em, refsMap, msgRefs }, hideAgentToolCalls: true };
 }
 
 const clientSrc = fs.readFileSync(pageClientOld, "utf8");
@@ -218,6 +274,7 @@ const summary = {
   status: CHECK ? "check-ok" : "patched",
   pkg: PKG, version: VERSION, mark: SW_MARK,
   idents: { client: client.idents, server: server.idents },
+  hideAgentToolCalls: client.hideAgentToolCalls && server.hideAgentToolCalls,
   swAnchor: swCount,
   rename: { [`page-${PAGE_OLD}`]: `page-${PAGE_NEW}`, [`layout-${LAY_OLD}`]: `layout-${LAY_NEW}` },
   refEdits: refEdits.map((e) => ({ file: path.relative(PKG, e.f), page: e.cPage, layout: e.cLay })),
@@ -235,12 +292,13 @@ for (const f of toBackup) {
   fs.copyFileSync(f, dst);
 }
 
-// ---------- 落盘（新名写入→删旧名→引用替换） ----------
+// ---------- 落盘（新名写入→引用替换；旧 chunk 保留给运行中的旧进程） ----------
 fs.writeFileSync(pageClientNew, client.out);
-fs.unlinkSync(pageClientOld);
 fs.writeFileSync(layoutNew, layoutPatched);
-fs.unlinkSync(layoutOld);
 fs.writeFileSync(pageServer, serverOut);
 for (const e of refEdits) fs.writeFileSync(e.f, e.out);
 
 console.log(JSON.stringify(summary, null, 1));
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
