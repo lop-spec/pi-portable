@@ -138,10 +138,18 @@ if (stage) {
   let cs = fs.readFileSync(stage.file, "utf8");
   let ss = fs.readFileSync(pageServer, "utf8");
   const edits = [];
+  const legacyPageWrites = [];
   for (const [get, set, label] of [[() => cs, (v) => (cs = v), "client"], [() => ss, (v) => (ss = v), "server"]]) {
     const b = applyR2b(get(), label); set(b.out); b.applied && edits.push(label + "-r2b");
     const c = applyR2c(get(), label); set(c.out); c.applied && edits.push(label + "-r2c");
     const h = applyR3(get(), label); set(h.out); h.applied && edits.push(label + "-r3-hide-tools");
+  }
+
+  // 运行中的 Next 可能继续返回旧 hash；旧 page chunk 也只加 R3，确保当前进程立即生效。
+  for (const file of [pageClientOld, pageClientV1, pageClientV3]) {
+    if (!fs.existsSync(file)) continue;
+    const legacy = applyR3(fs.readFileSync(file, "utf8"), `legacy-${path.basename(file)}`);
+    if (legacy.applied) legacyPageWrites.push({ file, out: legacy.out });
   }
 
   const needsRename = stage.hash !== PAGE_NEW;
@@ -162,16 +170,16 @@ if (stage) {
   }
 
   if (CHECK) {
-    console.log(JSON.stringify({ status: "check-ok", mode: "reentrant", from: stage.name, target: "v4", edits, needsRename, refFiles: refEdits.length }));
+    console.log(JSON.stringify({ status: "check-ok", mode: "reentrant", from: stage.name, target: "v4", edits, legacyPageEdits: legacyPageWrites.length, needsRename, refFiles: refEdits.length }));
     process.exit(0);
   }
-  if (!edits.length && !needsRename) {
-    console.log(JSON.stringify({ status: "already-patched", mode: "v4", hideAgentToolCalls: true, pkg: PKG }));
+  if (!edits.length && !legacyPageWrites.length && !needsRename) {
+    console.log(JSON.stringify({ status: "already-patched", mode: "v4", hideAgentToolCalls: true, legacyPagesPatched: true, pkg: PKG }));
     process.exit(0);
   }
 
   // 增量备份保留 v3 折叠行为，便于只回滚“隐藏工具卡”；已有备份绝不覆盖。
-  for (const file of [stage.file, pageServer, ...refEdits.map((item) => item.file)]) {
+  for (const file of [stage.file, pageServer, ...legacyPageWrites.map((item) => item.file), ...refEdits.map((item) => item.file)]) {
     const rel = path.relative(PKG, file);
     const dst = path.join(UPGRADE_BACKUP, rel);
     if (fs.existsSync(dst)) continue;
@@ -181,12 +189,13 @@ if (stage) {
 
   fs.writeFileSync(pageClientNew, cs);
   fs.writeFileSync(pageServer, ss);
+  for (const item of legacyPageWrites) fs.writeFileSync(item.file, item.out);
   for (const item of refEdits) fs.writeFileSync(item.file, item.out);
   // 不删 stage.file：运行中的 Next 进程可能仍返回旧 hash；保留旧 chunk 才能零中断。
   console.log(JSON.stringify({
     status: "upgraded", from: stage.name, target: "v4", edits,
     hideAgentToolCalls: true, pageRenamed: needsRename, previousPageRetained: needsRename,
-    refFilesRenamed: refEdits.length, upgradeBackup: UPGRADE_BACKUP, pkg: PKG,
+    legacyPagesPatched: legacyPageWrites.length, refFilesRenamed: refEdits.length, upgradeBackup: UPGRADE_BACKUP, pkg: PKG,
   }));
   process.exit(0);
 }
@@ -238,6 +247,8 @@ const layoutSrc = fs.readFileSync(layoutOld, "utf8");
 
 const client = patchBundle(clientSrc, "client");
 const server = patchBundle(serverSrc, "server");
+const legacyClient = applyR3(clientSrc, "legacy-client");
+if (!legacyClient.applied) die("legacy-client: R3 工具卡过滤未生效");
 
 const SW_OLD = `encodeURIComponent("${VERSION}")`;
 const swCount = layoutSrc.split(SW_OLD).length - 1;
@@ -275,6 +286,7 @@ const summary = {
   pkg: PKG, version: VERSION, mark: SW_MARK,
   idents: { client: client.idents, server: server.idents },
   hideAgentToolCalls: client.hideAgentToolCalls && server.hideAgentToolCalls,
+  legacyPagesPatched: legacyClient.applied,
   swAnchor: swCount,
   rename: { [`page-${PAGE_OLD}`]: `page-${PAGE_NEW}`, [`layout-${LAY_OLD}`]: `layout-${LAY_NEW}` },
   refEdits: refEdits.map((e) => ({ file: path.relative(PKG, e.f), page: e.cPage, layout: e.cLay })),
@@ -292,8 +304,9 @@ for (const f of toBackup) {
   fs.copyFileSync(f, dst);
 }
 
-// ---------- 落盘（新名写入→引用替换；旧 chunk 保留给运行中的旧进程） ----------
+// ---------- 落盘（新名写入→引用替换；旧 chunk 同样隐藏工具卡并保留给运行中的旧进程） ----------
 fs.writeFileSync(pageClientNew, client.out);
+fs.writeFileSync(pageClientOld, legacyClient.out);
 fs.writeFileSync(layoutNew, layoutPatched);
 fs.writeFileSync(pageServer, serverOut);
 for (const e of refEdits) fs.writeFileSync(e.f, e.out);

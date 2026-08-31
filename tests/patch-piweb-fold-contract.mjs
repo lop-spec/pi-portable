@@ -43,7 +43,9 @@ test("tool-call visibility patch fails closed on missing or ambiguous anchors", 
   );
 });
 
-test("old page and layout chunks are retained for zero-downtime patching", () => {
+test("old page and layout chunks are retained and old page hashes receive the same visibility filter", () => {
   assert.doesNotMatch(patchSource, /fs\.unlinkSync\((?:stage\.file|pageClientOld|layoutOld)\)/);
   assert.match(patchSource, /previousPageRetained: needsRename/);
+  assert.match(patchSource, /legacyPageWrites\.push\(\{ file, out: legacy\.out \}\)/);
+  assert.match(patchSource, /for \(const item of legacyPageWrites\) fs\.writeFileSync\(item\.file, item\.out\)/);
 });

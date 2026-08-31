@@ -36,6 +36,7 @@
     "secondRunSemanticEdits": 0,
     "incrementalBackupCreated": true,
     "oldChunkRetainedForRunningProcess": true,
+    "oldAndNewPageHashesPatched": true,
     "textRenderPathPreserved": true,
     "thinkingRenderPathPreserved": true
   }
