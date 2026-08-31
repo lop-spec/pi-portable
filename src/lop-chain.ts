@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v4";
+export const LOP_CHAIN_RUNTIME_VERSION = "two-state-goal-v5";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -233,9 +233,11 @@ const GOAL_GATE_TIMEOUT_MS = Number(process.env.LOP_GOAL_GATE_TIMEOUT_MS || 1200
 const GOAL_GATE_LINE = /^\s*(?:【目标门】|\[goal-gate\])\s*(.*?)\s*$/miu;
 // 两态验收目标:桥 persistence 注入要求模型对执行型任务自列【验收清单】。
 // 首份清单冻结为会话分支上的持久合同;只有 [ ](未完成) 与 [x](已验证完成),任何
-// 第三状态、删项、改名、漏清单都保持 active 并自动续跑。不存在固定轮数后静默放行;
-// 同一真实阻塞连续出现 3 轮才转 blocked。显式目标门始终拥有更高完成优先级。
+// 第三状态、删项、改名、漏清单都保持 active；合法未完成项不设固定续跑上限。
+// 格式违规诊断与合同项分离，同一诊断连续 3 轮仍未修正时熔断自动 follow-up，
+// 保留 active 合同等待真实用户消息，防止门禁自身递归。显式目标门始终拥有更高完成优先级。
 const CHECKLIST_BLOCKER_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_BLOCKER_TURNS || 3));
+const CHECKLIST_VIOLATION_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_VIOLATION_TURNS || 3));
 const CHECKLIST_HEADER = "【验收清单】";
 const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
 const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
@@ -372,6 +374,8 @@ export type ChecklistGoalState = {
   continuationCount: number;
   blockerKey: string;
   blockerTurns: number;
+  violationKey: string;
+  violationTurns: number;
   allowExpansion: boolean;
 };
 export type ChecklistGateResult = {
@@ -386,6 +390,16 @@ export function normalizeChecklistItem(value: unknown): string {
   return String(value || "").normalize("NFKC").replace(/\s+/gu, " ").trim();
 }
 
+function canonicalAddedChecklistViolation(value: unknown): string {
+  const normalized = normalizeChecklistItem(value);
+  const body = normalized.replace(/^(?:验收项目被新增或改名:\s*)+/u, "").trim();
+  return `验收项目被新增或改名: ${body || normalized}`;
+}
+
+function checklistViolationFingerprint(violations: string[]): string {
+  return [...new Set(violations.map(normalizeChecklistItem).filter(Boolean))].sort().join("|");
+}
+
 export function createChecklistGoalState(
   objective: unknown = "", taskUserEntryId: unknown = "",
 ): ChecklistGoalState {
@@ -398,12 +412,19 @@ export function createChecklistGoalState(
     continuationCount: 0,
     blockerKey: "",
     blockerTurns: 0,
+    violationKey: "",
+    violationTurns: 0,
     allowExpansion: false,
   };
 }
 
 function cloneChecklistGoalState(state: ChecklistGoalState): ChecklistGoalState {
-  return { ...state, items: state.items.map((item) => ({ ...item })) };
+  return {
+    ...state,
+    items: state.items.map((item) => ({ ...item })),
+    violationKey: String(state.violationKey || ""),
+    violationTurns: Math.max(0, Number(state.violationTurns || 0)),
+  };
 }
 
 export function freezeChecklistGoalContract(
@@ -538,6 +559,7 @@ export function checklistGateDecision(input: {
   contractText?: unknown;
   deterministicVerified?: boolean;
   blockerTurnsRequired?: number;
+  violationTurnsRequired?: number;
 }): ChecklistGateResult {
   const unchanged = (reason: string, state: ChecklistGoalState | null = input.state || null): ChecklistGateResult =>
     ({ trigger: false, reason, open: [], violations: [], state });
@@ -547,7 +569,10 @@ export function checklistGateDecision(input: {
 
   let state = input.state ? cloneChecklistGoalState(input.state) : null;
   if (input.deterministicVerified) {
-    if (state) state = { ...state, status: "complete", blockerKey: "", blockerTurns: 0 };
+    if (state) state = {
+      ...state, status: "complete", blockerKey: "", blockerTurns: 0,
+      violationKey: "", violationTurns: 0,
+    };
     return unchanged("deterministic-host-verified", state);
   }
   if (state?.status === "inactive") return unchanged("goal-inactive", state);
@@ -570,7 +595,7 @@ export function checklistGateDecision(input: {
   const contractKeys = new Set(state.items.map((item) => item.key));
   if (parsed) {
     for (const item of parsedItems) {
-      if (!contractKeys.has(item.key)) violations.push(`验收项目被新增或改名: ${item.text}`);
+      if (!contractKeys.has(item.key)) violations.push(canonicalAddedChecklistViolation(item.text));
       if (item.state === "invalid") violations.push(`禁止的第三状态 [${item.marker}]: ${item.text}`);
     }
     for (const item of parsed.duplicates) violations.push(`重复验收项目: ${item}`);
@@ -587,16 +612,36 @@ export function checklistGateDecision(input: {
       if (!current || current.state !== "done") open.push(contract.text);
     }
   }
-  open.push(...violations);
   const uniqueOpen = [...new Set(open)];
-  if (!uniqueOpen.length) {
+  if (!uniqueOpen.length && !violations.length) {
     state.status = "complete";
     state.blockerKey = "";
     state.blockerTurns = 0;
+    state.violationKey = "";
+    state.violationTurns = 0;
     return { trigger: false, reason: "goal-complete", open: [], violations: [], state };
   }
 
   state.status = "active";
+  const violationKey = checklistViolationFingerprint(violations);
+  if (violationKey) {
+    state.violationTurns = state.violationKey === violationKey ? state.violationTurns + 1 : 1;
+    state.violationKey = violationKey;
+    if (state.violationTurns >= Math.max(1, input.violationTurnsRequired || CHECKLIST_VIOLATION_TURNS)) {
+      state.blockerKey = "";
+      state.blockerTurns = 0;
+      return {
+        trigger: false,
+        reason: "repeated-checklist-violation-circuit-open",
+        open: uniqueOpen,
+        violations,
+        state,
+      };
+    }
+  } else {
+    state.violationKey = "";
+    state.violationTurns = 0;
+  }
   const blockerKey = checklistBlockerFingerprint(input.assistantText, uniqueOpen);
   if (blockerKey) {
     state.blockerTurns = state.blockerKey === blockerKey ? state.blockerTurns + 1 : 1;
@@ -612,11 +657,24 @@ export function checklistGateDecision(input: {
   state.continuationCount += 1;
   return {
     trigger: true,
-    reason: blockerKey ? "blocker-retry" : parsed ? "open-items" : "missing-checklist",
+    reason: blockerKey ? "blocker-retry" : !parsed ? "missing-checklist" : violations.length ? "invalid-checklist" : "open-items",
     open: uniqueOpen,
     violations,
     state,
   };
+}
+
+export function formatChecklistGateContinuation(result: ChecklistGateResult, continuation: number): string {
+  const openKeys = new Set(result.open.map((item) => normalizeChecklistItem(item).toLocaleLowerCase()));
+  const contracts = result.state?.items || [];
+  const contractBlock = contracts.length
+    ? `${CHECKLIST_HEADER}\n${contracts.map((item) =>
+      `- [${openKeys.has(item.key) ? " " : "x"}] ${item.text}`).join("\n")}`
+    : "尚未冻结有效验收合同；下一回复先给出仅含 [ ]/[x] 的可验证验收清单。";
+  const diagnostics = result.violations.length
+    ? `\n\n格式违规诊断（不是验收项目，禁止复制进清单）:\n${result.violations.map((item) => `- ${item}`).join("\n")}`
+    : "";
+  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。以下是唯一冻结合同，回复时必须完整重复且只更新 [ ]/[x] 状态:\n${contractBlock}${diagnostics}\n\n继续执行原始任务。已有可验证证据的项目标为 [x]；未完成项目保留 [ ]。禁止 [~] 或任何第三状态，禁止删除、改名、缩减合同项目；如果确有外部阻塞，保留对应 [ ] 并报告可验证证据。`;
 }
 
 export function goalGateVerdict(input: {
@@ -665,6 +723,20 @@ function assistantText(message: any): string {
   return Array.isArray(message?.content)
     ? message.content.filter((item: any) => item?.type === "text").map((item: any) => item.text).join("\n")
     : String(message?.content || "");
+}
+
+export function firstChecklistForLatestUser(messages: any[]): string {
+  const source = Array.isArray(messages) ? messages : [];
+  let latestUser = -1;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index]?.role === "user") latestUser = index;
+  }
+  for (let index = latestUser + 1; index < source.length; index += 1) {
+    if (source[index]?.role !== "assistant") continue;
+    const text = assistantText(source[index]);
+    if (text.includes(CHECKLIST_HEADER)) return text;
+  }
+  return "";
 }
 
 export default function (pi: ExtensionAPI) {
@@ -934,6 +1006,7 @@ export default function (pi: ExtensionAPI) {
       if (checklistGoal?.status === "blocked") {
         setChecklistGoal({
           ...checklistGoal, status: "active", blockerKey: "", blockerTurns: 0,
+          violationKey: "", violationTurns: 0,
         }, "user-resume");
       }
     } else if (isExecutionRequest(prompt) || gateDirective.action === "set") {
@@ -945,6 +1018,8 @@ export default function (pi: ExtensionAPI) {
           allowExpansion: true,
           blockerKey: "",
           blockerTurns: 0,
+          violationKey: "",
+          violationTurns: 0,
         }, "user-extends-active-goal");
       } else {
         setChecklistGoal(createChecklistGoalState(prompt, userTurn.id), "user-starts-goal");
@@ -1228,8 +1303,7 @@ export default function (pi: ExtensionAPI) {
     const assistantMessages = msgs.filter((message) => message?.role === "assistant");
     const lastAssistant = assistantMessages.at(-1);
     const text = assistantText(lastAssistant);
-    const firstChecklistText = assistantMessages.map(assistantText)
-      .find((candidate) => candidate.includes(CHECKLIST_HEADER)) || "";
+    const firstChecklistText = firstChecklistForLatestUser(msgs);
     let branch: any[] = [];
     try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
     const userTurn = latestUserTurn(branch);
@@ -1331,7 +1405,16 @@ export default function (pi: ExtensionAPI) {
       blockerTurnsRequired: CHECKLIST_BLOCKER_TURNS,
     });
     if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
-    if (checklistGate.reason === "same-blocker-three-turns") {
+    if (checklistGate.reason === "repeated-checklist-violation-circuit-open") {
+      checklistRetryActive = false;
+      log(`CHECKLIST_GOAL CIRCUIT_OPEN violationTurns=${checklistGate.state?.violationTurns || 0} violations=${checklistGate.violations.length}`);
+      metric({
+        sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
+        checklistGoal: "active", checklistReason: checklistGate.reason,
+        checklistViolationTurns: checklistGate.state?.violationTurns || 0,
+      });
+      try { ctx?.ui?.notify?.("验收门已熔断重复格式违规；合同保持 active，等待真实用户消息。", "warning"); } catch {}
+    } else if (checklistGate.reason === "same-blocker-three-turns") {
       checklistRetryActive = false;
       log(`CHECKLIST_GOAL BLOCKED blockerTurns=${checklistGate.state?.blockerTurns || 0} open=${checklistGate.open.length}`);
       metric({
@@ -1351,7 +1434,7 @@ export default function (pi: ExtensionAPI) {
       try {
         pi.sendMessage({
           customType: CHECKLIST_GATE_TYPE,
-          content: `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。冻结验收合同中仍未完成或非法的项目:\n${checklistGate.open.map((item) => `- [ ] ${item}`).join("\n")}\n\n继续执行原始任务并在回复中完整重复冻结清单。清单只允许两种状态:“- [ ]”表示未完成,“- [x]”表示已有可验证证据的完成。禁止 [~] 或任何第三状态,禁止删除、改名、缩减项目；如果确有外部阻塞,保留 [ ] 并报告同一项的可验证阻塞证据。`,
+          content: formatChecklistGateContinuation(checklistGate, continuation),
           display: false,
           details: {
             status: "active", open: checklistGate.open,

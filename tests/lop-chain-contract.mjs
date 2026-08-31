@@ -24,6 +24,8 @@ const {
   completionGuardDecision,
   createChecklistGoalState,
   expandPrompt,
+  firstChecklistForLatestUser,
+  formatChecklistGateContinuation,
   freezeChecklistGoalContract,
   goalGateVerdict,
   historyUsageDecision,
@@ -368,7 +370,7 @@ const rewrittenByS6 = checklistGateDecision({
 assert.equal(rewrittenByS6.trigger, true);
 assert.deepEqual(rewrittenByS6.state.items.map((item) => item.text), ["读取配置", "部署服务", "验证端口"]);
 assert.match(rewrittenByS6.open.join("\n"), /读取配置/u);
-assert.match(rewrittenByS6.open.join("\n"), /新增或改名/u);
+assert.match(rewrittenByS6.violations.join("\n"), /新增或改名/u);
 assert.equal(checklistGateDecision({ ...checklistBase, stopReason: "aborted" }).reason, "not-stop");
 assert.equal(checklistGateDecision({ ...checklistBase, pendingMessages: true }).reason, "pending-messages");
 assert.equal(checklistGateDecision({ ...checklistBase, hasGoalGate: true }).reason, "goal-gate-owns-completion");
@@ -376,25 +378,28 @@ assert.equal(checklistGateDecision({ ...checklistBase, hasGoalGate: true }).reas
 const missingChecklist = checklistGateDecision({ ...checklistBase, assistantText: "普通回复", state: frozen.state });
 assert.equal(missingChecklist.trigger, true);
 assert.equal(missingChecklist.reason, "missing-checklist");
-assert.match(missingChecklist.open.join("\n"), /遗漏了冻结/u);
+assert.deepEqual(missingChecklist.open, ["读取配置", "部署服务", "验证端口"]);
+assert.match(missingChecklist.violations.join("\n"), /遗漏了冻结/u);
 const renamedChecklist = checklistGateDecision({
   ...checklistBase,
   state: frozen.state,
   assistantText: "【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [x] 验证网络端口",
 });
 assert.equal(renamedChecklist.trigger, true);
-assert.match(renamedChecklist.open.join("\n"), /验证端口/u);
-assert.match(renamedChecklist.open.join("\n"), /新增或改名/u);
+assert.deepEqual(renamedChecklist.open, ["验证端口"]);
+assert.match(renamedChecklist.violations.join("\n"), /新增或改名/u);
 const tildeDecision = checklistGateDecision({ ...checklistBase, state: frozen.state, assistantText: forbiddenTildeText });
 assert.equal(tildeDecision.trigger, true);
-assert.match(tildeDecision.open.join("\n"), /禁止的第三状态/u);
+assert.deepEqual(tildeDecision.open, ["验证端口"]);
+assert.match(tildeDecision.violations.join("\n"), /禁止的第三状态/u);
 const checkmarkDecision = checklistGateDecision({
   ...checklistBase,
   state: frozen.state,
   assistantText: "【验收清单】\n- [x] 读取配置\n- [x] 部署服务\n- [√] 验证端口",
 });
 assert.equal(checkmarkDecision.trigger, true);
-assert.match(checkmarkDecision.open.join("\n"), /禁止的第三状态 \[√\]/u);
+assert.deepEqual(checkmarkDecision.open, ["验证端口"]);
+assert.match(checkmarkDecision.violations.join("\n"), /禁止的第三状态 \[√\]/u);
 const expandedContract = checklistGateDecision({
   ...checklistBase,
   state: { ...frozen.state, allowExpansion: true },
@@ -404,6 +409,58 @@ assert.deepEqual(expandedContract.state.items.map((item) => item.text), [
   "读取配置", "部署服务", "验证端口", "同步远端机器",
 ]);
 assert.deepEqual(expandedContract.open, ["同步远端机器"]);
+
+// 当前用户追加任务时必须取该 user 之后的首份清单，不能被同一低层 run 中的旧清单劫持。
+const currentTaskChecklist = "【验收清单】\n- [ ] 写入索引收益摘要";
+assert.equal(firstChecklistForLatestUser([
+  { role: "assistant", content: [{ type: "text", text: openChecklistText }] },
+  { role: "user", content: "追加文档收益要求" },
+  { role: "assistant", content: [{ type: "text", text: "先检查证据。" }] },
+  { role: "assistant", content: [{ type: "text", text: currentTaskChecklist }] },
+]), currentTaskChecklist);
+assert.equal(firstChecklistForLatestUser([
+  { role: "assistant", content: [{ type: "text", text: openChecklistText }] },
+]), openChecklistText);
+const scopedExpansion = checklistGateDecision({
+  ...checklistBase,
+  state: { ...frozen.state, allowExpansion: true },
+  contractText: currentTaskChecklist,
+  assistantText: currentTaskChecklist,
+});
+assert.deepEqual(scopedExpansion.state.items.map((item) => item.text), [
+  "读取配置", "部署服务", "验证端口", "写入索引收益摘要",
+]);
+assert.deepEqual(scopedExpansion.violations, []);
+
+// 违规诊断不得伪装成合同复选项；复制旧诊断也必须规范化，连续三次后熔断自动续跑。
+const copiedDiagnosticText = [
+  fullyClosedChecklistText,
+  "- [x] 验收项目被新增或改名: 验收项目被新增或改名: 回复遗漏了冻结的【验收清单】",
+].join("\n");
+let diagnosticLoop = checklistGateDecision({
+  ...checklistBase, state: frozen.state, assistantText: copiedDiagnosticText,
+});
+assert.equal(diagnosticLoop.trigger, true);
+assert.deepEqual(diagnosticLoop.open, []);
+assert.deepEqual(diagnosticLoop.violations, ["验收项目被新增或改名: 回复遗漏了冻结的【验收清单】"]);
+const diagnosticContinuation = formatChecklistGateContinuation(diagnosticLoop, 1);
+assert.match(diagnosticContinuation, /【验收清单】/u);
+assert.match(diagnosticContinuation, /格式违规诊断（不是验收项目/u);
+assert.doesNotMatch(diagnosticContinuation, /- \[ \] 验收项目被新增或改名/u);
+diagnosticLoop = checklistGateDecision({
+  ...checklistBase, state: diagnosticLoop.state, assistantText: copiedDiagnosticText,
+});
+assert.equal(diagnosticLoop.trigger, true);
+diagnosticLoop = checklistGateDecision({
+  ...checklistBase, state: diagnosticLoop.state, assistantText: copiedDiagnosticText,
+});
+assert.equal(diagnosticLoop.trigger, false);
+assert.equal(diagnosticLoop.reason, "repeated-checklist-violation-circuit-open");
+assert.equal(diagnosticLoop.state.status, "active");
+const recoveredAfterCircuit = checklistGateDecision({
+  ...checklistBase, state: diagnosticLoop.state, assistantText: fullyClosedChecklistText,
+});
+assert.equal(recoveredAfterCircuit.reason, "goal-complete");
 
 // 不再有固定两轮后 exhausted：第 20 轮仍保持 active 并续跑。
 let longRunning = frozen;
@@ -482,6 +539,8 @@ for (const response of [forbiddenTildeText, openChecklistText, openChecklistText
 }
 assert.equal(clMessages().length, 5);
 assert.match(clMessages().at(-1).message.content, /遗漏了冻结/u);
+assert.match(clMessages().at(-1).message.content, /格式违规诊断（不是验收项目/u);
+assert.doesNotMatch(clMessages().at(-1).message.content, /- \[ \] 回复遗漏了冻结/u);
 await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content }, clCtx);
 await clEnd(fullyClosedChecklistText);
 assert.equal(clMessages().length, 5);
@@ -516,7 +575,7 @@ await clEnd(openChecklistText); // 目标门在场且通过 → 清单状态机�
 assert.equal(clMessages().length, 5);
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "two-state-goal-v4");
+assert.equal(runtimeVersionFromSource(source), "two-state-goal-v5");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
