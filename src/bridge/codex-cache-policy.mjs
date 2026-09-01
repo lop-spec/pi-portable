@@ -199,23 +199,6 @@ function applyHistoryReplayEffort(payload, effort) {
   return result;
 }
 
-function applyForcedReasoningEffort(payload, effort) {
-  const from = String(payload?.reasoning?.effort || '');
-  const result = { applied: false, reason: 'disabled', from, to: from };
-  if (!effort || effort === 'off') return result;
-  if (!GPT56_MODEL.test(String(payload?.model || ''))) {
-    result.reason = 'unsupported-model';
-    return result;
-  }
-  payload.reasoning = { ...(payload.reasoning || {}), effort };
-  Object.assign(result, {
-    applied: from !== effort,
-    reason: from === effort ? 'already-forced' : 'forced',
-    to: effort,
-  });
-  return result;
-}
-
 function findStableBreakpoint(input) {
   let candidate = null;
   for (let itemIndex = 0; itemIndex < input.length; itemIndex += 1) {
@@ -347,7 +330,6 @@ export function rewriteCodexRequestBody(
     tier = 'off',
     explicitBreakpoint = true,
     historyReplayEffort = 'off',
-    forceReasoningEffort = 'off',
   } = {},
 ) {
   try {
@@ -360,7 +342,8 @@ export function rewriteCodexRequestBody(
       explicitBreakpoint,
       historyReplayEffort,
     });
-    const forcedReasoning = applyForcedReasoningEffort(payload, forceReasoningEffort);
+    // reasoning 强度完全由会话控制(2026-09-01 lop 裁决,撤销 08-30 的全请求强制 max):
+    // 桥不再改写 reasoning.effort;历史快路(applyHistoryReplayEffort)是显式规则例外,保留。
     let tierApplied = false;
     const hasRequestTier = Object.prototype.hasOwnProperty.call(payload, 'service_tier');
     if (tier !== 'off' && !hasRequestTier) {
@@ -372,7 +355,7 @@ export function rewriteCodexRequestBody(
       ? payload.service_tier
       : null;
     const replay = responseReplayIdentity(payload);
-    if (!cache.applied && !tierApplied && !reasoning.applied && !forcedReasoning.applied) {
+    if (!cache.applied && !tierApplied && !reasoning.applied) {
       return {
         body,
         headers,
@@ -383,10 +366,8 @@ export function rewriteCodexRequestBody(
           tierSource,
           effectiveTier,
           reasoningApplied: false,
-          forcedReasoningApplied: false,
           cache,
           reasoning,
-          forcedReasoning,
           replay,
         },
       };
@@ -401,10 +382,8 @@ export function rewriteCodexRequestBody(
         tierSource,
         effectiveTier,
         reasoningApplied: reasoning.applied,
-        forcedReasoningApplied: forcedReasoning.applied,
         cache,
         reasoning,
-        forcedReasoning,
         replay,
       },
     };
@@ -419,10 +398,8 @@ export function rewriteCodexRequestBody(
         tierSource: 'unknown',
         effectiveTier: null,
         reasoningApplied: false,
-        forcedReasoningApplied: false,
         cache: null,
         reasoning: null,
-        forcedReasoning: null,
         replay: null,
       },
     };

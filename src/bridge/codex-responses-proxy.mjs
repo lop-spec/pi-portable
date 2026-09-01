@@ -39,9 +39,10 @@ const UPSTREAM_PROXY_HOST = process.env.CODEX_UPSTREAM_PROXY_HOST || "127.0.0.1"
 const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); // [portable] 0=直连
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
-const FORCE_REASONING_EFFORT = process.env.CODEX_FORCE_REASONING_EFFORT || "max";
+// v7.15.0:撤销全请求强制 reasoning=max(08-30 引入)。强度完全由会话控制——pi 会话对
+// gpt-5.6-sol 默认已是 max(settings.modelThinkingLevels),桥强制只会掩盖会话真实设置。
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.14.0";
+const POLICY_VERSION = "gpt56-chain-replay-v7.15.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -393,7 +394,6 @@ async function handleResponses(req, res) {
     tier: TIER,
     explicitBreakpoint: EXPLICIT_BREAKPOINT,
     historyReplayEffort: HISTORY_REPLAY_EFFORT,
-    forceReasoningEffort: FORCE_REASONING_EFFORT,
   });
   ({ body, headers: fwdHeaders } = rewritten);
   // 兼容剥离：ChatGPT codex 上游不认 max_output_tokens（"Unsupported parameter"，2026-08-28 实测），
@@ -413,16 +413,15 @@ async function handleResponses(req, res) {
     log(`cache 注入：key=${c.key} breakpoint=${c.breakpointApplied ? "explicit" : "off"} boundary=input[${c.itemIndex}].content[${c.blockIndex}] body=${originalBytes}B→${body.length}B`);
   } else if (rewritten.meta.parseFailed) {
     log(`cache/tier 解析失败，fail-open 原样透传 body=${originalBytes}B`);
-  } else if (process.env.CODEX_PROXY_DUMP === "1") {
-    log(`cache 未注入：${rewritten.meta.cache?.reason || "未命中策略"}`);
+  } else {
+    // 不再用 CODEX_PROXY_DUMP 门控:key 注入静默失效曾隐藏两天(2026-08-31→09-01,
+    // pi 的 input[0].content 是字符串形态,findStableBreakpoint 找不到 input_text 块)。
+    log(`cache 未注入：${rewritten.meta.cache?.reason || "未命中策略"} originator=${req.headers.originator || "-"}`);
   }
   if (rewritten.meta.tierApplied) {
     log(`tier 兜底：service_tier=${rewritten.meta.effectiveTier} originator=${req.headers.originator || "-"}`);
   } else if (rewritten.meta.tierSource === "request") {
     log(`tier 透传：service_tier=${rewritten.meta.effectiveTier} originator=${req.headers.originator || "-"}`);
-  }
-  if (rewritten.meta.forcedReasoningApplied) {
-    log(`推理强度强制：reasoning ${rewritten.meta.forcedReasoning.from || "default"}→${rewritten.meta.forcedReasoning.to}`);
   }
   if (rewritten.meta.reasoningApplied) {
     log(`history 快路：reasoning ${rewritten.meta.reasoning.from || "default"}→${rewritten.meta.reasoning.to}`);
@@ -660,7 +659,7 @@ const server = http.createServer(async (req, res) => {
       tierFallback: TIER,
       explicitBreakpoint: EXPLICIT_BREAKPOINT,
       historyReplayEffort: HISTORY_REPLAY_EFFORT,
-      forceReasoningEffort: FORCE_REASONING_EFFORT,
+      forceReasoningEffort: "off",
       responseMemoTtlMs: RESPONSE_MEMO_TTL_MS,
       responseMemoEntries: responseMemo.size,
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
@@ -753,7 +752,7 @@ server.listen(PORT, HOST, () => {
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
   log(`Tier 兜底：${TIER === "off" ? "off（请求未指定时交给上游）" : TIER}；请求显式 service_tier 始终优先`);
   log(`历史快路：exact relevance=1 使用 reasoning=${HISTORY_REPLAY_EFFORT}，工具失败自动保持原强度`);
-  log(`推理强度：GPT-5.6 全请求强制 reasoning=${FORCE_REASONING_EFFORT}`);
+  log(`推理强度：透传会话请求值（桥不改写；历史快路除外）`);
   log(`响应复用：严格 exact 全语义键，TTL=${RESPONSE_MEMO_TTL_MS}ms，最多 64 条/512KiB 每条`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
   log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);

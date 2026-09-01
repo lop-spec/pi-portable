@@ -179,7 +179,6 @@ if (bridgePort > 0) {
       PI_PORTABLE_DATA: bridgeData,
       CODEX_PROXY_PORT: String(bridgePort),
       CODEX_HISTORY_REPLAY_EFFORT: 'max',
-      CODEX_FORCE_REASONING_EFFORT: 'max',
       ...(upstreamProxyPort ? {
         CODEX_UPSTREAM_PROXY_HOST: '127.0.0.1',
         CODEX_UPSTREAM_PROXY_PORT: String(upstreamProxyPort),

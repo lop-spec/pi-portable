@@ -34,10 +34,10 @@ test('Pi user-role exact history participates in stable response replay identity
   assert.equal(second.usageToken, 'h_abcdef123456');
 });
 
-test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
+test('proxy passes session reasoning through untouched (v7.15.0 revokes forced max)', () => {
   const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
   const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.14\.0/u);
+  assert.match(source, /gpt56-chain-replay-v7\.15\.0/u);
   assert.match(source, /requestWithOverloadRetry/u);
   assert.match(source, /selected\.prefixChunks/u);
   assert.match(source, /selected\.exhausted/u);
@@ -48,7 +48,8 @@ test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
   assert.match(source, /Never use '\[~\]'/u);
   assert.match(source, /checked item saying the target was not met/u);
   assert.match(source, /CODEX_HISTORY_REPLAY_EFFORT \|\| "max"/u);
-  assert.match(source, /CODEX_FORCE_REASONING_EFFORT \|\| "max"/u);
+  // 2026-09-01 lop 裁决:reasoning 强度完全由会话控制,桥不得全局强制。
+  assert.doesNotMatch(source, /CODEX_FORCE_REASONING_EFFORT/u);
   assert.match(adversary, /reasoning: \{ effort: "max" \}/u);
   assert.match(adversary, /PI_CODING_AGENT_DIR/u);
   assert.match(adversary, /\.pi", "agent", "auth\.json"/u);
@@ -58,17 +59,12 @@ test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
     model: 'gpt-5.6-sol',
     reasoning: { effort: 'low', summary: 'auto' },
     input: [{ role: 'user', content: [{ type: 'input_text', text: 'probe' }] }],
-  })), { 'content-type': 'application/json' }, { forceReasoningEffort: 'max' });
+  })), { 'content-type': 'application/json' }, {});
   const payload = JSON.parse(rewritten.body.toString('utf8'));
-  assert.equal(payload.reasoning.effort, 'max');
+  assert.equal(payload.reasoning.effort, 'low');
   assert.equal(payload.reasoning.summary, 'auto');
-  assert.equal(rewritten.meta.forcedReasoningApplied, true);
-  assert.deepEqual(rewritten.meta.forcedReasoning, {
-    applied: true,
-    reason: 'forced',
-    from: 'low',
-    to: 'max',
-  });
+  assert.equal(rewritten.meta.reasoningApplied, false);
+  assert.equal(rewritten.meta.forcedReasoningApplied, undefined);
 });
 
 test('persistence prompt yields to host-verified deterministic final drafts', () => {
