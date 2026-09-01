@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 export const RUN_SUPERVISOR_VERSION = "run-supervisor-v1";
 export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
+export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v1";
+export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
+const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const GOAL_STATE_TYPE = "lop-checklist-goal-state";
 const DEFAULT_BACKOFF_MS = Object.freeze([2000, 5000, 15000]);
 const DEFAULT_POLL_MS = 500;
@@ -306,6 +309,169 @@ export class DurableRunStore {
   }
 }
 
+function pathKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function isPathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return Boolean(relative) && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
+}
+
+function boundedSessionHeader(filePath) {
+  const descriptor = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const read = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, read).toString("utf8");
+    const end = text.indexOf("\n");
+    if (end < 0) throw new Error("Pi session header exceeds 64 KiB or has no line boundary");
+    return JSON.parse(text.slice(0, end).replace(/\r$/u, ""));
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+export class SessionArchiveStore {
+  constructor(filePath, options = {}) {
+    this.filePath = path.resolve(filePath);
+    this.sessionRoot = path.resolve(options.sessionRoot || path.join(path.dirname(this.filePath), "sessions"));
+    this.now = options.now || Date.now;
+  }
+
+  fresh() {
+    return { version: 1, archiveVersion: PIWEB_ARCHIVE_VERSION, updatedAt: iso(this.now()), sessions: {} };
+  }
+
+  load() {
+    if (!fs.existsSync(this.filePath)) return this.fresh();
+    let value;
+    try { value = JSON.parse(fs.readFileSync(this.filePath, "utf8")); }
+    catch (error) { throw new Error(`session archive index is unreadable: ${String(error?.message || error)}`); }
+    if (value?.version !== 1 || !value.sessions || typeof value.sessions !== "object" || Array.isArray(value.sessions)) {
+      throw new Error("unsupported session archive index schema");
+    }
+    return value;
+  }
+
+  save(state) {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const value = { ...state, version: 1, archiveVersion: PIWEB_ARCHIVE_VERSION, updatedAt: iso(this.now()) };
+    const temporary = `${this.filePath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+    fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+    try { fs.renameSync(temporary, this.filePath); }
+    finally { try { if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true }); } catch {} }
+  }
+
+  validateSession(info) {
+    const id = String(info?.id || "").trim();
+    const filePath = path.resolve(String(info?.path || ""));
+    if (!id || !info?.path) throw new Error("archive requires a persisted Pi session id and path");
+    if (path.extname(filePath).toLowerCase() !== ".jsonl") throw new Error("archive target is not a Pi JSONL session");
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) throw new Error("archive target Pi session does not exist");
+    const realRoot = fs.realpathSync(this.sessionRoot);
+    const realFile = fs.realpathSync(filePath);
+    if (!isPathInside(realRoot, realFile)) throw new Error("archive target is outside the configured Pi sessions root");
+    const header = boundedSessionHeader(realFile);
+    if (header?.type !== "session" || String(header.id || "") !== id) {
+      throw new Error("archive target header does not match the requested Pi session id");
+    }
+    const stat = fs.statSync(realFile);
+    return {
+      id,
+      filePath,
+      relativePath: path.relative(this.sessionRoot, filePath).split(path.sep).join("/"),
+      cwd: String(info.cwd || ""),
+      name: String(info.name || ""),
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    };
+  }
+
+  recordMatches(record, filePath) {
+    if (!record?.relativePath || !filePath) return false;
+    const recorded = path.resolve(this.sessionRoot, ...String(record.relativePath).split("/"));
+    return pathKey(recorded) === pathKey(filePath);
+  }
+
+  archiveMany(infos, groupId = "") {
+    const validated = [...new Map((infos || []).map((info) => {
+      const item = this.validateSession(info);
+      return [item.id, item];
+    })).values()];
+    if (!validated.length) throw new Error("archive requires at least one persisted Pi session");
+    const archiveGroupId = String(groupId || validated[0].id);
+    const state = this.load();
+    const archivedAt = iso(this.now());
+    let createdCount = 0;
+    const records = [];
+    for (const item of validated) {
+      const existing = state.sessions[item.id];
+      if (existing && (!this.recordMatches(existing, item.filePath) || String(existing.groupId || existing.id) !== archiveGroupId)) {
+        throw new Error(`session ${item.id} already belongs to a different archive record`);
+      }
+      const record = existing || {
+        id: item.id,
+        groupId: archiveGroupId,
+        relativePath: item.relativePath,
+        archivedAt,
+        cwd: item.cwd,
+        name: item.name,
+        size: item.size,
+        mtimeMs: item.mtimeMs,
+      };
+      if (!existing) createdCount += 1;
+      state.sessions[item.id] = record;
+      records.push(record);
+    }
+    if (createdCount) this.save(state);
+    return { created: createdCount > 0, createdCount, records };
+  }
+
+  archive(info) {
+    const result = this.archiveMany([info], String(info?.id || ""));
+    return { ...result, record: result.records[0] };
+  }
+
+  restore(id) {
+    const sessionId = String(id || "");
+    const state = this.load();
+    const record = state.sessions[sessionId];
+    if (!record) return { restored: false, sessionIds: [] };
+    const groupId = String(record.groupId || record.id);
+    const sessionIds = Object.values(state.sessions)
+      .filter((item) => String(item.groupId || item.id) === groupId)
+      .map((item) => String(item.id));
+    for (const archivedId of sessionIds) delete state.sessions[archivedId];
+    this.save(state);
+    return { restored: true, groupId, sessionIds };
+  }
+
+  isArchived(id, filePath = "") {
+    const record = this.load().sessions[String(id || "")];
+    return Boolean(record && (!filePath || this.recordMatches(record, filePath)));
+  }
+
+  partition(sessions) {
+    const state = this.load();
+    const active = [];
+    const archived = [];
+    for (const session of Array.isArray(sessions) ? sessions : []) {
+      const record = state.sessions[String(session?.id || "")];
+      if (record && this.recordMatches(record, session?.path)) {
+        archived.push({
+          ...session,
+          archived: true,
+          archivedAt: String(record.archivedAt || ""),
+          archiveGroupId: String(record.groupId || record.id || ""),
+        });
+      } else active.push(session);
+    }
+    return { active, archived };
+  }
+}
+
 function listSessionFiles(root) {
   const files = [];
   if (!fs.existsSync(root)) return files;
@@ -347,6 +513,11 @@ export class RunSupervisor {
     this.now = options.now || Date.now;
     this.store = options.store || new DurableRunStore(path.join(dataRoot, "run-supervisor", "state.json"), { now: this.now });
     this.state = this.store.load();
+    this.archiveStore = options.archiveStore || new SessionArchiveStore(
+      options.archiveFile || path.join(path.dirname(this.sessionRoot), "session-archive.json"),
+      { sessionRoot: this.sessionRoot, now: this.now },
+    );
+    this.archiveUiSource = options.archiveUiSource || fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
     this.logFile = path.resolve(options.logFile || path.join(dataRoot, "run-supervisor.log"));
     this.indexes = new Map();
     this.filesBySession = new Map();
@@ -590,12 +761,12 @@ export class RunSupervisor {
     request.pipe(upstream);
   }
 
-  async bufferedProxy(request, response, rawBody, onResult) {
+  async fetchBufferedUpstream(request, rawBody = Buffer.alloc(0)) {
     const headers = this.proxyHeaders(request.headers, {
       "accept-encoding": "identity",
       "content-length": String(rawBody.length),
     });
-    const upstreamResult = await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const upstream = http.request({
         hostname: "127.0.0.1", port: this.webPort, method: request.method, path: request.url, headers,
       }, (upstreamResponse) => {
@@ -610,19 +781,221 @@ export class RunSupervisor {
       upstream.on("error", reject);
       upstream.end(rawBody);
     });
+  }
+
+  writeBuffered(response, upstreamResult, overrides = {}) {
+    const body = overrides.body ?? upstreamResult.body;
+    const headers = {
+      ...upstreamResult.headers,
+      ...overrides.headers,
+      "content-length": String(body.length),
+    };
+    delete headers["content-encoding"];
+    delete headers["transfer-encoding"];
+    if (overrides.changed) {
+      delete headers.etag;
+      delete headers["content-md5"];
+    }
+    response.writeHead(overrides.status || upstreamResult.status, headers);
+    response.end(body);
+  }
+
+  async bufferedProxy(request, response, rawBody, onResult) {
+    const upstreamResult = await this.fetchBufferedUpstream(request, rawBody);
     let parsed = null;
     try { parsed = JSON.parse(upstreamResult.body.toString("utf8")); } catch {}
     await onResult?.(upstreamResult.status, parsed);
-    const outputHeaders = { ...upstreamResult.headers, "content-length": String(upstreamResult.body.length) };
-    delete outputHeaders["content-encoding"];
-    delete outputHeaders["transfer-encoding"];
-    response.writeHead(upstreamResult.status, outputHeaders);
-    response.end(upstreamResult.body);
+    this.writeBuffered(response, upstreamResult);
+  }
+
+  jsonResponse(response, status, value, headers = {}) {
+    const body = Buffer.from(JSON.stringify(value));
+    response.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": String(body.length),
+      "cache-control": "no-store",
+      ...headers,
+    });
+    response.end(body);
+  }
+
+  mutationOriginAllowed(request) {
+    const origin = String(request.headers.origin || "");
+    if (!origin) return true;
+    try {
+      const source = new URL(origin);
+      return ["http:", "https:"].includes(source.protocol) && source.host.toLowerCase() === String(request.headers.host || "").toLowerCase();
+    } catch { return false; }
+  }
+
+  serveArchiveUi(response) {
+    const body = Buffer.from(this.archiveUiSource);
+    response.writeHead(200, {
+      "content-type": "application/javascript; charset=utf-8",
+      "content-length": String(body.length),
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    });
+    response.end(body);
+  }
+
+  async handleHtmlProxy(request, response) {
+    const upstreamResult = await this.fetchBufferedUpstream(request);
+    const contentType = String(upstreamResult.headers["content-type"] || "");
+    if (upstreamResult.status >= 400 || !contentType.toLowerCase().includes("text/html")) {
+      this.writeBuffered(response, upstreamResult);
+      return;
+    }
+    let html = upstreamResult.body.toString("utf8");
+    if (!html.includes(PIWEB_ARCHIVE_UI_PATH)) {
+      const nonce = /<script\b[^>]*\bnonce=["']([^"']+)["']/iu.exec(html)?.[1];
+      const nonceAttribute = nonce ? ` nonce="${nonce.replace(/["&<>]/gu, "")}"` : "";
+      const tag = `<script src="${PIWEB_ARCHIVE_UI_PATH}" data-pi-session-archive-bootstrap="${PIWEB_ARCHIVE_VERSION}"${nonceAttribute}></script>`;
+      html = /<head\b[^>]*>/iu.test(html) ? html.replace(/<head\b[^>]*>/iu, (head) => head + tag) : tag + html;
+    }
+    this.writeBuffered(response, upstreamResult, {
+      body: Buffer.from(html),
+      headers: { "cache-control": "no-store" },
+      changed: true,
+    });
+  }
+
+  async handleSessionList(request, response, parsedUrl) {
+    const upstreamResult = await this.fetchBufferedUpstream(request);
+    let body;
+    try { body = JSON.parse(upstreamResult.body.toString("utf8")); }
+    catch { this.writeBuffered(response, upstreamResult); return; }
+    if (upstreamResult.status >= 400 || !Array.isArray(body?.sessions)) {
+      this.writeBuffered(response, upstreamResult);
+      return;
+    }
+    const partition = this.archiveStore.partition(body.sessions);
+    const archivedGroupCount = new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size;
+    const view = parsedUrl.searchParams.get("archiveView") === "archived" ? "archived" : "active";
+    const value = {
+      ...body,
+      sessions: view === "archived" ? partition.archived : partition.active,
+      archive: {
+        view,
+        activeCount: partition.active.length,
+        archivedCount: archivedGroupCount,
+        archivedSessionCount: partition.archived.length,
+        version: PIWEB_ARCHIVE_VERSION,
+      },
+    };
+    this.writeBuffered(response, upstreamResult, {
+      body: Buffer.from(JSON.stringify(value)),
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      changed: true,
+    });
+  }
+
+  async fetchSessionCatalogue() {
+    const response = await this.fetch(`http://127.0.0.1:${this.webPort}/api/sessions?force=1`, {
+      cache: "no-store",
+      signal: timeoutSignal(10000),
+    });
+    if (!response.ok) throw new Error(`sessions HTTP ${response.status}`);
+    const body = await response.json();
+    if (!Array.isArray(body?.sessions)) throw new Error("sessions response has no catalogue");
+    return body.sessions;
+  }
+
+  sessionFamily(catalogue, rootId) {
+    const familyIds = new Set([String(rootId)]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const session of catalogue) {
+        const id = String(session?.id || "");
+        const parentId = String(session?.relation?.parentSessionId || "");
+        if (session?.relation?.kind === "subagent" && parentId && familyIds.has(parentId) && !familyIds.has(id)) {
+          familyIds.add(id);
+          changed = true;
+        }
+      }
+    }
+    return catalogue.filter((session) => familyIds.has(String(session?.id || "")));
+  }
+
+  async handleArchiveMutation(request, response, action, encodedId) {
+    if (!this.mutationOriginAllowed(request)) {
+      this.jsonResponse(response, 403, { error: "cross-origin session archive mutation rejected" });
+      return;
+    }
+    let sessionId;
+    try { sessionId = decodeURIComponent(encodedId); }
+    catch { this.jsonResponse(response, 400, { error: "invalid session id encoding" }); return; }
+    if (action === "restore") {
+      try {
+        const result = this.archiveStore.restore(sessionId);
+        if (result.restored) this.log("session-restored", { sessionId, sessionIds: result.sessionIds });
+        this.jsonResponse(response, 200, { ok: true, restored: result.restored, preserved: true, sessionId, sessionIds: result.sessionIds });
+      } catch (error) {
+        this.jsonResponse(response, 500, { error: String(error?.message || error) });
+      }
+      return;
+    }
+    try {
+      const [catalogue, running] = await Promise.all([this.fetchSessionCatalogue(), this.fetchRunning()]);
+      const target = catalogue.find((session) => String(session?.id || "") === sessionId);
+      if (!target) { this.jsonResponse(response, 404, { error: "Session not found" }); return; }
+      const family = this.sessionFamily(catalogue, sessionId);
+      const runningFamily = family.map((session) => String(session.id)).filter((id) => running.has(id));
+      if (runningFamily.length) {
+        this.jsonResponse(response, 409, { error: `Session is running and cannot be archived: ${runningFamily.join(", ")}` });
+        return;
+      }
+      const result = this.archiveStore.archiveMany(family, sessionId);
+      if (result.created) this.log("session-archived", {
+        sessionId,
+        sessionIds: result.records.map((record) => record.id),
+        preserved: true,
+      });
+      this.jsonResponse(response, 200, {
+        ok: true,
+        archived: true,
+        created: result.created,
+        preserved: true,
+        sessionId,
+        sessionIds: result.records.map((record) => record.id),
+        archivedAt: result.records[0]?.archivedAt || "",
+      });
+    } catch (error) {
+      const message = String(error?.message || error);
+      const status = /requires|outside|does not exist|does not match|not a Pi JSONL/u.test(message) ? 409 : 500;
+      this.jsonResponse(response, status, { error: message });
+    }
   }
 
   async handlePublicProxy(request, response) {
-    const match = /^\/api\/agent\/([^/?]+)$/u.exec(request.url || "");
-    const isNewPost = request.method === "POST" && (request.url || "").split("?")[0] === "/api/agent/new";
+    const parsedUrl = new URL(request.url || "/", "http://127.0.0.1");
+    if (request.method === "GET" && parsedUrl.pathname === PIWEB_ARCHIVE_UI_PATH) {
+      this.serveArchiveUi(response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/api/sessions") {
+      await this.handleSessionList(request, response, parsedUrl);
+      return;
+    }
+    const explicitArchive = /^\/api\/sessions\/([^/]+)\/(archive|restore)$/u.exec(parsedUrl.pathname);
+    const legacyArchive = /^\/api\/sessions\/([^/]+)$/u.exec(parsedUrl.pathname);
+    if (request.method === "POST" && explicitArchive) {
+      await this.handleArchiveMutation(request, response, explicitArchive[2], explicitArchive[1]);
+      return;
+    }
+    if (request.method === "DELETE" && legacyArchive) {
+      await this.handleArchiveMutation(request, response, "archive", legacyArchive[1]);
+      return;
+    }
+    const acceptsHtml = String(request.headers.accept || "").toLowerCase().includes("text/html");
+    if (request.method === "GET" && !parsedUrl.pathname.startsWith("/api/") && !parsedUrl.pathname.startsWith("/_next/") && (parsedUrl.pathname === "/" || acceptsHtml)) {
+      await this.handleHtmlProxy(request, response);
+      return;
+    }
+
+    const match = /^\/api\/agent\/([^/?]+)$/u.exec(parsedUrl.pathname);
+    const isNewPost = request.method === "POST" && parsedUrl.pathname === "/api/agent/new";
     const isAgentPost = request.method === "POST" && Boolean(match) && !isNewPost;
     if (!isAgentPost && !isNewPost) { this.streamProxy(request, response); return; }
     let rawBody;
@@ -631,12 +1004,19 @@ export class RunSupervisor {
       rawBody = await this.readRequestBody(request);
       body = JSON.parse(rawBody.toString("utf8"));
     } catch (error) {
-      response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: String(error?.message || error) }));
+      this.jsonResponse(response, 400, { error: String(error?.message || error) });
       return;
     }
     if (isAgentPost) {
       const sessionId = decodeURIComponent(match[1]);
+      if (body?.type === "prompt") {
+        try {
+          const restored = this.archiveStore.restore(sessionId);
+          if (restored.restored) this.log("session-auto-restored", { sessionId, sessionIds: restored.sessionIds, reason: "prompt" });
+        } catch (error) {
+          this.log("session-auto-restore-error", { sessionId, error: normalizeError(error?.message || error) });
+        }
+      }
       if (body?.type === "prompt" && !String(body?.message || "").startsWith(RECOVERY_PREFIX)) this.captureKnownPromptIntent(sessionId, body);
       if (body?.type === "abort") this.cancelKnownRun(sessionId, "public-api-abort");
       await this.bufferedProxy(request, response, rawBody, async (status, result) => {

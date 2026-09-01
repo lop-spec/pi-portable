@@ -1213,7 +1213,8 @@ const ASCII_ANCHOR_STOP = new Set([
   'false', 'check', 'run', 'only', 'report', 'full', 'summary', 'summary20', 'semanticfull',
   'memory', 'history', 'please', 'explain', 'inspect', 'execute',
 ]);
-const HISTORY_REFERENCE_RE = /历史|记忆|之前|上次|刚刚|前面|对话|记录|回忆|history|memory/iu;
+const HISTORY_REFERENCE_RE = /历史|记忆|之前|上次|刚刚|前面|对话|记录|回忆|归档|歸檔|history|memory|archiv/iu;
+const ARCHIVE_REFERENCE_RE = /归档|歸檔|archiv/iu;
 const HISTORY_ANSWER_DIRECTIVE_RE = /(?:请)?(?:只)?根据(?:(?:当前|相关|已有|上述)\s*)*?(?:历史|记忆|记录)(?:(?:相关|已有|上述|当前|记录|结论|内容|信息|事实|证据|与|和|及|、)\s*)*?(?:进行\s*)?(?:回答|作答|判断|说明)/iu;
 
 function isHistoryWrapperPrompt(value) {
@@ -1299,6 +1300,72 @@ function taskTypesCompatible(prompt, queryType, candidateType) {
   if (queryType === 'inspect' && ['mutate', 'run', 'diagnose', 'inspect'].includes(candidateType) &&
       /是否|成功|生效|状态|结果|怎么样|了没|了吗|吗[？?]?$/u.test(prompt)) return true;
   return false;
+}
+
+function portablePathKey(value) {
+  const resolved = path.resolve(String(value || ''));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function archivedPiSessionPaths(options = {}) {
+  const archiveIndexPath = path.resolve(String(options.archiveIndexPath ||
+    (process.env.PI_PORTABLE_DATA
+      ? path.join(process.env.PI_PORTABLE_DATA, '.pi', 'agent', 'session-archive.json')
+      : '')));
+  if (!options.archiveIndexPath && !process.env.PI_PORTABLE_DATA) return new Set();
+  if (!fs.existsSync(archiveIndexPath)) return new Set();
+  try {
+    const index = JSON.parse(fs.readFileSync(archiveIndexPath, 'utf8'));
+    if (index?.version !== 1 || !index.sessions || typeof index.sessions !== 'object') return new Set();
+    const sessionRoot = path.resolve(String(options.archiveSessionRoot ||
+      path.join(path.dirname(archiveIndexPath), 'sessions')));
+    const paths = new Set();
+    for (const record of Object.values(index.sessions)) {
+      const relativePath = String(record?.relativePath || '');
+      if (!relativePath) continue;
+      const candidate = path.resolve(sessionRoot, ...relativePath.split('/'));
+      const relative = path.relative(sessionRoot, candidate);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      paths.add(portablePathKey(candidate));
+    }
+    return paths;
+  } catch { return new Set(); }
+}
+
+function archivedCandidateSource(item, archivedPaths) {
+  if (!archivedPaths.size) return '';
+  const paths = item?.layer === 'canonical'
+    ? (item.event?.turns || []).map((turn) => String(turn.sourcePath || ''))
+    : [String(item?.sourcePath || '')];
+  return paths.find((sourcePath) => sourcePath && archivedPaths.has(portablePathKey(sourcePath))) || '';
+}
+
+function scoreArchivedAssociation(prompt, event) {
+  if (!ARCHIVE_REFERENCE_RE.test(prompt)) return null;
+  if (event.taskPrompt && (isSystemEnvelopePrompt(event.taskPrompt) || isHistoryWrapperPrompt(event.taskPrompt))) return null;
+  if (/待处理|未完成/u.test(String(event.summary20 || ''))) return null;
+  const queryGrams = charBigrams(prompt);
+  let coverage = 0;
+  for (const value of [event.taskPrompt, event.summary20]) {
+    const candidateGrams = charBigrams(value);
+    if (candidateGrams.size < 8) continue;
+    let matched = 0;
+    for (const gram of candidateGrams) if (queryGrams.has(gram)) matched += 1;
+    coverage = Math.max(coverage, matched / candidateGrams.size);
+  }
+  if (coverage < 0.55) return null;
+  return {
+    accepted: true,
+    reason: 'archive-explicit-match',
+    relevance: Number((0.84 + Math.min(1, coverage) * 0.14).toFixed(4)),
+    queryType: taskTypeOf(prompt),
+    candidateType: taskTypeOf(event.taskPrompt || event.summary20 || ''),
+    anchors: technicalAnchors(prompt),
+    fullAnchorCoverage: 1,
+    summaryAnchorHit: true,
+    semanticCoverage: Number(coverage.toFixed(4)),
+    archived: true,
+  };
 }
 
 function scoreAssociation(prompt, event, options = {}) {
@@ -1503,6 +1570,7 @@ export async function resolveHistory(prompt, options = {}) {
       };
     }
 
+    const archivedPaths = archivedPiSessionPaths(options);
     const canonicalCandidates = queryCanonicalEvents(
       db,
       associationQueryText(candidatePrompt),
@@ -1515,18 +1583,19 @@ export async function resolveHistory(prompt, options = {}) {
       if (!event?.semanticFull || event.summary20 !== card.summary20) continue;
       event.taskPrompt = event.turns.find((turn) => turn.selected)?.prompt ||
         event.turns[0]?.prompt || '';
-      const score = scoreAssociation(normalizedPrompt, event, {
-        associationTerms: options.associationTerms,
-      });
-      scored.push({ layer: 'canonical', card, event, completionSource: 'canonical_completed', ...score });
+      const candidate = { layer: 'canonical', card, event, completionSource: 'canonical_completed' };
+      const sourcePath = archivedCandidateSource(candidate, archivedPaths);
+      const score = (sourcePath && scoreArchivedAssociation(normalizedPrompt, event)) ||
+        scoreAssociation(normalizedPrompt, event, { associationTerms: options.associationTerms });
+      scored.push({ ...candidate, sourcePath, ...score });
     }
     for (const item of rawAssociationCandidates(db, candidatePrompt, {
       sessionId, turnId, candidateLimit: 200,
     })) {
-      const score = scoreAssociation(normalizedPrompt, item.event, {
-        associationTerms: options.associationTerms,
-      });
-      scored.push({ ...item, ...score });
+      const sourcePath = archivedCandidateSource(item, archivedPaths);
+      const score = (sourcePath && scoreArchivedAssociation(normalizedPrompt, item.event)) ||
+        scoreAssociation(normalizedPrompt, item.event, { associationTerms: options.associationTerms });
+      scored.push({ ...item, sourcePath: sourcePath || item.sourcePath, ...score });
     }
     scored.sort((left, right) => right.relevance - left.relevance ||
       Number(right.layer === 'canonical') - Number(left.layer === 'canonical') ||
@@ -1580,7 +1649,7 @@ export async function resolveHistory(prompt, options = {}) {
     const eventId = best.card.eventId;
     return {
       hit: true,
-      mode: 'assoc',
+      mode: best.archived ? 'archive' : 'assoc',
       eventId,
       summary20: best.event.summary20,
       full: limitText(best.event.semanticFull, maxFullChars),
@@ -1591,6 +1660,7 @@ export async function resolveHistory(prompt, options = {}) {
       usageToken: historyUsageToken(eventId, normalizedPrompt),
       diagnostics: {
         candidateLayer: best.layer,
+        archived: Boolean(best.archived),
         taskType: best.queryType,
         anchors: best.anchors,
         fullAnchorCoverage: best.fullAnchorCoverage,
