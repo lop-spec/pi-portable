@@ -14,6 +14,8 @@
     })(),
     archivedCount: 0,
     scheduled: false,
+    listRequestSerial: 0,
+    lastRequestedListView: "",
   };
 
   const copy = {
@@ -123,6 +125,8 @@
 
     if (url && url.origin === window.location.origin && url.pathname === "/api/sessions" && method === "GET") {
       requestedListView = state.view;
+      state.listRequestSerial += 1;
+      state.lastRequestedListView = requestedListView;
       if (requestedListView === "archived") url.searchParams.set("archiveView", "archived");
       else url.searchParams.delete("archiveView");
       nextInput = rewrittenInput(input, url);
@@ -140,6 +144,8 @@
     // Never let the older view's slower response overwrite the current React list.
     for (let retry = 0; requestedListView && requestedListView !== state.view && retry < 3; retry += 1) {
       requestedListView = state.view;
+      state.listRequestSerial += 1;
+      state.lastRequestedListView = requestedListView;
       if (requestedListView === "archived") url.searchParams.set("archiveView", "archived");
       else url.searchParams.delete("archiveView");
       nextInput = rewrittenInput(nextInput, url);
@@ -180,6 +186,19 @@
     document.head.appendChild(style);
   }
 
+  function requestListRefresh(baselineSerial, expectedView, attempt = 0) {
+    if (state.view !== expectedView) return;
+    if (state.listRequestSerial > baselineSerial && state.lastRequestedListView === expectedView) return;
+    nativeRefreshButton()?.click();
+    const delays = [120, 240, 480, 800];
+    setTimeout(() => {
+      if (state.view !== expectedView) return;
+      if (state.listRequestSerial > baselineSerial && state.lastRequestedListView === expectedView) return;
+      if (attempt < delays.length - 1) requestListRefresh(baselineSerial, expectedView, attempt + 1);
+      else window.location.reload();
+    }, delays[attempt]);
+  }
+
   function ensureControl() {
     const refresh = nativeRefreshButton();
     if (!refresh?.parentElement) return;
@@ -189,10 +208,11 @@
       control.type = "button";
       control.dataset.piSessionArchiveControl = "true";
       control.addEventListener("click", () => {
+        const baselineSerial = state.listRequestSerial;
         state.view = state.view === "active" ? "archived" : "active";
         try { sessionStorage.setItem(VIEW_KEY, state.view); } catch {}
         decorate();
-        nativeRefreshButton()?.click();
+        requestListRefresh(baselineSerial, state.view);
       });
     }
     if (control.parentElement !== refresh.parentElement || control.nextElementSibling !== refresh) {
