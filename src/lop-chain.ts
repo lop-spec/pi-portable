@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "checklist-incremental-v13";
+export const LOP_CHAIN_RUNTIME_VERSION = "adversarial-mechanisms-v14";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -23,6 +23,9 @@ const MEMORY_MJS = path.join(CHAIN_DIR, "lop-memory.mjs");
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(DATA, "rules-pretool.mjs");
 // S6 预审:便携版走包内 8794 桥的进程内实现(见 portable-adversary.mjs),同签名同判据。
 const ADVERSARY_MJS = path.join(CHAIN_DIR, "portable-adversary.mjs");
+// 验收命令自动生成(双红纪律)与 Best-of-N 多候选并行(goal-gate 筛选),均 fail-open。
+const AUTO_GATE_MJS = path.join(CHAIN_DIR, "auto-gate.mjs");
+const BEST_OF_N_MJS = path.join(CHAIN_DIR, "best-of-n.mjs");
 // 目标门换向器:同路无进展时强制换方向而不是停跑(证据轮/禁忌换路/耗尽落账本)。
 const REDIRECTOR_MJS = path.join(CHAIN_DIR, "goal-redirector.mjs");
 const FAST_PATH_MJS = path.join(CHAIN_DIR, "deterministic-fast-path.mjs");
@@ -226,10 +229,11 @@ const ADVERSARY_REDELIVERY_TYPE = "lop-adversary-redelivery";
 const CHECKLIST_GATE_TYPE = "lop-checklist-gate";
 const CHECKLIST_STATE_TYPE = "lop-checklist-goal-state";
 const RUN_CONTROL_TYPE = "lop-run-control";
+const BEST_OF_N_TYPE = "lop-best-of-n";
 const RUN_SUPERVISOR_RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 const TURN_SCOPED_CUSTOM_TYPES = new Set([
   "lop-chain", COMPLETION_GUARD_TYPE, GOAL_GATE_TYPE, HISTORY_GUARD_TYPE,
-  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE, RUN_CONTROL_TYPE,
+  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE, RUN_CONTROL_TYPE, BEST_OF_N_TYPE,
 ]);
 // 目标门:用户在消息里显式声明一条可执行校验命令,agent_end 时 exit!=0 就自动续跑。
 // 只认显式声明(【目标门】/[goal-gate] 行),不做任何语义猜测——"不达标不许交付"类
@@ -969,6 +973,9 @@ export function firstChecklistForLatestUser(messages: any[]): string {
 }
 
 export default function (pi: ExtensionAPI) {
+  // 总开关:Best-of-N 子进程带 LOP_CHAIN_DISABLE=1 防递归链(候选内不再起 S2-S8/预审/门),
+  // 兼作全链急停。
+  if (process.env.LOP_CHAIN_DISABLE === "1") return;
   const sessionId = `pi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let lastPrompt = "";
   let lastPhase: Record<string, unknown> = {};
@@ -982,7 +989,11 @@ export default function (pi: ExtensionAPI) {
   let checklistGoal: ChecklistGoalState | null = null;
   let runHadTool = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
-  let goalGate: { command: string; attempts: number; rounds: any[]; level: number } | null = null;
+  // auto=由 auto-gate 生成安装(exhausted 时降级清门而非锁死会话);
+  // bestOfNUsed=单门生命周期内 fan-out 只允许一次(防额度爆炸)。
+  let goalGate: { command: string; attempts: number; rounds: any[]; level: number; auto?: boolean; bestOfNUsed?: boolean } | null = null;
+  // 显式【多候选】N 指令(会话态,新的人工消息重置)。
+  let pendingBestOfN: { n: number } | null = null;
   let turnStartedAt = 0;
   let modelTurnStartedAt = 0;
   let deterministicDraftActive = false;
@@ -1283,6 +1294,7 @@ export default function (pi: ExtensionAPI) {
     completionRetryActive = false;
     lastResolved = null;
     lastPrompt = prompt;
+    const taskCwd = typeof (ctx as any)?.cwd === "string" ? (ctx as any).cwd : process.cwd();
     // 目标门声明/关闭只认真实用户消息;续跑注入轮 prompt 为空,走不到这里,
     // 因此 attempts 预算只被新的人工消息重置。
     const gateDirective = parseGoalGateDirective(prompt);
@@ -1292,11 +1304,22 @@ export default function (pi: ExtensionAPI) {
     } else if (gateDirective.action === "clear") {
       if (goalGate) log("GOAL_GATE CLEAR");
       goalGate = null;
+      pendingBestOfN = null;
     } else if (goalGate && !supervisorRecovery) {
       goalGate.attempts = 0;
       goalGate.rounds = [];
       goalGate.level = 0;
+      goalGate.bestOfNUsed = false;
     }
+    // 显式【多候选】N:goal-gate 失败轮 fan-out N 路并行候选,由门命令筛选。
+    try {
+      const bon: any = await import(pathToFileURL(BEST_OF_N_MJS).href);
+      const directive = bon.parseBestOfNDirective(prompt);
+      if (directive) {
+        pendingBestOfN = directive;
+        log(`BESTOFN DIRECTIVE n=${directive.n}`);
+      }
+    } catch (e) { log(`BESTOFN PARSE FAIL_OPEN ${String(e).slice(0, 120)}`); }
 
     // 目标一旦 active 就跨普通追问/授权回复保持 active；不再用动作词把它自动降为 inactive。
     // 动作识别只负责首次建目标，异常续接由宿主持久化 supervisor 兜底。只有显式取消
@@ -1532,11 +1555,11 @@ export default function (pi: ExtensionAPI) {
       ].join("\n"));
     }
 
-    // S6 后台对抗预审起审:detached 子进程(windowsHide),agent_end 消费,外部能力 fail-open。
+    // S6 后台对抗预审起审(v2 三路正交盲聚合):agent_end 消费,外部能力 fail-open。
     const t6 = performance.now();
     try {
       const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
-      const started = adv.startBackgroundReview({ session_id: sessionId, prompt });
+      const started = adv.startBackgroundReview({ session_id: sessionId, prompt, cwd: taskCwd });
       phase.s6Start = started?.status || "-";
       if (phase.s5Executed === true && phase.s5Ok === true &&
           typeof adv.acknowledgeBackgroundReview === "function") {
@@ -1549,6 +1572,21 @@ export default function (pi: ExtensionAPI) {
       }
     } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
     phase.s6Ms = +(performance.now() - t6).toFixed(1);
+
+    // auto-gate 起审:执行型任务且无显式【目标门】时,后台生成只读验收命令(双红纪律),
+    // agent_end 消费安装。显式门永远优先;问答/上下文短语不生成;fail-open。
+    try {
+      if (process.env.LOP_AUTO_GATE !== "0" && !goalGate && gateDirective.action === "none" &&
+          isExecutionRequest(prompt) && !isContextDependentHistoryPrompt(prompt)) {
+        const auto: any = await import(pathToFileURL(AUTO_GATE_MJS).href);
+        const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
+        auto.startAutoGate({
+          session_id: sessionId, prompt: checklistGoal?.objective || prompt,
+          cwd: taskCwd, bridge: adv.callBridgeText, log,
+        });
+        phase.autoGateStart = true;
+      }
+    } catch (e) { log(`AUTO_GATE START FAIL_OPEN ${String(e).slice(0, 120)}`); }
 
     phase.preModelMs = +(performance.now() - turnStartedAt).toFixed(1);
     lastPhase = phase;
@@ -1686,6 +1724,22 @@ export default function (pi: ExtensionAPI) {
         if (review?.status && review.status !== "skip") log(`S6 ${review.status} ${String(review.reason || "").slice(0, 120)}`);
       } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
     }
+    // auto-gate 消费安装:显式门缺席且本轮为正常停轮时,取后台生成的双红验收命令装门。
+    // 装上即走下方 goal-gate 全链(retry/换向器/账本);生成失败/不可验证=无门,回落现状。
+    if (!goalGate && lastAssistant?.stopReason === "stop" && !ctx?.hasPendingMessages?.() &&
+        !deterministicDraftActive) {
+      try {
+        const auto: any = await import(pathToFileURL(AUTO_GATE_MJS).href);
+        const claimed = await auto.claimAutoGate({ session_id: sessionId, waitMs: 5000 });
+        if (claimed?.status === "ready" && claimed.command) {
+          goalGate = { command: claimed.command, attempts: 0, rounds: [], level: 0, auto: true };
+          log(`AUTO_GATE INSTALL beforeExit=${claimed.beforeExit ?? "-"} cmd=${claimed.command.slice(0, 160)}`);
+          metric({ sessionId, prompt: prompt.slice(0, 160), autoGate: "install", autoGateCmd: claimed.command.slice(0, 160) });
+        } else if (claimed?.status && claimed.status !== "none") {
+          log(`AUTO_GATE ${claimed.status} ${String(claimed.reason || "").slice(0, 120)}`);
+        }
+      } catch (e) { log(`AUTO_GATE FAIL_OPEN ${String(e).slice(0, 120)}`); }
+    }
     // 目标门先于 completion guard:门存在时它就是完成判据,与 guard 的"承诺未执行"
     // 检测互不依赖(guard 管零工具假完成,门管"如实汇报未达标后停轮")。
     if (goalGate && lastAssistant?.stopReason === "stop" && !ctx?.hasPendingMessages?.()) {
@@ -1719,6 +1773,47 @@ export default function (pi: ExtensionAPI) {
             if (redirect.mode !== "normal") log(`GOAL_REDIRECT ${redirect.mode} trips=${redirect.tripped.join(",")} attempts=${gate.attempts}/${GOAL_GATE_MAX}`);
           }
         } catch (e) { log(`GOAL_REDIRECT FAIL_OPEN ${String(e).slice(0, 160)}`); }
+        // Best-of-N fan-out:显式【多候选】或(LOP_BESTOFN_AUTO=1 且换向器已进 tabu)时,
+        // 单门生命周期一次:N 路隔离 worktree 并行候选,由同一门命令筛选,胜者应用+主区复验。
+        // 成功即发 followUp 让模型核对收尾(门保留,收尾轮 pass 路径自然收敛);
+        // 失败把各候选证据并入续跑文案(比单路多 N 份禁忌证据)。全程 fail-open。
+        const wantBestOfN = !gate.bestOfNUsed && (
+          Boolean(pendingBestOfN) ||
+          (process.env.LOP_BESTOFN_AUTO === "1" && redirectMode === "tabu"));
+        if (wantBestOfN) {
+          gate.bestOfNUsed = true;
+          try {
+            const bon: any = await import(pathToFileURL(BEST_OF_N_MJS).href);
+            const bonN = pendingBestOfN?.n || 2;
+            const bannedSummary = (gate.rounds || [])
+              .filter((round: any) => round?.diffFp)
+              .map((round: any) => `- 第${round.attempt}轮 exit=${round.exitCode} 改动指纹=${round.diffFp}${round.files?.length ? ` 涉及:${round.files.slice(0, 6).join(", ")}` : ""}${round.outputHead ? ` 失败:${round.outputHead}` : ""}`)
+              .join("\n");
+            log(`BESTOFN START n=${bonN} trigger=${pendingBestOfN ? "explicit" : "auto-tabu"}`);
+            const fan = await bon.runBestOfN({
+              cwd: taskCwd, gateCommand: gate.command,
+              taskPrompt: checklistGoal?.objective || prompt,
+              n: bonN, bannedSummary, log,
+            });
+            metric({
+              sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
+              bestOfN: bonN, bestOfNOk: Boolean(fan?.ok), bestOfNReason: fan?.reason || "",
+              bestOfNWinner: fan?.winner ? fan.winner.index + 1 : 0,
+            });
+            if (fan?.ok) {
+              log(`BESTOFN PASS winner=cand${fan.winner.index + 1} diffLines=${fan.winner.diffLines}`);
+              pi.sendMessage({
+                customType: BEST_OF_N_TYPE,
+                content: `${bon.renderBestOfNOutcome(fan)}\n\n请核对已应用到工作区的改动,并向用户总结结果(改了什么、为什么、验收命令输出)。`,
+                display: false,
+                details: { command: gate.command, n: bonN, winner: fan.winner.index + 1 },
+              }, { deliverAs: "followUp", triggerTurn: true });
+              return;
+            }
+            log(`BESTOFN FAIL reason=${fan?.reason || "unknown"}`);
+            content = `${content}\n\n${bon.renderBestOfNOutcome(fan)}`;
+          } catch (e) { log(`BESTOFN FAIL_OPEN ${String(e).slice(0, 160)}`); }
+        }
         try {
           pi.sendMessage({
             customType: GOAL_GATE_TYPE,
@@ -1735,6 +1830,12 @@ export default function (pi: ExtensionAPI) {
         goalGateRetryActive = false;
         if (verdict === "pass" && checklistGoal?.status === "active") {
           setChecklistGoal({ ...checklistGoal, status: "complete", blockerKey: "", blockerTurns: 0 }, "deterministic-goal-gate-pass");
+        } else if ((verdict === "exhausted" || verdict === "fail-open") && gate.auto) {
+          // auto 门降级:生成的门可能天生永红(断言错对象),不许锁死会话;
+          // 清门回落,验收清单门继续兜底。
+          goalGate = null;
+          log(`AUTO_GATE DEMOTE verdict=${verdict} cmd=${gate.command.slice(0, 120)}`);
+          metric({ sessionId, prompt: prompt.slice(0, 160), autoGate: "demote", autoGateVerdict: verdict });
         } else if ((verdict === "exhausted" || verdict === "fail-open") && checklistGoal?.status === "active") {
           setChecklistGoal({ ...checklistGoal, status: "blocked" }, `deterministic-goal-gate-${verdict}`);
         }
