@@ -408,6 +408,19 @@ async function main() {
   };
   const webLog = path.join(DATA, "pi-web.log");
   const { entry: webEntry, version: webVersion } = resolvePiWebEntry();
+  // 起 pi-web 前先把产物补丁钉在位:npm 升级/异机重装会还原 .next 产物,两个脚本均幂等
+  // (已打 => already-patched 零写入;版本/锚点不符 => exit≠0 零写入)。失败只告警,按现有产物继续。
+  // 顺序硬约束:fold 在前,draft-persist 按 fold 改名后的 chunk 寻锚。
+  const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs"]) {
+    const patchScript = path.join(HOME, "tools", patchName);
+    if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
+    const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
+    const outLine = String(r.stdout || "").trim().split(/\r?\n/).pop() || "";
+    // 成功路径必输出一行 JSON;exit 0 且零输出说明 main 根本没跑(如直跑判定失效),按未应用告警。
+    if (r.status === 0 && outLine) log(`pi-web 补丁 ${patchName}:${outLine.slice(0, 400)}`);
+    else log(`pi-web 补丁 ${patchName} 未应用(exit=${r.status ?? r.signal ?? "?"}):${(String(r.stderr || "").trim().split(/\r?\n/).pop() || outLine || "无输出").slice(0, 300)}——按现有产物继续启动`);
+  }
   const webRestarts = [];
   let webExit = "";
   let web = null;

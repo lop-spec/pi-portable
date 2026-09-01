@@ -314,4 +314,6 @@ for (const e of refEdits) fs.writeFileSync(e.f, e.out);
 console.log(JSON.stringify(summary, null, 1));
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+// junction 布局下 argv[1] 是链接路径而 import.meta.url 是真实路径,字面比较必不等 → 静默 exit 0 假成功;两侧都过 realpath。
+const realPathOf = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+if (process.argv[1] && realPathOf(process.argv[1]).toLowerCase() === realPathOf(fileURLToPath(import.meta.url)).toLowerCase()) main();
