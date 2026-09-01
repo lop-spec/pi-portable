@@ -215,7 +215,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /adversarial-mechanisms-v14/u);
+assert.match(commands.get("lop-chain-reload").description, /plan-first-gate-v15/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -285,19 +285,30 @@ await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).
 await gateEnd();
 await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).message.content });
 await gateEnd();
+// v15 方案先行:normal 两段式→跳闸即"只作答"方案轮(不占 attempts 预算)→实施轮
 assert.equal(gateMessages().length, 3);
 assert.deepEqual(gateMessages()[0].options, { deliverAs: "followUp", triggerTurn: true });
 assert.match(gateMessages()[0].message.content, /目标门命令未通过/u);
+assert.match(gateMessages()[0].message.content, /先基于已有数据作答/u);
 assert.match(gateMessages()[0].message.content, /禁止修改校验命令/u);
+assert.match(gateMessages()[1].message.content, /只作答,禁止动手/u);
+assert.match(gateMessages()[2].message.content, /延伸实施/u);
+for (let round = 0; round < 4; round += 1) {
+  await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).message.content });
+  await gateEnd(); // tabu 方案轮→实施轮→planLevels 封顶后回落 tabu 原文案×2(attempts 2→3)
+}
+assert.equal(gateMessages().length, 7);
+assert.match(gateMessages()[3].message.content, /只作答,禁止动手/u);
+assert.match(gateMessages()[5].message.content, /已被实测证伪/u);
 await gateHandlers.get("before_agent_start")[0]({ prompt: gateMessages().at(-1).message.content });
 await gateEnd(); // attempts=3 达上限 → exhausted,不再续跑
-assert.equal(gateMessages().length, 3);
+assert.equal(gateMessages().length, 7);
 await gateHandlers.get("before_agent_start")[0]({ prompt: "继续\n【目标门】node -e \"process.exit(0)\"" });
 await gateEnd(); // 门通过 → 不续跑
-assert.equal(gateMessages().length, 3);
+assert.equal(gateMessages().length, 7);
 await gateHandlers.get("before_agent_start")[0]({ prompt: "【目标门】关闭" });
 await gateEnd();
-assert.equal(gateMessages().length, 3);
+assert.equal(gateMessages().length, 7);
 
 // 两态验收目标:解析纯函数。只有空标记与 x/X 合法；任何第三状态都是未完成。
 const openChecklistText = "开工。\n【验收清单】\n- [x] 读取配置\n- [ ] 部署服务\n- [ ] 验证端口";
@@ -874,7 +885,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "adversarial-mechanisms-v14");
+assert.equal(runtimeVersionFromSource(source), "plan-first-gate-v15");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);

@@ -141,21 +141,33 @@ await handlers.get("before_agent_start")[0]({ prompt: gateMsgs().at(-1).message.
 await agentEnd();
 await handlers.get("before_agent_start")[0]({ prompt: gateMsgs().at(-1).message.content });
 await agentEnd();
+// v15 方案先行:跳闸轮先"只作答"收敛方案(不占 attempts 预算),下一轮注入实施轮;
+// planLevels 每 level 一次,封顶后回落 evidence/tabu 原文案。
 assert.equal(gateMsgs().length, 3);
 assert.equal(gateMsgs()[0].message.details.redirect, "normal");
 assert.match(gateMsgs()[0].message.content, /目标门命令未通过/u);
 assert.equal(gateMsgs()[1].message.details.redirect, "evidence");
-assert.match(gateMsgs()[1].message.content, /禁止再直接修改业务代码/u);
-assert.equal(gateMsgs()[2].message.details.redirect, "tabu");
-assert.match(gateMsgs()[2].message.content, /禁忌换路/u);
+assert.match(gateMsgs()[1].message.content, /只作答,禁止动手/u);
+assert.equal(gateMsgs()[2].message.details.phase, "implement-after-plan");
+assert.match(gateMsgs()[2].message.content, /延伸实施/u);
+for (let round = 0; round < 4; round += 1) {
+  await handlers.get("before_agent_start")[0]({ prompt: gateMsgs().at(-1).message.content });
+  await agentEnd(); // tabu 方案轮→实施轮→tabu 原文案×2(attempts 2→3)
+}
+assert.equal(gateMsgs().length, 7);
+assert.equal(gateMsgs()[3].message.details.redirect, "tabu");
+assert.match(gateMsgs()[3].message.content, /只作答,禁止动手/u);
+assert.match(gateMsgs()[5].message.content, /已被实测证伪/u);
+assert.match(gateMsgs()[6].message.content, /禁忌换路/u);
 await handlers.get("before_agent_start")[0]({ prompt: gateMsgs().at(-1).message.content });
 await agentEnd(); // attempts=3 达上限 → exhausted,不再续跑,账本落盘
-assert.equal(gateMsgs().length, 3);
+assert.equal(gateMsgs().length, 7);
 const ledgerDir = path.join(contractData, "goal-gate-ledger");
 const ledgers = fs.readdirSync(ledgerDir).filter((f) => f.endsWith(".json"));
 assert.ok(ledgers.length >= 1, "耗尽后应有失败账本落盘");
 const finalLedger = JSON.parse(fs.readFileSync(path.join(ledgerDir, ledgers.at(-1)), "utf8"));
-assert.equal(finalLedger.rounds.length, 4);
+// evaluate 只在真实跑门失败轮调用:轮1/2/4/6/7 + exhausted 终局=6(方案/实施轮不跑门)
+assert.equal(finalLedger.rounds.length, 6);
 assert.ok(finalLedger.distilled.trippedRounds >= 2);
 
 console.log("goal-redirector contract: ALL PASS");

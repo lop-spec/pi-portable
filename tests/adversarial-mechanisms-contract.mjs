@@ -1,4 +1,4 @@
-// 对抗审查四机制合同测试(adversarial-mechanisms-v14):
+// 对抗审查四机制合同测试(plan-first-gate-v15):
 // P1 Best-of-N(指令解析/胜者选择/正交提示/CLI探测/结果渲染)
 // P2 auto-gate(安全白名单/生成解析/双红判定)
 // P3+P4 三路盲聚合+验证器投票(票型矩阵/lane解析)
@@ -141,9 +141,26 @@ assert.deepEqual(adv.parseLaneFinding('{"finding":"只改一处即可"}'), { ok:
 assert.deepEqual(adv.parseLaneFinding('```json\n{"finding":""}\n```'), { ok: true, finding: "" });
 assert.equal(adv.parseLaneFinding("不是JSON").ok, false);
 
+// ---- 方案先行(plan-first,v15):跳闸轮先作答再实施,作答轮不占预算 ----
+const gr = await import(pathToFileURL(path.join(root, "src", "chain", "goal-redirector.mjs")).href);
+assert.equal(gr.shouldInsertPlanRound({ mode: "normal", level: 0, planLevels: [] }), false);
+assert.equal(gr.shouldInsertPlanRound({ mode: "evidence", level: 1, planLevels: [] }), true);
+assert.equal(gr.shouldInsertPlanRound({ mode: "evidence", level: 1, planLevels: [1] }), false);
+assert.equal(gr.shouldInsertPlanRound({ mode: "tabu", level: 2, planLevels: [1] }), true);
+assert.equal(gr.shouldInsertPlanRound({ mode: "tabu", level: 2, planLevels: [1, 2] }), false);
+assert.equal(gr.shouldInsertPlanRound({ mode: "", level: 0 }), false);
+const planText = gr.renderPlanRound({ mode: "tabu", exitCode: 1, attempts: 1, max: 3, tail: "boom", bannedSummary: "- 第1轮 指纹=abc" });
+assert.ok(planText.includes("只作答"));
+assert.ok(planText.includes("禁止动手"));
+assert.ok(planText.includes("已被实测证伪"));
+assert.ok(planText.includes("延伸实施"));
+const planNoBanned = gr.renderPlanRound({ mode: "evidence", exitCode: 1, attempts: 1, max: 3, tail: "boom", bannedSummary: "" });
+assert.ok(!planNoBanned.includes("已被实测证伪"));
+assert.ok(planNoBanned.includes("证据轮"));
+
 // ---- lop-chain.ts 源级接线钉 ----
 const source = fs.readFileSync(path.join(root, "src", "lop-chain.ts"), "utf8");
-assert.match(source, /LOP_CHAIN_RUNTIME_VERSION = "adversarial-mechanisms-v14"/u);
+assert.match(source, /LOP_CHAIN_RUNTIME_VERSION = "plan-first-gate-v15"/u);
 assert.match(source, /LOP_CHAIN_DISABLE/u);
 assert.match(source, /auto-gate\.mjs/u);
 assert.match(source, /best-of-n\.mjs/u);
@@ -151,6 +168,14 @@ assert.match(source, /startBackgroundReview\(\{ session_id: sessionId, prompt, c
 assert.match(source, /AUTO_GATE DEMOTE/u);
 assert.match(source, /BESTOFN START/u);
 assert.match(source, /lop-best-of-n/u);
+// v15 方案先行接线钉:分轮状态机+两段式默认文案+作答轮不占预算+fan-out 让位
+assert.match(source, /GOAL_GATE PLAN_ROUND queued/u);
+assert.match(source, /GOAL_GATE PLAN_CAPTURED/u);
+assert.match(source, /planPending/u);
+assert.match(source, /先基于已有数据作答/u);
+assert.match(source, /按你上一条回复给出的方案延伸实施/u);
+assert.match(source, /gate\.attempts -= 1/u);
+assert.match(source, /!gate\.planPending && \(/u);
 // 母本与仓副本逐字节一致(单一真源纪律)
 const mother = "C:/Users/lop/.pi/agent/extensions/lop-chain.ts";
 if (fs.existsSync(mother)) {

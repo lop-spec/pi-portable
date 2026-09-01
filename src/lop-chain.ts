@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "adversarial-mechanisms-v14";
+export const LOP_CHAIN_RUNTIME_VERSION = "plan-first-gate-v15";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -990,8 +990,9 @@ export default function (pi: ExtensionAPI) {
   let runHadTool = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
   // auto=由 auto-gate 生成安装(exhausted 时降级清门而非锁死会话);
-  // bestOfNUsed=单门生命周期内 fan-out 只允许一次(防额度爆炸)。
-  let goalGate: { command: string; attempts: number; rounds: any[]; level: number; auto?: boolean; bestOfNUsed?: boolean } | null = null;
+  // bestOfNUsed=单门生命周期内 fan-out 只允许一次(防额度爆炸);
+  // planPending=方案先行分轮态(上一轮只作答未动手,下一轮实施);planLevels=已出过方案轮的升级 level。
+  let goalGate: { command: string; attempts: number; rounds: any[]; level: number; auto?: boolean; bestOfNUsed?: boolean; planPending?: boolean; planLevels?: number[] } | null = null;
   // 显式【多候选】N 指令(会话态,新的人工消息重置)。
   let pendingBestOfN: { n: number } | null = null;
   let turnStartedAt = 0;
@@ -1744,6 +1745,26 @@ export default function (pi: ExtensionAPI) {
     // 检测互不依赖(guard 管零工具假完成,门管"如实汇报未达标后停轮")。
     if (goalGate && lastAssistant?.stopReason === "stop" && !ctx?.hasPendingMessages?.()) {
       const gate = goalGate;
+      // 方案先行收尾:上一轮是"只作答"轮(未动手,门必红)——不跑门不计尝试,
+      // 直接注入实施轮:按已作答方案延伸实施,复用已有数据。
+      if (gate.planPending) {
+        gate.planPending = false;
+        goalGateRetryActive = true;
+        log("GOAL_GATE PLAN_CAPTURED queue implement round");
+        metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: "plan-round" });
+        try {
+          pi.sendMessage({
+            customType: GOAL_GATE_TYPE,
+            content: "按你上一条回复给出的方案延伸实施:逐项落实改动点,继续使用已有数据与证据,不要从头重做已验证过的部分;实施中若现场证据与方案冲突,以现场证据为准修正方案并说明。完成后目标门命令会自动执行。禁止修改校验命令、其判定逻辑或伪造其输入数据。",
+            display: false,
+            details: { command: gate.command, phase: "implement-after-plan" },
+          }, { deliverAs: "followUp", triggerTurn: true });
+          return;
+        } catch (e) {
+          goalGateRetryActive = false;
+          log(`GOAL_GATE PLAN_FAIL_OPEN ${String(e).slice(0, 160)}`);
+        }
+      }
       const t9 = performance.now();
       const taskCwd = typeof (ctx as any)?.cwd === "string" ? (ctx as any).cwd : undefined;
       const result = await execGoalGate(gate.command, taskCwd).catch(() => ({ code: null, output: "", timedOut: false }));
@@ -1757,7 +1778,9 @@ export default function (pi: ExtensionAPI) {
         metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, goalGate: verdict, goalGateAttempts: gate.attempts });
         // 换向器:同路无进展时替换续跑文案强制换方向;自身异常 fail-open 回落原文案。
         let redirectMode = "normal";
-        let content = `目标门命令未通过(exit=${result.code},自动续跑 ${gate.attempts}/${GOAL_GATE_MAX})。命令输出尾部:\n${result.output.slice(-600)}\n\n继续执行原始任务,直到目标门命令通过。禁止修改校验命令、其判定逻辑或伪造其输入数据。若有证据表明目标在当前约束下不可达,停止尝试并给出量化差距与原因,由用户决定是否放宽。`;
+        // 方案先行(normal 轻量形态):不让模型直接重做——回复第一部分必须先基于已有
+        // 数据作答通过方案,再按方案延伸实施(跳闸轮升级为强制分轮,见下方 planPending)。
+        let content = `目标门命令未通过(exit=${result.code},自动续跑 ${gate.attempts}/${GOAL_GATE_MAX})。命令输出尾部:\n${result.output.slice(-600)}\n\n先基于已有数据作答:在回复开头给出你判断能让目标门命令通过的完整方案(根因判断、要改的具体位置、为何能过门),直接引用上面失败输出与此前轮次已取得的证据;然后按该方案延伸实施,不要从头重做已验证过的部分。禁止未给出方案就动手修改。禁止修改校验命令、其判定逻辑或伪造其输入数据。若有证据表明目标在当前约束下不可达,停止尝试并给出量化差距与原因,由用户决定是否放宽。`;
         try {
           const redirector = await loadRedirector();
           if (redirector) {
@@ -1773,11 +1796,34 @@ export default function (pi: ExtensionAPI) {
             if (redirect.mode !== "normal") log(`GOAL_REDIRECT ${redirect.mode} trips=${redirect.tripped.join(",")} attempts=${gate.attempts}/${GOAL_GATE_MAX}`);
           }
         } catch (e) { log(`GOAL_REDIRECT FAIL_OPEN ${String(e).slice(0, 160)}`); }
+        const bannedSummary = (gate.rounds || [])
+          .filter((round: any) => round?.diffFp)
+          .map((round: any) => `- 第${round.attempt}轮 exit=${round.exitCode} 改动指纹=${round.diffFp}${round.files?.length ? ` 涉及:${round.files.slice(0, 6).join(", ")}` : ""}${round.outputHead ? ` 失败:${round.outputHead}` : ""}`)
+          .join("\n");
+        // 方案先行分轮(2026-09-01 lop 裁决):换向器跳闸=同路无进展,此时不再让模型
+        // 边想边改——先强制"只作答"轮,基于已有数据收敛完整通过方案;下一轮按方案
+        // 延伸实施。作答不是尝试,不占 attempts 预算;每个升级 level 只插一次(有界)。
+        try {
+          const redirector = await loadRedirector();
+          if (redirector?.shouldInsertPlanRound?.({
+            mode: redirectMode, level: gate.level, planLevels: gate.planLevels,
+          })) {
+            gate.planLevels = [...(gate.planLevels || []), gate.level];
+            gate.planPending = true;
+            gate.attempts -= 1;
+            content = redirector.renderPlanRound({
+              mode: redirectMode, exitCode: result.code, attempts: gate.attempts,
+              max: GOAL_GATE_MAX, tail: result.output.slice(-600), bannedSummary,
+            });
+            log(`GOAL_GATE PLAN_ROUND queued level=${gate.level} attempts=${gate.attempts}/${GOAL_GATE_MAX}`);
+          }
+        } catch (e) { log(`GOAL_PLAN FAIL_OPEN ${String(e).slice(0, 120)}`); }
         // Best-of-N fan-out:显式【多候选】或(LOP_BESTOFN_AUTO=1 且换向器已进 tabu)时,
         // 单门生命周期一次:N 路隔离 worktree 并行候选,由同一门命令筛选,胜者应用+主区复验。
         // 成功即发 followUp 让模型核对收尾(门保留,收尾轮 pass 路径自然收敛);
-        // 失败把各候选证据并入续跑文案(比单路多 N 份禁忌证据)。全程 fail-open。
-        const wantBestOfN = !gate.bestOfNUsed && (
+        // 失败把各候选证据并入续跑文案(比单路多 N 份禁忌证据)。方案轮在场时让位
+        // (先收敛方案,方案轮后仍失败才轮到重炮)。全程 fail-open。
+        const wantBestOfN = !gate.bestOfNUsed && !gate.planPending && (
           Boolean(pendingBestOfN) ||
           (process.env.LOP_BESTOFN_AUTO === "1" && redirectMode === "tabu"));
         if (wantBestOfN) {
@@ -1785,10 +1831,6 @@ export default function (pi: ExtensionAPI) {
           try {
             const bon: any = await import(pathToFileURL(BEST_OF_N_MJS).href);
             const bonN = pendingBestOfN?.n || 2;
-            const bannedSummary = (gate.rounds || [])
-              .filter((round: any) => round?.diffFp)
-              .map((round: any) => `- 第${round.attempt}轮 exit=${round.exitCode} 改动指纹=${round.diffFp}${round.files?.length ? ` 涉及:${round.files.slice(0, 6).join(", ")}` : ""}${round.outputHead ? ` 失败:${round.outputHead}` : ""}`)
-              .join("\n");
             log(`BESTOFN START n=${bonN} trigger=${pendingBestOfN ? "explicit" : "auto-tabu"}`);
             const fan = await bon.runBestOfN({
               cwd: taskCwd, gateCommand: gate.command,

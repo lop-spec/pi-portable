@@ -120,6 +120,25 @@ export async function evaluateGoalRound({ cwd, output, exitCode, attempts, max, 
   return { round, rounds, level: decision.level, mode: decision.mode, tripped: decision.tripped, content };
 }
 
+// 方案先行(plan-first,2026-09-01 lop 裁决):门未通过时不再让模型直接重做——
+// 换向器跳闸(同路无进展)即先强制"作答轮":基于已有数据收敛出完整通过方案(禁动手),
+// 下一轮按方案延伸实施。作答不是尝试,不占 attempts 预算;每个升级 level 只插一次(有界)。
+export function shouldInsertPlanRound({ mode, level, planLevels }) {
+  if (!mode || mode === "normal") return false;
+  return !(Array.isArray(planLevels) && planLevels.includes(level));
+}
+
+export function renderPlanRound({ mode, exitCode, attempts, max, tail, bannedSummary }) {
+  const label = mode === "tabu" ? "禁忌换路" : "证据轮";
+  return `目标门命令未通过(exit=${exitCode},自动续跑 ${attempts}/${max}),换向器判定同路无进展(${label})。\n` +
+    `【本轮只作答,禁止动手】不要修改任何文件,也不要执行任何修复或取证命令。基于已有数据作答:\n` +
+    `综合此前轮次的全部证据(下方失败输出、已证伪路径、你已读过的文件与运行结果),给出你判断能让目标门命令通过的完整方案:\n` +
+    `1) 根因判断及其依据 2) 要改的具体文件与位置 3) 为何此方案能让门命令通过 4) 与已证伪路径的本质区别。\n` +
+    `若已有数据确实不足以下结论,明确列出缺什么证据与最小获取方式,下一轮先取证再实施。\n` +
+    (bannedSummary ? `已被实测证伪的路径(禁止等价改动):\n${bannedSummary}\n` : "") +
+    `命令输出尾部:\n${tail}\n\n下一轮将按你的方案延伸实施。${HARD_CLAUSE}`;
+}
+
 // 预算耗尽:失败账本落盘。账本即交付物——已试路径、已排除假设、每轮证据,供人裁决或新会话重启。
 export function writeGoalLedger({ dir, sessionId, command, rounds }) {
   try {
