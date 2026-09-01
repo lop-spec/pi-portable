@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-01T04:47:00.000Z",
+  "sourceCommit": "4195701",
+  "ciRun": "https://github.com/lop-spec/pi-portable/actions/runs/33469412149 (success)",
+  "contractTests": { "localFullList": "17/17 pass", "ci": "success" },
+  "liveVerification": {
+    "session": "2026-09-01T04-41-06-314Z_01a05b45 (5-item file lifecycle task via 18793 public port)",
+    "checks": {
+      "firstReplyFullItemizedContractFrozen": true,
+      "finalReplyCollapsedLine": true,
+      "finalReplyNoFullRestatement": true,
+      "finalReplyChars": 216,
+      "evidenceFileWritten": "acceptance-evidence.md (1750B, timestamped section, SHA-256s, API return codes)",
+      "taskItselfCompleted": true
+    },
+    "baselineFinalReplyChars": 2300,
+    "reductionNote": "collapsed line (14 chars) replaced 5-item restatement; evidence externalized to file; body kept per-item one-line conclusions + pointers"
+  },
+  "deployment": {
+    "localBridge": "restarted 12:21 with pi-web stack; persistence inject grew +2412B -> +3116B (protocol delta observed in log)",
+    "localExtensions": "v11 deployed, then superseded by parallel session's prefix-freeze-v12 which preserves collapse logic",
+    "peer": "DESKTOP-3EGB4LB D:/Downloads/pi-protable src+extensions sha256 match (481287cf/2aafad0d), bridge pid 18232 -> 10568 restarted by launcher watchdog"
+  },
+  "notes": [
+    "commit 4195701 also carried the parallel session's uncommitted prefix-freeze v12 lop-chain source edits (their version pins were already at v12, so the mixed commit is self-consistent and green)",
+    "no release tag cut this round: parallel prefix-freeze work not yet converged; tag deferred to the converged state"
+  ]
+}
