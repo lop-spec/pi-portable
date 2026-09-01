@@ -19,6 +19,15 @@ const DEFAULT_POLL_MS = 500;
 const DEFAULT_GRACE_MS = 1500;
 const SAME_FAILURE_LIMIT = 3;
 const TOTAL_RECOVERY_LIMIT = 20;
+// 恢复风暴三闸(2026-09-01 实录:running 注册表假阴性 → 活会话被连注 14 次"继续原目标",
+// 1 条用户消息放大成 170 轮;同族先例=57905 守护单次判活误杀、web-bridge 判活看 worker.ready)。
+// 判死必须多信号一致:会话 jsonl 在追加(mtime 新鲜)= 活,无论 running 注册表怎么说。
+export const FILE_QUIET_MS = 10 * 60 * 1000;
+// 同一 run 两次恢复注入的硬下限;真实崩溃恢复慢 10 分钟可接受,风暴不可接受。
+export const MIN_RECOVERY_INTERVAL_MS = 10 * 60 * 1000;
+// 恢复后须稳定运行这么久才清同失败计数——否则判活翻抖时"进展"会永久绕过熔断
+// (实录:totalRecoveries=14 而 sameFailureCount=0)。
+export const FAILURE_STREAK_STABLE_MS = 10 * 60 * 1000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const iso = (value = Date.now()) => new Date(value).toISOString();
@@ -230,25 +239,44 @@ export function noteFailure(record, fingerprint) {
   };
 }
 
-export function decideRunAction({ snapshot, running }) {
-  if (!snapshot) return { action: "wait", reason: "no-snapshot" };
-  if (snapshot.cancelled) return { action: "cancel", reason: "explicit-user-cancel" };
-  if (snapshot.blocked || snapshot.goalState?.status === "blocked") return { action: "block", reason: "goal-blocked" };
-  if (running) return { action: "wait", reason: "runner-active" };
-  const last = snapshot.lastMessage;
-  if (!last) return { action: "wait", reason: "no-message" };
-  if (last.role === "assistant") {
-    if (last.stopReason === "error" || last.stopReason === "aborted") return { action: "recover", reason: `assistant-${last.stopReason}` };
-    if (last.stopReason === "toolUse" || snapshot.unresolvedToolCalls?.length) return { action: "recover", reason: "tool-call-unsettled" };
-    if (last.stopReason === "stop") {
-      if (snapshot.goalState?.status === "active") return { action: "recover", reason: "active-goal-stopped" };
-      return { action: "complete", reason: "terminal-assistant" };
+export function decideRunAction({ snapshot, running, fileActive = false }) {
+  const decision = (() => {
+    if (!snapshot) return { action: "wait", reason: "no-snapshot" };
+    if (snapshot.cancelled) return { action: "cancel", reason: "explicit-user-cancel" };
+    if (snapshot.blocked || snapshot.goalState?.status === "blocked") return { action: "block", reason: "goal-blocked" };
+    if (running) return { action: "wait", reason: "runner-active" };
+    const last = snapshot.lastMessage;
+    if (!last) return { action: "wait", reason: "no-message" };
+    if (last.role === "assistant") {
+      if (last.stopReason === "error" || last.stopReason === "aborted") return { action: "recover", reason: `assistant-${last.stopReason}` };
+      if (last.stopReason === "toolUse" || snapshot.unresolvedToolCalls?.length) return { action: "recover", reason: "tool-call-unsettled" };
+      if (last.stopReason === "stop") {
+        if (snapshot.goalState?.status === "active") return { action: "recover", reason: "active-goal-stopped" };
+        return { action: "complete", reason: "terminal-assistant" };
+      }
+      return { action: "recover", reason: "assistant-without-terminal-reason" };
     }
-    return { action: "recover", reason: "assistant-without-terminal-reason" };
-  }
-  if (last.role === "user") return { action: "recover", reason: isRecoveryUser(last) ? "recovery-prompt-unanswered" : "user-prompt-unanswered" };
-  if (last.role === "toolResult") return { action: "recover", reason: "tool-result-unanswered" };
-  return { action: "recover", reason: `nonterminal-${last.role || "unknown"}` };
+    if (last.role === "user") return { action: "recover", reason: isRecoveryUser(last) ? "recovery-prompt-unanswered" : "user-prompt-unanswered" };
+    if (last.role === "toolResult") return { action: "recover", reason: "tool-result-unanswered" };
+    return { action: "recover", reason: `nonterminal-${last.role || "unknown"}` };
+  })();
+  // 判死需要多信号一致:会话文件仍在追加 = 运行中,running 注册表的假阴性不得触发恢复。
+  if (decision.action === "recover" && fileActive) return { action: "wait", reason: "file-activity" };
+  return decision;
+}
+
+// 同一 run 的恢复注入硬限流;返回非空字符串 = 本 tick 不得派发的原因。
+export function recoveryHoldReason(record, nowMs, { minIntervalMs = MIN_RECOVERY_INTERVAL_MS } = {}) {
+  const lastAt = Date.parse(record?.lastRecoveryAt || "") || 0;
+  if (lastAt && nowMs - lastAt < minIntervalMs) return "min-recovery-interval";
+  return "";
+}
+
+// 只有恢复后稳定运行超过窗口才允许清同失败计数;判活翻抖期间的"进展"不算恢复成功。
+export function shouldClearFailureStreak(record, nowMs, { stableMs = FAILURE_STREAK_STABLE_MS } = {}) {
+  if (!record?.sameFailureCount) return false;
+  const lastAt = Date.parse(record?.lastRecoveryAt || "") || 0;
+  return !lastAt || nowMs - lastAt >= stableMs;
 }
 
 export function buildTransientRecoveryPrompt(record = {}) {
@@ -1321,8 +1349,12 @@ export class RunSupervisor {
         if (snapshot.leafId !== record.lastProgressLeafId && (last?.role === "toolResult" || (last?.role === "assistant" && last.stopReason !== "error" && last.stopReason !== "aborted"))) {
           record.lastProgressLeafId = snapshot.leafId;
           record.lastProgressAt = iso(this.now());
-          record.sameFailureFingerprint = "";
-          record.sameFailureCount = 0;
+          // 只有恢复后稳定运行超窗口才清同失败计数;判活翻抖时的"进展"不算恢复成功
+          // (实录:每次恢复后立刻见进展→计数归零→熔断被绕过 14 次)。
+          if (shouldClearFailureStreak(record, this.now())) {
+            record.sameFailureFingerprint = "";
+            record.sameFailureCount = 0;
+          }
         }
         this.ensureEventStream(sessionId);
       }
@@ -1331,7 +1363,21 @@ export class RunSupervisor {
     }
 
     this.stopEventStream(sessionId);
-    const decision = decideRunAction({ snapshot, running: false });
+    // 会话 jsonl 仍在追加 = 活(每轮/每工具步都会追加);running 注册表假阴性时以文件活性为准。
+    const fileMtime = this.knownFileStats.get(sessionId) || 0;
+    const fileActive = fileMtime > 0 && this.now() - fileMtime < FILE_QUIET_MS;
+    const decision = decideRunAction({ snapshot, running: false, fileActive });
+    if (decision.reason === "file-activity") {
+      // 留痕但不刷屏:每个 leaf 只记一次(失败路径必留痕——被压下的恢复也是路径)。
+      const holdKey = `${snapshot.leafId}:file-activity`;
+      record.notRunningSince = 0;
+      if (record.lastHoldKey !== holdKey) {
+        record.lastHoldKey = holdKey;
+        this.log("recovery-held", { sessionId, runId: record.runId, leafId: snapshot.leafId, reason: "file-activity", fileQuietMs: this.now() - fileMtime });
+      }
+      this.save();
+      return;
+    }
     // 终态会话每轮都会重新判定成同一个结果；只在状态真正迁移时落盘并记日志，
     // 否则 tick 会按 500ms 的节奏重复写 state.json 和同一条日志。
     if (decision.action === "complete") {
@@ -1363,6 +1409,16 @@ export class RunSupervisor {
     if (this.now() - record.notRunningSince < this.graceMs) return;
     const nextAttempt = Number(record.totalRecoveries || 0) + 1;
     if (this.now() - record.notRunningSince < recoveryDelayMs(nextAttempt)) return;
+    const hold = recoveryHoldReason(record, this.now());
+    if (hold) {
+      const holdKey = `${snapshot.leafId}:${hold}`;
+      if (record.lastHoldKey !== holdKey) {
+        record.lastHoldKey = holdKey;
+        this.save();
+        this.log("recovery-held", { sessionId, runId: record.runId, leafId: snapshot.leafId, reason: hold });
+      }
+      return;
+    }
     await this.dispatchRecovery(sessionId, snapshot, record, decision.reason);
   }
 

@@ -17,6 +17,8 @@ import {
   failureFingerprint,
   noteFailure,
   recoveryDelayMs,
+  recoveryHoldReason,
+  shouldClearFailureStreak,
 } from "../src/run-supervisor.mjs";
 
 const header = (id = "01a05769-3ff4-779a-b9c6-f5364d206206") => ({
@@ -115,6 +117,28 @@ test("decision recovers abnormal leaves and active goals, but completes ordinary
   assert.equal(decideRunAction({ snapshot: { ...base, cancelled: true, lastMessage: { role: "toolResult" }, goalState: { status: "active" } }, running: false }).action, "cancel");
   assert.equal(decideRunAction({ snapshot: { ...base, blocked: true, lastMessage: { role: "toolResult" }, goalState: { status: "blocked" } }, running: false }).action, "block");
   assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "toolResult" }, goalState: null }, running: true }).action, "wait");
+});
+
+test("storm guards: file activity vetoes recovery, min-interval holds, streak survives flapping progress", () => {
+  const base = { sessionId: "s", rootUserEntryId: "u1", leafId: "t1", cancelled: false, blocked: false };
+  // 2026-09-01 实录:running 注册表假阴性把活会话连注 14 次恢复;文件仍在追加即必须 wait。
+  const unsettled = { ...base, lastMessage: { role: "assistant", stopReason: "toolUse" }, goalState: null };
+  assert.deepEqual(decideRunAction({ snapshot: unsettled, running: false, fileActive: true }), { action: "wait", reason: "file-activity" });
+  assert.equal(decideRunAction({ snapshot: unsettled, running: false, fileActive: false }).action, "recover");
+  // fileActive 不得压制终态/取消/拉黑判定。
+  assert.equal(decideRunAction({ snapshot: { ...base, lastMessage: { role: "assistant", stopReason: "stop" }, goalState: null }, running: false, fileActive: true }).action, "complete");
+  assert.equal(decideRunAction({ snapshot: { ...base, cancelled: true, lastMessage: { role: "toolResult" }, goalState: null }, running: false, fileActive: true }).action, "cancel");
+  // 同一 run 两次恢复注入的硬下限。
+  const now = Date.parse("2026-09-01T12:10:00.000Z");
+  assert.equal(recoveryHoldReason({ lastRecoveryAt: "2026-09-01T12:05:00.000Z" }, now), "min-recovery-interval");
+  assert.equal(recoveryHoldReason({ lastRecoveryAt: "2026-09-01T11:55:00.000Z" }, now), "");
+  assert.equal(recoveryHoldReason({}, now), "");
+  // 恢复后未满稳定窗口的"进展"不许清同失败计数(否则熔断被翻抖绕过)。
+  const streak = { sameFailureCount: 2, lastRecoveryAt: "2026-09-01T12:08:00.000Z" };
+  assert.equal(shouldClearFailureStreak(streak, now), false);
+  assert.equal(shouldClearFailureStreak(streak, now + 9 * 60 * 1000), true);
+  assert.equal(shouldClearFailureStreak({ sameFailureCount: 0 }, now), false);
+  assert.equal(shouldClearFailureStreak({ sameFailureCount: 1 }, now), true);
 });
 
 test("recovery prompt continues from the leaf and never embeds or replays tool arguments", () => {
@@ -277,6 +301,10 @@ test("runtime dispatches one persisted recovery per leaf within the recovery tar
     webPort: 39991, healthPort: 39992, graceMs: 1500, now: () => now, fetchImpl,
   });
   supervisor.ensureEventStream = () => {};
+  // 新语义:会话文件新鲜 = 活跃,恢复被否决;把 mtime 做旧超过 FILE_QUIET_MS 模拟真死
+  // (须在首次 discover 之前做旧,mtime 缓存按 tick 刷新)。
+  const agedSec = (now - 11 * 60 * 1000) / 1000;
+  fs.utimesSync(file, agedSec, agedSec);
   supervisor.discover(true);
   await supervisor.tick();
   assert.equal(supervisor.state.sessions[id].status, "running");
