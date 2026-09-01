@@ -15,6 +15,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const MARK = "__pwDraftPersistV1";
+// 参与 chunk 名指纹。任何时候需要强制客户端丢弃旧缓存（例如同名文件曾被手工覆盖过），
+// 就 bump 这个值——chunk URL 随之改变，浏览器与 SW 都必须重新取。
+export const PATCH_REVISION = "r2";
 
 const ID = "([\\w$]+)";
 // minified 标识符可能是 `t$` 这类含正则元字符的名字，拼进正则前必须转义。
@@ -182,6 +185,7 @@ function main() {
   // chunk 名派生自注入代码本身：补丁内容一变，URL 就变，SW 的 /_next/static cacheFirst
   // 才会去取新文件（同名换内容会让老客户端永远吃缓存）。长度对齐原 hash，引用替换是等长的。
   const patchFingerprint = crypto.createHash("sha1")
+    .update(PATCH_REVISION)
     .update(buildRuntime("MEM"))
     .update(applyDraftPersistence.toString())
     .digest("hex");
