@@ -41,8 +41,10 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
 // v7.15.0:撤销全请求强制 reasoning=max(08-30 引入)。强度完全由会话控制——pi 会话对
 // gpt-5.6-sol 默认已是 max(settings.modelThinkingLevels),桥强制只会掩盖会话真实设置。
+// v7.16.0:cache 注入修复——边界兼容 pi 字符串形态系统提示(key-only,blockIndex=-1),
+// key 掺首条 user 项摘要实现并发会话分键(单会话恒定、并发互异)。
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.15.0";
+const POLICY_VERSION = "gpt56-chain-replay-v7.16.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -410,7 +412,7 @@ async function handleResponses(req, res) {
   }
   if (rewritten.meta.cacheApplied) {
     const c = rewritten.meta.cache;
-    log(`cache 注入：key=${c.key} breakpoint=${c.breakpointApplied ? "explicit" : "off"} boundary=input[${c.itemIndex}].content[${c.blockIndex}] body=${originalBytes}B→${body.length}B`);
+    log(`cache 注入：key=${c.key} breakpoint=${c.breakpointApplied ? "explicit" : "off"} boundary=input[${c.itemIndex}].content[${c.blockIndex < 0 ? "string" : c.blockIndex}] body=${originalBytes}B→${body.length}B originator=${req.headers.originator || "-"}`);
   } else if (rewritten.meta.parseFailed) {
     log(`cache/tier 解析失败，fail-open 原样透传 body=${originalBytes}B`);
   } else {

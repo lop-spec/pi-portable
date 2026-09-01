@@ -204,10 +204,18 @@ function findStableBreakpoint(input) {
   for (let itemIndex = 0; itemIndex < input.length; itemIndex += 1) {
     const item = input[itemIndex];
     if (item?.type === 'additional_tools') continue;
-    if (item?.role !== 'developer') break;
+    if (item?.role !== 'developer' && item?.role !== 'system') break;
 
     const text = developerText(item);
     if (VOLATILE_DEVELOPER_TEXT.test(text)) break;
+    // v7.16.0 边界兼容字符串:pi(pi-ai 序列化)的系统提示是单条 developer/system 项,
+    // content 为纯字符串——此前只认 input_text 块数组,pi 流量恒 no-safe-stable-boundary
+    // (2026-08-30→09-01 静默烧掉 380 万未缓存 tokens)。字符串项本身即稳定文本,记作
+    // key-only 边界(blockIndex=-1),永不把 content 改写成块数组。
+    if (typeof item?.content === 'string' && item.content) {
+      candidate = { itemIndex, blockIndex: -1 };
+      continue;
+    }
     const blocks = contentBlocks(item);
     for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
       if (blocks[blockIndex]?.type === 'input_text') {
@@ -217,6 +225,21 @@ function findStableBreakpoint(input) {
     }
   }
   return candidate;
+}
+
+function sessionSeed(input) {
+  // v7.16.0 并发会话分键:key 掺入首条 user 项摘要。v7.8.0 的"同前缀同 key"假设
+  // 低并发;pi 多并发会话 + Best-of-N 并发候选后,单 key 汇聚大量互异后缀会打散
+  // 上游缓存节点。首条 user 项整个会话逐轮原样重放 → 单会话内 key 恒定;同会话
+  // 的并发候选共享它 → 仍共享缓存;不同会话首消息互异 → 各自独立 key。
+  const first = input.find((item) => item?.role === 'user');
+  if (!first) return '';
+  const {
+    id: _id,
+    internal_chat_message_metadata_passthrough: _passthrough,
+    ...modelVisible
+  } = first;
+  return createHash('sha256').update(canonicalJson(withoutBreakpoints(modelVisible))).digest('hex').slice(0, 16);
 }
 
 function stableCacheKey(payload, itemIndex) {
@@ -235,7 +258,10 @@ function stableCacheKey(payload, itemIndex) {
     tools: payload.tools,
     input: stableInput,
   });
-  const digest = createHash('sha256').update(canonicalJson(prefix)).digest('hex').slice(0, 32);
+  const seed = sessionSeed(payload.input);
+  const digest = createHash('sha256')
+    .update(canonicalJson(prefix) + (seed ? `|session:${seed}` : ''))
+    .digest('hex').slice(0, 32);
   const versioned = `${digest.slice(0, 12)}5${digest.slice(13)}`;
   const variant = (8 | (Number.parseInt(versioned[16], 16) & 3)).toString(16);
   const uuid = `${versioned.slice(0, 16)}${variant}${versioned.slice(17)}`;
@@ -279,8 +305,12 @@ export function applyCodexRequestPolicy(
     return { payload: copy, cache, reasoning };
   }
 
-  const block = copy.input[boundary.itemIndex].content[boundary.blockIndex];
-  if (explicitBreakpoint) block.prompt_cache_breakpoint = { mode: 'explicit' };
+  // 字符串形态边界(blockIndex=-1)无块可挂显式断点:恒 key-only,不改写 content 形态。
+  const breakpointApplied = explicitBreakpoint && boundary.blockIndex >= 0;
+  if (breakpointApplied) {
+    const block = copy.input[boundary.itemIndex].content[boundary.blockIndex];
+    block.prompt_cache_breakpoint = { mode: 'explicit' };
+  }
   // v7.8.0:key 只按稳定前缀分组,不再掺首条任务文本。任务分组会把不同任务路由到
   // 不同上游缓存节点——t1 写热的共享前缀 t2-t5 摸不到(2026-08-27 五链基准:
   // 跨任务首轮命中封顶 11008,同任务重跑 13056)。同前缀同 key 后限流面=同项目
@@ -288,8 +318,8 @@ export function applyCodexRequestPolicy(
   copy.prompt_cache_key = stableCacheKey(copy, boundary.itemIndex);
   Object.assign(cache, {
     applied: true,
-    breakpointApplied: explicitBreakpoint,
-    reason: explicitBreakpoint ? 'stable-developer-prefix' : 'stable-developer-prefix-key-only',
+    breakpointApplied,
+    reason: breakpointApplied ? 'stable-developer-prefix' : 'stable-developer-prefix-key-only',
     key: copy.prompt_cache_key,
     ...boundary,
   });
