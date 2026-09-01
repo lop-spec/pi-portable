@@ -1358,7 +1358,8 @@ export default function (pi: ExtensionAPI) {
       contexts.push([
         "<persistent-outcome-gate>",
         "用户冻结了持续终态；核验‘未达到’、执行禁止交付或保持任务开放，只是过程状态，绝不能冒充终态完成。",
-        `验收清单必须原样包含以下 host 项；终态未取得正向证据时保持 [ ]，只有正文给出正向达成证据后才可改为 [x]：${persistentOutcomeItemText(checklistGoal.persistentOutcome)}`,
+        // "必须原样包含"曾被理解为每轮清单在场并含该项 → 教唆全量复述;改为首轮纳入+宿主记账。
+        `首次冻结【验收清单】时必须原样纳入以下 host 项；此后由宿主持续记账，无需每轮复述清单，仅在该项状态变化时以增量块声明。终态未取得正向证据时保持 [ ]，只有正文给出正向达成证据后才可改为 [x]：${persistentOutcomeItemText(checklistGoal.persistentOutcome)}`,
         "</persistent-outcome-gate>",
       ].join("\n"));
     }

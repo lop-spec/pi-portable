@@ -263,7 +263,9 @@ export function buildRecoveryPrompt(snapshot, record = {}) {
   return `${RECOVERY_PREFIX} run=${String(record.runId || "unknown")} attempt=${Number(record.recoveryAttempt || 1)} leaf=${String(snapshot?.leafId || "unknown")}\n` +
     "上一轮在未形成可交付终态时异常中断。继续完成原目标，不要重新解释中断原因。\n" +
     `${safety}\n` +
-    "保留并逐项更新原【验收清单】；只有全部获得正向运行证据后才能结束。";
+    // 清单复述纪律与桥 persistence/lop-chain 续跑文案对齐(checklist-collapse):曾经的
+    // "保留并逐项更新原【验收清单】"教唆重度恢复会话每轮全量复述(实录 157/161 轮)。
+    "清单状态由宿主持续记账，不要复述整份【验收清单】；仅以增量块声明变化项（- [x]/- [ ] 与合同原文逐字一致，未变化项不得出现）；全部完成后只写一行【验收清单】N/N 全部完成。只有全部获得正向运行证据后才能结束。";
 }
 
 export class DurableRunStore {
