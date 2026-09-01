@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-01T08:05:00.000Z",
+  "sourceCommit": "76355e3",
+  "ciRun": "https://github.com/lop-spec/pi-portable/actions/runs/33482260536 (success)",
+  "protocol": "checklist-incremental-v13: contract itemized once at freeze (also written to evidence file); later replies declare deltas only; host persists per-item done; completion = single collapsed line N/N; evidence-to-file promoted to highest-priority output rule (bridge appendix + rules corpus alwaysOn + pi AGENTS.md projection)",
+  "contractTests": { "localFullList": "18/18 pass (incl. parallel session's prefix-freeze-contract)", "ci": "success" },
+  "liveVerification": {
+    "session": "2026-09-01T07-48-13-463Z_01a05bf0 (3-file lifecycle task via 18793)",
+    "checks": {
+      "firstReplyFullContractFrozen": true,
+      "finalReplyCollapsedLineOnly": true,
+      "noFullRestatementInFinal": true,
+      "noFullRestatementInMiddleTurns": true,
+      "finalReplyChars": 175,
+      "evidenceFileWritten": "acceptance-evidence.md",
+      "taskCompleted": true
+    },
+    "lineage": { "v11FinalReplyChars": 216, "preCollapseBaselineChars": 2300 }
+  },
+  "hardGates": {
+    "doneOnlyByExplicitDeclaration": true,
+    "persistentOutcomeNotBypassed": true,
+    "addedRenamedItemViolationsKept": true,
+    "thirdStateViolationsKept": true,
+    "legacyFullRestatementStillAccepted": true
+  },
+  "deployment": {
+    "rulesCorpus": "both copies (registry 84 rules + decision-replay-engine 73) upgraded: 输出精简 -> evidence-first alwaysOn, moved to top; projections regenerated (shared CLAUDE.md/AGENTS.md sha256 be064375) + active CLAUDE.md and pi AGENTS.md updated in place",
+    "localBridge": "restarted pid 12628 -> 16332 with v13 appendix",
+    "peerFiles": "5 assets sha256 match (lop-chain 1a277a05, bridge 1cff32d6, rules be064375, AGENTS 52ee622a)",
+    "peerBridge": "restarted pid 14340 -> 13328 by launcher watchdog after idle window; v13 appendix loaded from verified on-disk file"
+  },
+  "knownIssues": [
+    "rules corpus dual-source drift (registry vs decision-replay-engine) flagged as separate task"
+  ]
+}
