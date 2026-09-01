@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "goal-redirector-durable-v10";
+export const LOP_CHAIN_RUNTIME_VERSION = "prefix-freeze-v12";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -189,8 +189,10 @@ export function runtimeVersionFromSource(value: unknown): string {
 export function stripAcceptanceChecklist(value: unknown): string {
   const source = String(value || "");
   const block = firstAcceptanceChecklistBlock(source);
-  if (!block) return source.trim();
-  return `${source.slice(0, block.start)}\n${source.slice(block.end)}`.trim();
+  const withoutBlock = block ? `${source.slice(0, block.start)}\n${source.slice(block.end)}` : source;
+  const collapsed = collapsedAcceptanceChecklist(withoutBlock);
+  if (!collapsed) return withoutBlock.trim();
+  return `${withoutBlock.slice(0, collapsed.start)}\n${withoutBlock.slice(collapsed.end)}`.trim();
 }
 
 export function historyUsageDecision(resolved: any, answer: unknown) {
@@ -620,28 +622,36 @@ type AcceptanceChecklistBlock = {
   items: Array<{ marker: string; text: string }>;
 };
 
-function firstAcceptanceChecklistBlock(value: unknown): AcceptanceChecklistBlock | null {
-  const source = String(value || "");
-  const lines: Array<{ body: string; start: number; end: number }> = [];
+type ScannedLine = { body: string; start: number; end: number; fenced: boolean };
+
+function scanFencedLines(source: string): ScannedLine[] {
+  const lines: ScannedLine[] = [];
   let offset = 0;
+  let fence: "`" | "~" | "" = "";
   while (offset < source.length) {
     const newline = source.indexOf("\n", offset);
     const end = newline < 0 ? source.length : newline + 1;
-    const raw = source.slice(offset, end);
-    lines.push({ body: raw.replace(/\r?\n$/u, ""), start: offset, end });
-    offset = end;
-  }
-  let fence: "`" | "~" | "" = "";
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const fenceMatch = line.body.match(/^\s*(`{3,}|~{3,})/u);
+    const body = source.slice(offset, end).replace(/\r?\n$/u, "");
+    const fenceMatch = body.match(/^\s*(`{3,}|~{3,})/u);
     if (fenceMatch) {
       const marker = fenceMatch[1][0] as "`" | "~";
       if (!fence) fence = marker;
       else if (fence === marker) fence = "";
-      continue;
+      // fence 标记行自身视作 fenced:既不当 header 也不当折叠行。
+      lines.push({ body, start: offset, end, fenced: true });
+    } else {
+      lines.push({ body, start: offset, end, fenced: Boolean(fence) });
     }
-    if (fence || line.body.trim() !== CHECKLIST_HEADER) continue;
+    offset = end;
+  }
+  return lines;
+}
+
+function firstAcceptanceChecklistBlock(value: unknown): AcceptanceChecklistBlock | null {
+  const lines = scanFencedLines(String(value || ""));
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.fenced || line.body.trim() !== CHECKLIST_HEADER) continue;
     const rawItems: Array<{ marker: string; text: string }> = [];
     let end = line.end;
     for (let itemIndex = index + 1; itemIndex < lines.length; itemIndex += 1) {
@@ -653,6 +663,20 @@ function firstAcceptanceChecklistBlock(value: unknown): AcceptanceChecklistBlock
       end = itemLine.end;
     }
     if (rawItems.length) return { start: line.start, end, items: rawItems };
+  }
+  return null;
+}
+
+// 完成态折叠形态:全部冻结合同项完成后,回复可用一行代替全项复述。gate 端只认
+// N/N 与合同项数完全一致的声明;fence 内、未冻结合同、数字不符一律不算。
+const COLLAPSED_CHECKLIST_LINE = /^\s*【验收清单】\s*(\d+)\s*\/\s*(\d+)\s*全部完成\s*[。.!！]?\s*$/u;
+
+export function collapsedAcceptanceChecklist(value: unknown):
+  { done: number; total: number; start: number; end: number } | null {
+  for (const line of scanFencedLines(String(value || ""))) {
+    if (line.fenced) continue;
+    const match = line.body.match(COLLAPSED_CHECKLIST_LINE);
+    if (match) return { done: Number(match[1]), total: Number(match[2]), start: line.start, end: line.end };
   }
   return null;
 }
@@ -737,19 +761,40 @@ export function checklistGateDecision(input: {
   state = freezeChecklistGoalContract(state, input.contractText || input.assistantText);
 
   const violations: string[] = [];
-  const parsedItems = parsed?.items || [];
+  // 完成态折叠:完整清单缺席时才看折叠行;完整清单在场时以它为准。
+  // 折叠只在 N/N 与冻结合同项数完全一致时等价于"全部 [x]",否则给出具体诊断打回。
+  let effective = parsed;
+  let collapseViolation = "";
+  if (!effective) {
+    const collapsed = collapsedAcceptanceChecklist(input.assistantText);
+    if (collapsed) {
+      if (!state.items.length) {
+        collapseViolation = "折叠形态在冻结合同前无效;先给出完整【验收清单】并冻结";
+      } else if (collapsed.done !== collapsed.total || collapsed.total !== state.items.length) {
+        collapseViolation = `折叠清单 ${collapsed.done}/${collapsed.total} 与冻结合同 ${state.items.length} 项不符;须完整清单或正确的 N/N 全部完成`;
+      } else {
+        effective = {
+          items: state.items.map((item) => ({
+            text: item.text, key: item.key, marker: "x", state: "done" as const,
+          })),
+          open: [], done: state.items.length, invalid: [], duplicates: [],
+        };
+      }
+    }
+  }
+  const parsedItems = effective?.items || [];
   const parsedByKey = new Map<string, AcceptanceChecklistItem>();
   for (const item of parsedItems) if (!parsedByKey.has(item.key)) parsedByKey.set(item.key, item);
 
   const contractKeys = new Set(state.items.map((item) => item.key));
-  if (parsed) {
+  if (effective) {
     for (const item of parsedItems) {
       if (!contractKeys.has(item.key)) violations.push(canonicalAddedChecklistViolation(item.text));
       if (item.state === "invalid") violations.push(`禁止的第三状态 [${item.marker}]: ${item.text}`);
     }
-    for (const item of parsed.duplicates) violations.push(`重复验收项目: ${item}`);
+    for (const item of effective.duplicates) violations.push(`重复验收项目: ${item}`);
   } else {
-    violations.push("回复遗漏了冻结的【验收清单】");
+    violations.push(collapseViolation || "回复遗漏了冻结的【验收清单】");
   }
 
   const open: string[] = [];
@@ -815,7 +860,8 @@ export function checklistGateDecision(input: {
     trigger: true,
     reason: blockerKey ? "blocker-retry" : persistentReason ||
       (repeatedViolation ? "repeated-checklist-violation" :
-        !parsed ? "missing-checklist" : formatViolations.length ? "invalid-checklist" : "open-items"),
+        !effective ? (collapseViolation ? "invalid-collapsed-checklist" : "missing-checklist") :
+          formatViolations.length ? "invalid-checklist" : "open-items"),
     open: uniqueOpen,
     violations,
     state,
@@ -832,7 +878,7 @@ export function formatChecklistGateContinuation(result: ChecklistGateResult, con
   const diagnostics = result.violations.length
     ? `\n\n格式违规诊断（不是验收项目，禁止复制进清单）:\n${result.violations.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。以下是唯一冻结合同，回复时必须完整重复且只更新 [ ]/[x] 状态:\n${contractBlock}${diagnostics}\n\n继续执行原始任务。已有可验证证据的项目标为 [x]；未完成项目保留 [ ]。禁止 [~] 或任何第三状态，禁止删除、改名、缩减合同项目；如果确有外部阻塞，保留对应 [ ] 并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。`;
+  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。以下是唯一冻结合同，回复时必须完整重复且只更新 [ ]/[x] 状态:\n${contractBlock}${diagnostics}\n\n继续执行原始任务。已有可验证证据的项目标为 [x]；未完成项目保留 [ ]。禁止 [~] 或任何第三状态，禁止删除、改名、缩减合同项目；如果确有外部阻塞，保留对应 [ ] 并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。全部合同项都完成后，可用一行“【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成”代替完整清单；详细证据写入任务工作区的证据文件(默认 acceptance-evidence.md)，正文只留每项一句结论、关键数字与证据文件路径。`;
 }
 
 export const renderChecklistContinuation = formatChecklistGateContinuation;
@@ -1046,20 +1092,26 @@ export default function (pi: ExtensionAPI) {
     ).length;
     if (removed || sanitized) log(`CONTEXT removed=${removed} sanitizedSummary=${sanitized}`);
     try {
-      if (!trimActive) {
-        const tokens = ctx?.getContextUsage?.()?.tokens;
-        if (typeof tokens === "number" && tokens > COMPACT_TRIGGER_TOKENS) {
-          trimActive = true;
-          log(`COMPACT_GUARD activate tokens=${tokens} threshold=${COMPACT_TRIGGER_TOKENS}`);
+      const tokens = ctx?.getContextUsage?.()?.tokens;
+      const overLine = typeof tokens === "number" && tokens > COMPACT_TRIGGER_TOKENS;
+      if (frozenKeepFrom === null || overLine) {
+        if (overLine) {
+          // (重)冻结轮:按当前尾部 50k 重算边界并定格。这是唯一允许的缓存 miss 轮。
+          const r = microcompact(messages);
+          frozenKeepFrom = r.keepFrom;
+          freezeCount += 1;
+          if (r.trimmed) messages = r.messages;
+          lastTrimCount = r.trimmed;
+          log(`COMPACT_GUARD freeze#${freezeCount} tokens=${tokens} keepFrom=${r.keepFrom} trim n=${r.trimmed} tok≈${r.beforeTok}->${r.afterTok} keep=${TRIM_KEEP_RECENT_TOKENS}`);
+          metric({ sessionId, compactGuard: true, freeze: freezeCount, trimCount: r.trimmed, trimBeforeTok: r.beforeTok, trimAfterTok: r.afterTok });
         }
-      }
-      if (trimActive) {
-        const r = microcompact(messages);
+      } else {
+        // 冻结期:复用定格边界,同一裁剪集逐字节复现,新消息只追加。
+        const r = microcompact(messages, frozenKeepFrom);
         if (r.trimmed) messages = r.messages;
         if (r.trimmed !== lastTrimCount) {
           lastTrimCount = r.trimmed;
-          log(`COMPACT_GUARD trim n=${r.trimmed} tok≈${r.beforeTok}->${r.afterTok} keep=${TRIM_KEEP_RECENT_TOKENS}`);
-          metric({ sessionId, compactGuard: true, trimCount: r.trimmed, trimBeforeTok: r.beforeTok, trimAfterTok: r.afterTok });
+          log(`COMPACT_GUARD frozen#${freezeCount} keepFrom=${frozenKeepFrom} trim n=${r.trimmed}`);
         }
       }
     } catch (e) { log(`COMPACT_GUARD FAIL_OPEN ${String(e).slice(0, 120)}`); }
@@ -1082,7 +1134,13 @@ export default function (pi: ExtensionAPI) {
     if (modelTurnStartedAt) modelTtfbDurations.push(+(performance.now() - modelTurnStartedAt).toFixed(1));
   });
   pi.on("message_end", (event: any) => {
-    if (event?.message?.role !== "assistant" || !modelTurnStartedAt) return;
+    if (event?.message?.role !== "assistant") return;
+    // 每个模型请求记一行用量:cacheRead/input 是稳定前缀缓存率的直接测量源。
+    const u = event.message.usage;
+    if (u && typeof u.input === "number" && (u.input > 0 || u.cacheRead > 0)) {
+      metric({ sessionId, kind: "usage", uIn: u.input, uCached: u.cacheRead ?? 0, uOut: u.output ?? 0, uTotal: u.totalTokens ?? 0 });
+    }
+    if (!modelTurnStartedAt) return;
     modelTurnDurations.push(+(performance.now() - modelTurnStartedAt).toFixed(1));
     modelTurnStartedAt = 0;
   });
@@ -1114,7 +1172,10 @@ export default function (pi: ExtensionAPI) {
   const TRIM_KEEP_RECENT_TOKENS = Number(process.env.LOP_TRIM_KEEP_TOKENS || 50000);
   const TRIM_MIN_CHARS = 600;
   const TRIM_MARK = "[lop-compact-guard 已裁剪";
-  let trimActive = false;
+  // 冻结边界:null=未触发。触发后 keepFrom 定格,投影逐字节稳定(前缀缓存友好);
+  // 真实用量再次越线才重冻——缓存 miss 只发生在(重)冻结轮,不再每轮滑动。
+  let frozenKeepFrom: number | null = null;
+  let freezeCount = 0;
   let lastTrimCount = -1;
 
   function estimateContentChars(content: any): number {
@@ -1147,15 +1208,19 @@ export default function (pi: ExtensionAPI) {
     return Array.isArray(content) && content.length === 1 && content[0]?.type === "text" &&
       String(content[0].text || "").startsWith(TRIM_MARK);
   }
-  function microcompact(messages: any[]): { messages: any[]; trimmed: number; beforeTok: number; afterTok: number } {
+  function microcompact(messages: any[], keepFromOverride?: number): { messages: any[]; trimmed: number; beforeTok: number; afterTok: number; keepFrom: number } {
     const est = messages.map(estimateMessageTokens);
     const beforeTok = est.reduce((a, b) => a + b, 0);
     let keepFrom = messages.length;
-    let acc = 0;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      acc += est[i];
-      keepFrom = i;
-      if (acc >= TRIM_KEEP_RECENT_TOKENS) break;
+    if (typeof keepFromOverride === "number") {
+      keepFrom = Math.max(0, Math.min(keepFromOverride, messages.length));
+    } else {
+      let acc = 0;
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        acc += est[i];
+        keepFrom = i;
+        if (acc >= TRIM_KEEP_RECENT_TOKENS) break;
+      }
     }
     let trimmed = 0;
     let saved = 0;
@@ -1170,9 +1235,9 @@ export default function (pi: ExtensionAPI) {
       trimmed += 1;
       saved += est[i];
     }
-    return { messages: out, trimmed, beforeTok, afterTok: beforeTok - saved };
+    return { messages: out, trimmed, beforeTok, afterTok: beforeTok - saved, keepFrom };
   }
-  pi.on("session_compact", () => { trimActive = false; lastTrimCount = -1; });
+  pi.on("session_compact", () => { frozenKeepFrom = null; lastTrimCount = -1; });
 
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     const prompt = String(event?.prompt || "");

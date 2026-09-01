@@ -77,6 +77,15 @@ test('persistence prompt yields to host-verified deterministic final drafts', ()
   assert.match(source, /Do not call any tool, do not emit an acceptance checklist/u);
 });
 
+test('persistence prompt teaches completed-state collapse and evidence-to-file protocol', () => {
+  // 与 lop-chain collapsedAcceptanceChecklist 的协议闭环:任一端被单边删改时此钉先红。
+  const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
+  assert.match(source, /【验收清单】N\/N 全部完成/u);
+  assert.match(source, /exact number of frozen contract items/u);
+  assert.match(source, /acceptance-evidence\.md/u);
+  assert.match(source, /one-line conclusions, key numbers, and the evidence file path/u);
+});
+
 test('memo replays equivalent SSE while replacing 8-16 hex history token', () => {
   const memo = new ExactResponseMemo();
   const body = Buffer.from('data: {"type":"response.output_text.done","text":"ok <!-- history-used:h_1234567890abcdef -->"}\n\n');

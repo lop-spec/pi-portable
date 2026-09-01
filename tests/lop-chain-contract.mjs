@@ -20,6 +20,7 @@ const {
   default: lopChainExtension,
   auditRuleRouting,
   checklistGateDecision,
+  collapsedAcceptanceChecklist,
   completionGuardAlreadyQueued,
   completionGuardDecision,
   createChecklistGoalState,
@@ -214,7 +215,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /goal-redirector-durable-v10/u);
+assert.match(commands.get("lop-chain-reload").description, /prefix-freeze-v12/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -608,6 +609,61 @@ const deterministicComplete = checklistGateDecision({
 });
 assert.equal(deterministicComplete.state.status, "complete");
 
+// 完成态折叠一行(2026-09-01):全部合同项完成后可用「【验收清单】N/N 全部完成」代替
+// 全项复述;N/N 必须与冻结合同项数完全一致,fence 内、未冻结合同、数字不符一律无效。
+assert.deepEqual(collapsedAcceptanceChecklist("【验收清单】8/8 全部完成。"),
+  { done: 8, total: 8, start: 0, end: "【验收清单】8/8 全部完成。".length });
+assert.equal(collapsedAcceptanceChecklist("普通提及【验收清单】不算折叠"), null);
+assert.equal(stripAcceptanceChecklist("结论在此。\n【验收清单】3/3 全部完成"), "结论在此。");
+const collapsedComplete = checklistGateDecision({
+  ...checklistBase, state: frozen.state,
+  assistantText: "已部署并验证,详细证据见 acceptance-evidence.md。\n【验收清单】3/3 全部完成",
+});
+assert.equal(collapsedComplete.trigger, false);
+assert.equal(collapsedComplete.reason, "goal-complete");
+assert.equal(collapsedComplete.state.status, "complete");
+const collapsedWrongTotal = checklistGateDecision({
+  ...checklistBase, state: frozen.state, assistantText: "【验收清单】2/2 全部完成",
+});
+assert.equal(collapsedWrongTotal.trigger, true);
+assert.equal(collapsedWrongTotal.reason, "invalid-collapsed-checklist");
+assert.match(collapsedWrongTotal.violations.join("\n"), /2\/2 与冻结合同 3 项不符/u);
+const collapsedPartial = checklistGateDecision({
+  ...checklistBase, state: frozen.state, assistantText: "【验收清单】2/3 全部完成",
+});
+assert.equal(collapsedPartial.trigger, true);
+assert.match(collapsedPartial.violations.join("\n"), /不符/u);
+const collapsedFenced = checklistGateDecision({
+  ...checklistBase, state: frozen.state,
+  assistantText: "```text\n【验收清单】3/3 全部完成\n```",
+});
+assert.equal(collapsedFenced.trigger, true);
+assert.equal(collapsedFenced.reason, "missing-checklist");
+const collapsedNoContract = checklistGateDecision({
+  ...checklistBase, state: createChecklistGoalState("新任务", "u-collapse"),
+  assistantText: "【验收清单】3/3 全部完成",
+});
+assert.equal(collapsedNoContract.trigger, true);
+assert.equal(collapsedNoContract.reason, "invalid-collapsed-checklist");
+assert.match(collapsedNoContract.violations.join("\n"), /冻结合同前无效/u);
+const collapsedWithFullList = checklistGateDecision({
+  ...checklistBase, state: frozen.state,
+  assistantText: `${openChecklistText}\n【验收清单】3/3 全部完成`,
+});
+assert.equal(collapsedWithFullList.trigger, true);
+assert.equal(collapsedWithFullList.reason, "open-items");
+// 折叠不得绕过持续终态硬闸:正文没有正向达成证据时仍打回。
+const collapsedPersistentBypass = checklistGateDecision({
+  assistantText: "【验收清单】3/3 全部完成\n\n当前仍未达到100倍，继续禁止交付。",
+  stopReason: "stop", pendingMessages: false, hasGoalGate: false,
+  state: prematureDecision.state,
+});
+assert.equal(collapsedPersistentBypass.trigger, true);
+assert.match(collapsedPersistentBypass.reason, /^persistent-outcome/u);
+// 续跑注入文案必须教折叠形态与证据落盘约定。
+assert.match(formatChecklistGateContinuation(frozen, 1), /3\/3 全部完成/u);
+assert.match(formatChecklistGateContinuation(frozen, 1), /acceptance-evidence\.md/u);
+
 // 持久状态只从当前分支最后一条 lop-checklist-goal-state 恢复。
 assert.equal(latestChecklistGoalState([]), null);
 assert.equal(latestChecklistGoalState([
@@ -779,7 +835,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "goal-redirector-durable-v10");
+assert.equal(runtimeVersionFromSource(source), "prefix-freeze-v12");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
