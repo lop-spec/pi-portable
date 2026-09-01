@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "recovery-incremental-v16";
+export const LOP_CHAIN_RUNTIME_VERSION = "s8-recovery-canonical-v17";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -2039,23 +2039,35 @@ export default function (pi: ExtensionAPI) {
           .replace(/<!--\s*history-(?:used|conflict):[^>]+-->/gu, "")
           .replace(/<!--\s*lop-memory-event\s+\{[\s\S]*?\}\s*-->/gu, "")
           .trim();
-        const saved = await mem.recordStop({
-          session_id: sessionId,
-          turn_id: "",
-          prompt,
-          last_assistant_message: persistenceText,
-          transcript_path: "",
-        });
-        if (!saved?.canonical?.saved) {
-          throw new Error(`canonical write not saved: ${JSON.stringify(saved).slice(0, 500)}`);
+        // 恢复轮注入 prompt 是调度脚手架(uuid+attempt),不能当任务键落账:有目标合同
+        // 就换成原始目标文本,让恢复期完成态归并到原任务事件;无合同则无键可写。
+        const recoveryTurn = prompt.startsWith(RUN_SUPERVISOR_RECOVERY_PREFIX);
+        const canonicalPrompt = recoveryTurn ? String(checklistGoal?.objective || "").trim() : prompt;
+        if (!persistenceText || !canonicalPrompt) {
+          // 剥掉清单/凭证后正文为空 = 本轮无最终完成态可入账;Stop 只记最终完成态,
+          // 跳过但必须留痕(此路径曾被当 S8 硬失败,恢复轮每次重试都炸一条)。
+          const s8Skip = !persistenceText ? "empty-after-strip" : "recovery-without-goal";
+          lastPhase = { ...lastPhase, s8Pass: true, s8Skip };
+          log(`S8 SKIP ${s8Skip} recovery=${recoveryTurn}`);
+        } else {
+          const saved = await mem.recordStop({
+            session_id: sessionId,
+            turn_id: "",
+            prompt: canonicalPrompt,
+            last_assistant_message: persistenceText,
+            transcript_path: "",
+          });
+          if (!saved?.canonical?.saved) {
+            throw new Error(`canonical write not saved: ${JSON.stringify(saved).slice(0, 500)}`);
+          }
+          lastPhase = {
+            ...lastPhase,
+            s8Pass: true,
+            s8CanonicalEventId: saved.canonical.eventId,
+            s8CanonicalDerived: Boolean(saved.canonical.derived),
+          };
+          log(`S8 STOP ${saved?.added ? "ADDED" : "UPDATED"} canonical=${saved.canonical.eventId} derived=${Boolean(saved.canonical.derived)}`);
         }
-        lastPhase = {
-          ...lastPhase,
-          s8Pass: true,
-          s8CanonicalEventId: saved.canonical.eventId,
-          s8CanonicalDerived: Boolean(saved.canonical.derived),
-        };
-        log(`S8 STOP ${saved?.added ? "ADDED" : "UPDATED"} canonical=${saved.canonical.eventId} derived=${Boolean(saved.canonical.derived)}`);
       }
     } catch (error) {
       lastPhase = { ...lastPhase, s8Pass: false, s8Error: String(error).slice(0, 220) };

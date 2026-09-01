@@ -499,6 +499,7 @@ function isSystemEnvelopePrompt(value) {
     text.startsWith('<system-reminder>') ||
     text.startsWith('<local-command-caveat>') ||
     text.startsWith('<task-notification>') ||
+    text.startsWith('[lop-run-supervisor recovery]') ||
     /^(?:Stop|PreToolUse|PostToolUse|UserPromptSubmit) hook feedback:/i.test(text) ||
     /^This session is being continued from a previous conversation/i.test(text);
 }
