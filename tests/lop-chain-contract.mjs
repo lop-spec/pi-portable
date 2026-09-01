@@ -215,7 +215,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /prefix-freeze-v12/u);
+assert.match(commands.get("lop-chain-reload").description, /checklist-incremental-v13/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -490,11 +490,12 @@ assert.equal(checklistGateDecision({ ...checklistBase, stopReason: "aborted" }).
 assert.equal(checklistGateDecision({ ...checklistBase, pendingMessages: true }).reason, "pending-messages");
 assert.equal(checklistGateDecision({ ...checklistBase, hasGoalGate: true }).reason, "goal-gate-owns-completion");
 
+// v13 增量协议:没复述清单不再是违规;done 由 host 持久记账(frozen 轮已声明读取配置 [x])。
 const missingChecklist = checklistGateDecision({ ...checklistBase, assistantText: "普通回复", state: frozen.state });
 assert.equal(missingChecklist.trigger, true);
-assert.equal(missingChecklist.reason, "missing-checklist");
-assert.deepEqual(missingChecklist.open, ["读取配置", "部署服务", "验证端口"]);
-assert.match(missingChecklist.violations.join("\n"), /遗漏了冻结/u);
+assert.equal(missingChecklist.reason, "open-items");
+assert.deepEqual(missingChecklist.open, ["部署服务", "验证端口"]);
+assert.deepEqual(missingChecklist.violations, []);
 const renamedChecklist = checklistGateDecision({
   ...checklistBase,
   state: frozen.state,
@@ -638,7 +639,7 @@ const collapsedFenced = checklistGateDecision({
   assistantText: "```text\n【验收清单】3/3 全部完成\n```",
 });
 assert.equal(collapsedFenced.trigger, true);
-assert.equal(collapsedFenced.reason, "missing-checklist");
+assert.equal(collapsedFenced.reason, "open-items");
 const collapsedNoContract = checklistGateDecision({
   ...checklistBase, state: createChecklistGoalState("新任务", "u-collapse"),
   assistantText: "【验收清单】3/3 全部完成",
@@ -663,6 +664,42 @@ assert.match(collapsedPersistentBypass.reason, /^persistent-outcome/u);
 // 续跑注入文案必须教折叠形态与证据落盘约定。
 assert.match(formatChecklistGateContinuation(frozen, 1), /3\/3 全部完成/u);
 assert.match(formatChecklistGateContinuation(frozen, 1), /acceptance-evidence\.md/u);
+
+// v13 增量协议:done 由 host 持久记账——缺席=保持、[x] 置真、显式 [ ] 重开;
+// 无需逐轮复述清单;折叠行可直接收口增量态。
+const incFrozen = checklistGateDecision({ ...checklistBase, state: createChecklistGoalState("增量部署", "u-inc") });
+assert.deepEqual(incFrozen.open, ["部署服务", "验证端口"]);
+const incQuiet = checklistGateDecision({
+  ...checklistBase, state: incFrozen.state,
+  assistantText: "推进中,证据见 acceptance-evidence.md。",
+});
+assert.equal(incQuiet.trigger, true);
+assert.equal(incQuiet.reason, "open-items");
+assert.deepEqual(incQuiet.violations, []);
+assert.deepEqual(incQuiet.open, ["部署服务", "验证端口"]);
+const incDelta = checklistGateDecision({
+  ...checklistBase, state: incQuiet.state,
+  assistantText: "部署完成,详情已落盘。\n【验收清单】\n- [x] 部署服务",
+});
+assert.deepEqual(incDelta.open, ["验证端口"]);
+const incReopen = checklistGateDecision({
+  ...checklistBase, state: incDelta.state,
+  assistantText: "【验收清单】\n- [ ] 读取配置",
+});
+assert.deepEqual([...incReopen.open].sort(), ["验证端口", "读取配置"].sort());
+const incFinish = checklistGateDecision({
+  ...checklistBase, state: incReopen.state,
+  assistantText: "【验收清单】\n- [x] 读取配置\n- [x] 验证端口",
+});
+assert.equal(incFinish.reason, "goal-complete");
+const incCollapse = checklistGateDecision({
+  ...checklistBase, state: incDelta.state, assistantText: "【验收清单】3/3 全部完成",
+});
+assert.equal(incCollapse.reason, "goal-complete");
+const incContinuation = formatChecklistGateContinuation(incQuiet, 1);
+assert.match(incContinuation, /未完成项/u);
+assert.match(incContinuation, /只列变化项/u);
+assert.doesNotMatch(incContinuation, /完整重复/u);
 
 // 持久状态只从当前分支最后一条 lop-checklist-goal-state 恢复。
 assert.equal(latestChecklistGoalState([]), null);
@@ -715,8 +752,10 @@ for (const response of [forbiddenTildeText, openChecklistText, openChecklistText
   await clEnd(response);
 }
 assert.equal(clMessages().length, 5);
-assert.match(clMessages().at(-1).message.content, /遗漏了冻结/u);
-assert.match(clMessages().at(-1).message.content, /格式违规诊断（不是验收项目/u);
+// v13:没复述清单不再产生"遗漏"违规;续跑注入只列未完成项并教增量声明。
+assert.match(clMessages().at(-1).message.content, /未完成项/u);
+assert.doesNotMatch(clMessages().at(-1).message.content, /遗漏了冻结/u);
+assert.match(clMessages()[1].message.content, /格式违规诊断（不是验收项目/u);
 assert.doesNotMatch(clMessages().at(-1).message.content, /- \[ \] 回复遗漏了冻结/u);
 await clHandlers.get("before_agent_start")[0]({ prompt: clMessages().at(-1).message.content }, clCtx);
 await clEnd(fullyClosedChecklistText);
@@ -835,7 +874,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "prefix-freeze-v12");
+assert.equal(runtimeVersionFromSource(source), "checklist-incremental-v13");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);

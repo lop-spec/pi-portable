@@ -84,6 +84,10 @@ test('persistence prompt teaches completed-state collapse and evidence-to-file p
   assert.match(source, /exact number of frozen contract items/u);
   assert.match(source, /acceptance-evidence\.md/u);
   assert.match(source, /one-line conclusions, key numbers, and the evidence file path/u);
+  // v13 增量协议 + 最高优先级落盘规则(2026-09-01 lop 裁决)。
+  assert.match(source, /Highest-priority output rule/u);
+  assert.match(source, /Do not restate the full checklist in later replies/u);
+  assert.match(source, /listing just the changed items/u);
 });
 
 test('memo replays equivalent SSE while replacing 8-16 hex history token', () => {

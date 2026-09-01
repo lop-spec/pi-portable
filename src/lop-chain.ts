@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "prefix-freeze-v12";
+export const LOP_CHAIN_RUNTIME_VERSION = "checklist-incremental-v13";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -389,7 +389,9 @@ export type ChecklistGoalState = {
   status: "inactive" | "active" | "complete" | "blocked";
   objective: string;
   taskUserEntryId: string;
-  items: Array<{ text: string; key: string }>;
+  // done 由 host 持久记账(v13 增量协议):模型只声明状态变化,缺席=保持,
+  // [x] 置 true,显式 [ ] 重开;第三状态不改变 done。
+  items: Array<{ text: string; key: string; done?: boolean }>;
   continuationCount: number;
   blockerKey: string;
   blockerTurns: number;
@@ -570,7 +572,7 @@ function ensurePersistentOutcomeItem(state: ChecklistGoalState): ChecklistGoalSt
   if (!next.persistentOutcome || !next.outcomeItemKey) return next;
   if (!next.items.some((item) => item.key === next.outcomeItemKey)) {
     const text = persistentOutcomeItemText(next.persistentOutcome);
-    next.items.push({ text, key: next.outcomeItemKey });
+    next.items.push({ text, key: next.outcomeItemKey, done: false });
   }
   return next;
 }
@@ -585,12 +587,12 @@ export function freezeChecklistGoalContract(
   const candidates = new Map<string, AcceptanceChecklistItem>();
   for (const item of parsed.items) if (!candidates.has(item.key)) candidates.set(item.key, item);
   if (!next.items.length) {
-    next.items = [...candidates.values()].map((item) => ({ text: item.text, key: item.key }));
+    next.items = [...candidates.values()].map((item) => ({ text: item.text, key: item.key, done: false }));
   } else if (next.allowExpansion) {
     const existing = new Set(next.items.map((item) => item.key));
     for (const item of candidates.values()) {
       if (existing.has(item.key)) continue;
-      next.items.push({ text: item.text, key: item.key });
+      next.items.push({ text: item.text, key: item.key, done: false });
       existing.add(item.key);
     }
     next.allowExpansion = false;
@@ -604,7 +606,8 @@ function validChecklistGoalState(value: any): value is ChecklistGoalState {
     (value?.persistentOutcome === undefined || typeof value.persistentOutcome === "string") &&
     (value?.outcomeItemKey === undefined || typeof value.outcomeItemKey === "string") &&
     Array.isArray(value?.items) && value.items.every((item: any) =>
-      typeof item?.text === "string" && typeof item?.key === "string");
+      typeof item?.text === "string" && typeof item?.key === "string" &&
+      (item?.done === undefined || typeof item.done === "boolean"));
 }
 
 export function latestChecklistGoalState(entries: any[]): ChecklistGoalState | null {
@@ -793,8 +796,16 @@ export function checklistGateDecision(input: {
       if (item.state === "invalid") violations.push(`禁止的第三状态 [${item.marker}]: ${item.text}`);
     }
     for (const item of effective.duplicates) violations.push(`重复验收项目: ${item}`);
-  } else {
-    violations.push(collapseViolation || "回复遗漏了冻结的【验收清单】");
+  } else if (collapseViolation) {
+    violations.push(collapseViolation);
+  }
+  // v13 增量协议:done 由 host 持久记账。回复只需声明变化项;缺席=保持既有状态,
+  // 不再因"没复述清单"打回。完成仍只能来自显式 [x]/折叠行,防假完成硬度不变。
+  for (const contract of state.items) {
+    const current = parsedByKey.get(contract.key);
+    if (!current) continue;
+    if (current.state === "done") contract.done = true;
+    else if (current.state === "open") contract.done = false;
   }
 
   const open: string[] = [];
@@ -802,8 +813,7 @@ export function checklistGateDecision(input: {
     open.push("先给出仅含 [ ]/[x] 的可验证验收清单并冻结合同");
   } else {
     for (const contract of state.items) {
-      const current = parsedByKey.get(contract.key);
-      if (!current || current.state !== "done") open.push(contract.text);
+      if (!contract.done) open.push(contract.text);
     }
   }
   const formatViolations = [...violations];
@@ -860,7 +870,7 @@ export function checklistGateDecision(input: {
     trigger: true,
     reason: blockerKey ? "blocker-retry" : persistentReason ||
       (repeatedViolation ? "repeated-checklist-violation" :
-        !effective ? (collapseViolation ? "invalid-collapsed-checklist" : "missing-checklist") :
+        collapseViolation ? "invalid-collapsed-checklist" :
           formatViolations.length ? "invalid-checklist" : "open-items"),
     open: uniqueOpen,
     violations,
@@ -871,14 +881,16 @@ export function checklistGateDecision(input: {
 export function formatChecklistGateContinuation(result: ChecklistGateResult, continuation: number): string {
   const openKeys = new Set(result.open.map((item) => normalizeChecklistItem(item).toLocaleLowerCase()));
   const contracts = result.state?.items || [];
+  const openContracts = contracts.filter((item) => openKeys.has(item.key));
   const contractBlock = contracts.length
-    ? `${CHECKLIST_HEADER}\n${contracts.map((item) =>
-      `- [${openKeys.has(item.key) ? " " : "x"}] ${item.text}`).join("\n")}`
-    : "尚未冻结有效验收合同；下一回复先给出仅含 [ ]/[x] 的可验证验收清单。";
+    ? (openContracts.length
+      ? `未完成项(host 已持久记账,无需复述全清单):\n${openContracts.map((item) => `- [ ] ${item.text}`).join("\n")}`
+      : "全部合同项已声明完成。")
+    : "尚未冻结有效验收合同；下一回复先给出仅含 [ ]/[x] 的完整【验收清单】(仅此一次)并同步写入证据文件。";
   const diagnostics = result.violations.length
     ? `\n\n格式违规诊断（不是验收项目，禁止复制进清单）:\n${result.violations.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。以下是唯一冻结合同，回复时必须完整重复且只更新 [ ]/[x] 状态:\n${contractBlock}${diagnostics}\n\n继续执行原始任务。已有可验证证据的项目标为 [x]；未完成项目保留 [ ]。禁止 [~] 或任何第三状态，禁止删除、改名、缩减合同项目；如果确有外部阻塞，保留对应 [ ] 并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。全部合同项都完成后，可用一行“【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成”代替完整清单；详细证据写入任务工作区的证据文件(默认 acceptance-evidence.md)，正文只留每项一句结论、关键数字与证据文件路径。`;
+  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。${contractBlock}${diagnostics}\n\n继续执行原始任务。新完成的项在回复中以【验收清单】开头的小块增量声明:只列变化项,"- [x] <与合同原文逐字一致>"表示已有可验证证据,"- [ ]"表示重开;未变化项不要复述。禁止 [~] 或任何第三状态，禁止新增、改名合同项目。全部合同项完成后只写一行“【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成”。命令输出、日志等证据细节写入任务工作区证据文件(默认 acceptance-evidence.md)，正文只留每项一句结论、关键数字与文件指针。如果确有外部阻塞，保留对应项未完成并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。`;
 }
 
 export const renderChecklistContinuation = formatChecklistGateContinuation;
