@@ -215,7 +215,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /s8-recovery-canonical-v17/u);
+assert.match(commands.get("lop-chain-reload").description, /s8-recovery-canonical-v18/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -885,11 +885,16 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "s8-recovery-canonical-v17");
+assert.equal(runtimeVersionFromSource(source), "s8-recovery-canonical-v18");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
-// S8:空正文/无目标恢复轮跳过落账但留痕;恢复轮落账键必须是目标合同原文而非调度脚手架。
+// S8:空正文/无目标恢复轮跳过落账但留痕;恢复轮落账键必须是目标合同原文而非调度脚手架;
+// recordStop 主动 skip(synthetic-prompt 等)留痕跳过,硬失败只留给真正写入被拒;
+// 恢复脚手架不得在 agent_end 建新目标污染 objective。
 assert.match(source, /S8 SKIP \$\{s8Skip\} recovery=/u);
-assert.match(source, /const canonicalPrompt = recoveryTurn \? String\(checklistGoal\?\.objective \|\| ""\)\.trim\(\) : prompt;/u);
+assert.match(source, /let canonicalPrompt = recoveryTurn \? String\(checklistGoal\?\.objective \|\| ""\)\.trim\(\) : prompt;/u);
+assert.match(source, /if \(recoveryTurn && canonicalPrompt\.startsWith\(RUN_SUPERVISOR_RECOVERY_PREFIX\)\) canonicalPrompt = "";/u);
+assert.match(source, /saved\?\.skipped \|\| saved\?\.disabled/u);
+assert.match(source, /isExecutionRequest\(prompt\) && !prompt\.startsWith\(RUN_SUPERVISOR_RECOVERY_PREFIX\)/u);
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
