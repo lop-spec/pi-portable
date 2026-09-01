@@ -308,3 +308,36 @@ test("runtime version and recovery markers are explicit", () => {
   assert.equal(RUN_SUPERVISOR_VERSION, "run-supervisor-v1");
   assert.equal(RECOVERY_PREFIX, "[lop-run-supervisor recovery]");
 });
+
+test("terminal sessions log once instead of every 500ms tick", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-quiet-test-"));
+  const sessionRoot = path.join(root, "sessions");
+  fs.mkdirSync(sessionRoot, { recursive: true });
+  const sessionId = "01a05769-3ff4-779a-b9c6-f5364d206206";
+  const file = path.join(sessionRoot, `2026-08-31T11-00-00-000Z_${sessionId}.jsonl`);
+  writeRows(file, [
+    header(sessionId),
+    message("u1", null, "user", { text: "go", timestamp: "2026-08-31T11:00:00.000Z" }),
+    message("a1", "u1", "assistant", { text: "done", message: { stopReason: "stop" }, timestamp: "2026-08-31T11:00:05.000Z" }),
+  ]);
+
+  // now 早于会话的 root user 时间，记录才会被 track 而不是当成安装前的旧会话基线化。
+  const supervisor = new RunSupervisor({
+    dataRoot: root, sessionRoot, webPort: 39961, pollMs: 10000,
+    now: () => Date.parse("2026-08-31T10:00:00.000Z"),
+  });
+  supervisor.discover();
+
+  for (let i = 0; i < 5; i += 1) await supervisor.processSession(sessionId, false);
+  const logRows = fs.readFileSync(path.join(root, "run-supervisor.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const completes = logRows.filter((row) => row.event === "run-complete");
+  assert.equal(completes.length, 1, `run-complete must be logged once, got ${completes.length}`);
+  assert.equal(supervisor.state.sessions[sessionId].status, "complete");
+
+  // 会话文件消失后同一读取错误也只记一次（删测试会话时曾把日志刷到几百 KB）。
+  fs.rmSync(file);
+  for (let i = 0; i < 5; i += 1) await supervisor.processSession(sessionId, false);
+  const afterRows = fs.readFileSync(path.join(root, "run-supervisor.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const readErrors = afterRows.filter((row) => row.event === "session-read-error");
+  assert.equal(readErrors.length, 1, `session-read-error must be logged once, got ${readErrors.length}`);
+});

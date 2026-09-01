@@ -349,6 +349,7 @@ export class RunSupervisor {
     this.indexes = new Map();
     this.filesBySession = new Map();
     this.knownFileStats = new Map();
+    this.readErrors = new Map();
     this.runningIds = new Set();
     this.eventStreams = new Map();
     this.lastDiscoveryAt = 0;
@@ -393,8 +394,20 @@ export class RunSupervisor {
   }
 
   snapshotFor(sessionId) {
-    try { return this.indexFor(sessionId)?.refresh() || null; }
-    catch (error) { this.log("session-read-error", { sessionId, error: normalizeError(error?.message || error) }); return null; }
+    try {
+      const snapshot = this.indexFor(sessionId)?.refresh() || null;
+      this.readErrors.delete(sessionId);
+      return snapshot;
+    } catch (error) {
+      // 读失败通常是持续性的（会话文件被删/被移走），tick 每 500ms 跑一次，
+      // 逐轮记录会把日志刷成几百 KB。同一 session 的同一错误只记一次，错误变了或恢复后再记。
+      const fingerprint = normalizeError(error?.message || error);
+      if (this.readErrors.get(sessionId) !== fingerprint) {
+        this.readErrors.set(sessionId, fingerprint);
+        this.log("session-read-error", { sessionId, error: fingerprint });
+      }
+      return null;
+    }
   }
 
   newRecord(snapshot, reason) {
@@ -937,7 +950,10 @@ export class RunSupervisor {
 
     this.stopEventStream(sessionId);
     const decision = decideRunAction({ snapshot, running: false });
+    // 终态会话每轮都会重新判定成同一个结果；只在状态真正迁移时落盘并记日志，
+    // 否则 tick 会按 500ms 的节奏重复写 state.json 和同一条日志。
     if (decision.action === "complete") {
+      if (record.status === "complete") return;
       record.status = "complete";
       record.completedAt = iso(this.now());
       record.notRunningSince = 0;
@@ -946,6 +962,7 @@ export class RunSupervisor {
       return;
     }
     if (decision.action === "cancel") {
+      if (record.status === "cancelled") return;
       record.status = "cancelled";
       record.cancelledAt = iso(this.now());
       record.notRunningSince = 0;
