@@ -413,7 +413,7 @@ async function main() {
   // 顺序硬约束:fold 在前,draft-persist 其次,interactions 再按当前 chunk 寻锚;
   // hide-thinking 必须链尾(其 chunk 名指纹含当前 chunk hash,先跑会让后续补丁同名换内容毒缓存)。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-hide-thinking.mjs"]) {
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-hide-thinking.mjs", "patch-piweb-hide-recovered.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
