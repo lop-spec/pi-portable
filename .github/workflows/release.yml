@@ -45,6 +45,7 @@ jobs:
           node --test tests/hard-restart-contract.mjs
           node --test tests/patch-piweb-fold-contract.mjs
           node --test tests/patch-piweb-draft-persist-contract.mjs
+          node --test tests/pi-trust-and-proxy-contract.mjs
           node tools/pi-five-chain-benchmark.mjs --dry-run
 
       - name: Stage portable node runtime

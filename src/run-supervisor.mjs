@@ -548,7 +548,12 @@ export class RunSupervisor {
   }
 
   proxyHeaders(headers, extra = {}) {
-    const result = { ...headers, ...extra, host: `127.0.0.1:${this.webPort}` };
+    // 必须透传客户端原始 Host。pi-web 的 CSRF 防护要求 Origin 与 Host 同源
+    // (lib/request-security.ts: isApiRequestOriginAllowed)，把 Host 改写成上游端口后，
+    // 浏览器发来的 Origin(:publicWebPort) 与 Host(:webPort) 不再相等，所有写类 API 一律 403
+    // ——用户侧表现就是「回车后输入被吞、任务不执行」。Host 仍是 IP 字面量，上游的 Host 白名单照过。
+    const result = { ...headers, ...extra };
+    if (!result.host) result.host = `127.0.0.1:${this.webPort}`;
     delete result.connection;
     return result;
   }
