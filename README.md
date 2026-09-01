@@ -72,6 +72,7 @@ node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-
 4. 托盘交互:**单击图标 = 进入(重开窗口)**;右键菜单 = 打开 Pi Web / 重启(整套换代重启)/ 彻底退出(整棵进程树回收零残留)。关闭窗口只驻留托盘,不再整体退出
 5. 托盘不可用时自动回退旧语义:关闭窗口 = 彻底退出;`PI_TRAY=0` 可显式关闭托盘。托盘宿主是 Windows 自带 PowerShell NotifyIcon(`src/tray.ps1`,纯 ASCII 契约,中文菜单由 launcher argv 传入),图标运行时取 `@agegr/pi-web/public/icons/icon-192.png`,零新增资产
 6. launcher 同时守护 Pi Web 与 `run-supervisor`;对外地址仍是 `127.0.0.1:30141`，但先进入 supervisor 的透明持久化代理，Pi Web 私有上游改为 `127.0.0.1:30140`。这样 prompt 在转发前已写入 `data/run-supervisor/state.json`，不受 Pi“首个 assistant 前不落 session JSONL”的窗口影响。Pi Web 异常退出会原位重启，健康面默认 `http://127.0.0.1:30142/health`，事件证据写入 `data/run-supervisor.log`。同一叶节点只投递一次恢复，连续三次相同失败转 `blocked`；UI Abort、显式 `/lop-goal-cancel`、`取消当前目标` 或 `停止自动续跑` 会写 durable cancel marker 并禁止恢复。
+7. 输入框支持直接粘贴系统文件：图片沿用图片附件链，普通文件在浏览器无法暴露绝对路径时上传到当前会话目录并插入 `@文件` 引用（单文件 25 MB、单次 100 MB；重名自动改名，绝不覆盖），文件与文本混合粘贴会保留文本。聊天离开底部时会显示 30 px 的“回到底部”悬浮按钮，到底后自动隐藏。
 
 无头验证(SSH 远程,不开窗口):`runtime\node.exe tools\remote-verify.mjs "<测试 prompt>"`——出口/桥 health/pi 全链/S6 预审日志一次回显。
 

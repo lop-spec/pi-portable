@@ -45,6 +45,7 @@ jobs:
           node --test tests/hard-restart-contract.mjs
           node --test tests/patch-piweb-fold-contract.mjs
           node --test tests/patch-piweb-draft-persist-contract.mjs
+          node --test tests/patch-piweb-interactions-contract.mjs
           node --test tests/pi-trust-and-proxy-contract.mjs
           node tools/pi-five-chain-benchmark.mjs --dry-run
 
@@ -115,6 +116,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path stage/tools | Out-Null
           Copy-Item tools/remote-verify.mjs stage/tools/remote-verify.mjs
           Copy-Item tools/deploy-rules-remote.mjs stage/tools/deploy-rules-remote.mjs
+          Copy-Item tools/patch-piweb-fold.mjs stage/tools/patch-piweb-fold.mjs
+          Copy-Item tools/patch-piweb-draft-persist.mjs stage/tools/patch-piweb-draft-persist.mjs
+          Copy-Item tools/patch-piweb-interactions.mjs stage/tools/patch-piweb-interactions.mjs
+          Copy-Item tools/patch-piweb-hide-thinking.mjs stage/tools/patch-piweb-hide-thinking.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
           if (-not (Test-Path stage/pi-portable-launcher.exe)) { throw "native launcher missing" }
@@ -122,6 +127,7 @@ jobs:
           if (-not (Test-Path stage/src/run-supervisor.mjs)) { throw "run supervisor missing" }
           if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
           if (-not (Test-Path stage/tools/deploy-rules-remote.mjs)) { throw "remote rules deployer missing" }
+          if (-not (Test-Path stage/tools/patch-piweb-interactions.mjs)) { throw "pi-web interactions patch missing" }
 
       - name: Assert no embedded assets
         shell: pwsh
