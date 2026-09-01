@@ -4,13 +4,17 @@
 //       --(保留 Codex 官方登录身份 + 注入请求策略)-->
 //       chatgpt.com/backend-api/codex/responses
 //
-// 身份与刷新由客户端的官方登录态负责，本进程只透传 Authorization 头，
-// 不落盘、不打印任何凭证。默认直连上游；设 CODEX_UPSTREAM_PROXY_PORT 则走本机 CONNECT 代理。
+// 身份默认由客户端的官方登录态负责（透传 Authorization 头）；检测到账号池 homes
+// 布局时启用桥内多账号 sticky 轮转（account-pool.mjs），429/401 在应答下游之前完成
+// 「冷却 → 切号 → 重发」。不落盘、不打印任何凭证。
+// 默认直连上游；设 CODEX_UPSTREAM_PROXY_PORT 则走本机 CONNECT 代理。
 
 import http from "node:http";
 import https from "node:https";
 import tls from "node:tls";
 import fs from "node:fs";
+import zlib from "node:zlib";
+import { Readable } from "node:stream";
 import { performance } from "node:perf_hooks";
 
 // [portable] 数据根:launcher 注入 PI_PORTABLE_DATA;回退 %LOCALAPPDATA%\\pi-portable
@@ -24,6 +28,7 @@ import { compressUpstreamBody, rewriteCodexRequestBody } from "./codex-cache-pol
 import { ExactResponseMemo } from "./codex-response-memo.mjs";
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
 import { createModelFallbackPlan, requestWithOverloadRetry } from "./codex-overload-retry.mjs";
+import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
 const HOST = "127.0.0.1";
@@ -36,7 +41,7 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
 const FORCE_REASONING_EFFORT = process.env.CODEX_FORCE_REASONING_EFFORT || "max";
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.13.0";
+const POLICY_VERSION = "gpt56-chain-replay-v7.14.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -148,11 +153,11 @@ function currentEgress() {
   return egressCache;
 }
 
-function freshUpstreamSocket(proxyPort) {
+function freshUpstreamSocket(proxyPort, host = UPSTREAM_HOST) {
   // [portable] 直连模式:无本机 CONNECT 代理时直接 TLS 到上游(换机默认路径)
   if (!proxyPort) {
     return new Promise((resolve, reject) => {
-      const secure = tls.connect({ host: UPSTREAM_HOST, port: 443, servername: UPSTREAM_HOST, ALPNProtocols: ["http/1.1"] });
+      const secure = tls.connect({ host, port: 443, servername: host, ALPNProtocols: ["http/1.1"] });
       secure.setTimeout(10000, () => secure.destroy(new Error("直连 TLS 超时 10s")));
       secure.once("secureConnect", () => { secure.setTimeout(0); resolve(secure); });
       secure.once("error", reject);
@@ -163,8 +168,8 @@ function freshUpstreamSocket(proxyPort) {
       host: UPSTREAM_PROXY_HOST,
       port: proxyPort,
       method: "CONNECT",
-      path: `${UPSTREAM_HOST}:443`,
-      headers: { Host: `${UPSTREAM_HOST}:443` },
+      path: `${host}:443`,
+      headers: { Host: `${host}:443` },
     });
     connect.setTimeout(10000, () => connect.destroy(new Error("CONNECT 超时 10s")));
     connect.on("connect", (res, socket, head) => {
@@ -173,7 +178,7 @@ function freshUpstreamSocket(proxyPort) {
         return reject(new Error(`CONNECT 返回 ${res.statusCode}`));
       }
       if (head?.length) socket.unshift(head);
-      const secure = tls.connect({ socket, servername: UPSTREAM_HOST, ALPNProtocols: ["http/1.1"] });
+      const secure = tls.connect({ socket, servername: host, ALPNProtocols: ["http/1.1"] });
       secure.once("secureConnect", () => resolve(secure));
       secure.once("error", reject);
     });
@@ -270,6 +275,79 @@ function upstreamGet(path, headers) {
     req.setTimeout(30000, () => req.destroy(new Error("models 请求超时 30s")));
     req.end();
   });
+}
+
+// 账号池：homes 槽位目录按存在性解析（env 显式 > pi 数据根 > 本机 code-lite 布局），
+// 都不存在则禁用，身份保持「下游登录态透明传递」，行为与无池版本完全一致。
+// 池状态独立落在 pi 数据根（冷却表不与 code-lite 桥共享），auth.json 槽位共用。
+const ACCOUNT_HOMES = (() => {
+  const candidates = [
+    process.env.CODEX_ACCOUNT_HOMES,
+    path.join(PORTABLE_DATA, "homes"),
+    path.join(os.homedir(), "Documents", "claude", "vscodium", "data", "code-lite", "homes"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try { if (fs.statSync(candidate).isDirectory()) return candidate; } catch { /* 下一候选 */ }
+  }
+  return "";
+})();
+const accountPool = ACCOUNT_HOMES ? createAccountPool({
+  homesRoot: ACCOUNT_HOMES,
+  poolStateFile: path.join(PORTABLE_DATA, "account-pool.json"),
+  pinStateFile: path.join(PORTABLE_DATA, "account-pool-pin.json"),
+  connect: (host) => freshUpstreamSocket(currentEgress().port, host),
+  log,
+}) : null;
+
+// 池身份注入：primary（useDownstream）沿用下游自带头；其余槽位替换两枚身份头。
+// 槽位缺 account_id 时删除该头（残留下游 primary 的 id 会与新 token 串号）。
+function withIdentity(headers, account) {
+  if (!account || account.useDownstream) return headers;
+  const swapped = { ...headers, authorization: `Bearer ${account.token}` };
+  if (account.accountId) swapped["chatgpt-account-id"] = account.accountId;
+  else delete swapped["chatgpt-account-id"];
+  return swapped;
+}
+
+function drainBody(response, limit = 256 * 1024) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    response.on("data", (chunk) => {
+      if (size < limit) { chunks.push(chunk); size += chunk.length; }
+    });
+    response.on("end", () => resolve(Buffer.concat(chunks)));
+    response.on("error", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+function decodeBodyText(raw, headers) {
+  try {
+    if (/gzip/i.test(String(headers?.["content-encoding"] || ""))) return zlib.gunzipSync(raw).toString("utf8");
+  } catch { /* 解压失败按原文处理。 */ }
+  return raw.toString("utf8");
+}
+
+// failover 环 drain 过的终态响应（全池 429/给不出可切账号）重建为可流式转发的
+// 响应对象：统一给明文（下游转发层会删 content-encoding，不能再送压缩字节）。
+function bufferedResponse(response, drained) {
+  const gzipped = /gzip/i.test(String(response.headers?.["content-encoding"] || ""));
+  const payload = gzipped ? Buffer.from(drained.text, "utf8") : drained.raw;
+  const replay = Readable.from([payload]);
+  replay.statusCode = response.statusCode;
+  replay.headers = { ...response.headers, "content-length": String(payload.length) };
+  delete replay.headers["content-encoding"];
+  delete replay.headers["transfer-encoding"];
+  replay.lopMeta = response.lopMeta;
+  return replay;
+}
+
+function syntheticResponse(statusCode, payloadObj) {
+  const payload = Buffer.from(JSON.stringify(payloadObj), "utf8");
+  const replay = Readable.from([payload]);
+  replay.statusCode = statusCode;
+  replay.headers = { "content-type": "application/json", "content-length": String(payload.length) };
+  return replay;
 }
 
 function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, error, exhausted, nextModel = "" }) {
@@ -421,7 +499,21 @@ async function handleResponses(req, res) {
   try {
     selected = await requestWithOverloadRetry(async (attempt) => {
       const candidate = upstreamPayloadForAttempt(attempt);
-      activeUpRes = await upstreamOnce(candidate.body, candidate.headers);
+      // 账号池 failover 与容量过载重试正交：本层管 HTTP 429/401 的身份切换，
+      // overload 层管 200 SSE 内的过载事件；200 开始流式转发后不再切号。
+      const outcome = await sendWithAccountFailover({
+        pool: accountPool,
+        headers: candidate.headers,
+        send: (headers) => upstreamOnce(candidate.body, headers),
+        applyIdentity: withIdentity,
+        drain: drainBody,
+        decode: decodeBodyText,
+        log,
+      });
+      activeUpRes = outcome.pinnedUnavailable
+        ? syntheticResponse(429, { error: { type: "rate_limit_error", message: `已锁定账号 ${outcome.pinnedUnavailable.id} 且其当前不可用（${outcome.pinnedUnavailable.reason || "冷却中"}）。等待冷却结束、手动切号或恢复自动轮转。` } })
+        : outcome.drained ? bufferedResponse(outcome.response, outcome.drained) : outcome.response;
+      activeUpRes.lopMeta = activeUpRes.lopMeta || { startedAt: performance.now(), ttfbMs: 0, egress: { ...currentEgress() } };
       activeUpRes.lopMeta.requestedModel = modelPlan.primaryModel;
       activeUpRes.lopMeta.upstreamModel = candidate.model;
       activeUpRes.lopMeta.modelFallback = candidate.fallback;
@@ -570,7 +662,9 @@ const server = http.createServer(async (req, res) => {
       forceReasoningEffort: FORCE_REASONING_EFFORT,
       responseMemoTtlMs: RESPONSE_MEMO_TTL_MS,
       responseMemoEntries: responseMemo.size,
-      authMode: "codex-login-pass-through",
+      authMode: accountPool ? "account-pool" : "codex-login-pass-through",
+      accountHomes: ACCOUNT_HOMES || null,
+      accounts: accountPool ? accountPool.snapshot() : [],
       upstreamProxy: `${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}`,
       upstreamAgent: { maxSockets: 16, maxFreeSockets: 8 },
       upstreamGzip: UPSTREAM_GZIP,
@@ -585,6 +679,34 @@ const server = http.createServer(async (req, res) => {
       egress: currentEgress(),
       metricsFile: METRICS_FILE,
     }));
+  }
+
+  // 账号池控制面（仅本机回环，即时切号/看池状态，无需下游登录头）。
+  if (url === "/accounts" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, enabled: Boolean(accountPool), accounts: accountPool ? accountPool.snapshot() : [] }));
+  }
+  if (url === "/account/select" && req.method === "POST") {
+    if (!accountPool) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "账号池未启用" }));
+    }
+    // 要求 JSON content-type：浏览器跨域发不出这种「非简单请求」（会先被预检拦下），
+    // 网页无法盲打本回环端点切号。
+    if (!/^application\/json\b/i.test(String(req.headers["content-type"] || ""))) {
+      res.writeHead(415, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "需要 Content-Type: application/json" }));
+    }
+    let id;
+    try { id = String(JSON.parse((await drainBody(req, 4096)).toString("utf8"))?.id || ""); }
+    catch { id = ""; }
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "账号 id 无效" }));
+    }
+    const result = accountPool.select(id);
+    res.writeHead(result.ok ? 200 : 404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify(result));
   }
 
   const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -635,6 +757,15 @@ server.listen(PORT, HOST, () => {
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
   log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);
   const bootEgress = currentEgress();
-  log(`身份：Codex 官方登录透明传递；出口跟随 ${EGRESS_STATE_FILE}（当前 ${bootEgress.key}:${bootEgress.port}，缺省 ${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}）`);
+  const poolLabel = accountPool
+    ? `账号池 ${ACCOUNT_HOMES}（${accountPool.members().map((m) => m.id).join(",") || "空"}；429/401 冷却→切号→重发）`
+    : "Codex 官方登录透明传递";
+  log(`身份：${poolLabel}；出口跟随 ${EGRESS_STATE_FILE}（当前 ${bootEgress.key}:${bootEgress.port}，缺省 ${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}）`);
+  if (accountPool) {
+    // 凭据保鲜：长期闲置的备用账号在轮转需要它时一定可用（primary 归客户端自己管）。
+    const keepFresh = () => accountPool.refreshExpiring().catch((e) => log(`凭据保鲜失败：${String(e?.message || e).slice(0, 80)}`));
+    setTimeout(keepFresh, 30_000).unref();
+    setInterval(keepFresh, 4 * 60 * 60_000).unref();
+  }
   log(`流吞吐观测：SSE 尾部真实 usage → ${METRICS_FILE}`);
 });

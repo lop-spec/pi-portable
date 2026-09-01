@@ -1,0 +1,22 @@
+{
+  "task": "bridge-account-pool-failover",
+  "frozenAt": "2026-09-01",
+  "baseline": {
+    "policyVersion": "gpt56-chain-replay-v7.13.0",
+    "behavior": "上游 429 usage_limit_reached 原样透传下游，pi-web 全线不可用直到额度重置（本次 resets_in≈5.9 天）",
+    "downstreamSuccessOn429": "0%"
+  },
+  "result": {
+    "date": "2026-09-01",
+    "policyVersion": "gpt56-chain-replay-v7.14.0",
+    "behavior": "429/401 在应答下游之前桥内完成冷却→切号→重发；实测 acct2 429(usage_limit_reached)→冷却 360min→切 acct3→重发 200，下游只见一次成功响应",
+    "downstreamSuccessOn429": "100%（池内有可用账号时；全池耗尽透传最终 429）",
+    "failoverExtraLatencyMs": 570,
+    "contractTests": "tests/account-pool-contract.mjs 11/11；全套 94/94"
+  },
+  "hardGates": {
+    "noRegressionNon429": "200 流式转发路径不变；homes 布局缺失自动降级纯透传（异机=旧行为）",
+    "credentialHygiene": "不打印 token；primary auth.json 只读，槽位刷新原子写",
+    "primaryLast": "备用账号先消耗，primary 垫底做最后储备"
+  }
+}

@@ -37,7 +37,7 @@ test('Pi user-role exact history participates in stable response replay identity
 test('proxy defaults every GPT-5.6 request to maximum reasoning', () => {
   const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
   const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.13\.0/u);
+  assert.match(source, /gpt56-chain-replay-v7\.14\.0/u);
   assert.match(source, /requestWithOverloadRetry/u);
   assert.match(source, /selected\.prefixChunks/u);
   assert.match(source, /selected\.exhausted/u);
