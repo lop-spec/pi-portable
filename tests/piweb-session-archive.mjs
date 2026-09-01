@@ -229,6 +229,7 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
   assert.match(uiSource, /\/restore/u);
   assert.match(uiSource, /归档/u);
   assert.match(uiSource, /恢复/u);
+  assert.match(uiSource, /未找到会话/u, "the current zh-CN empty state must be mapped to the archive empty state");
   assert.equal(hardDeleteRequests, 0);
   assert.equal(upstreamRequests.some((item) => item.method === "DELETE" && item.url?.startsWith("/api/sessions/")), false);
 });

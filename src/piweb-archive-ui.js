@@ -64,7 +64,7 @@
     "刪除（按住 Shift 點選可跳過確認）",
   ]);
   const refreshTitles = new Set(["Refresh", "刷新", "重新整理"]);
-  const emptySessionTexts = new Set(["No sessions found", "暂无会话", "找不到工作階段"]);
+  const emptySessionTexts = new Set(["No sessions found", "未找到会话", "暂无会话", "找不到工作階段"]);
 
   function language() {
     const html = String(document.documentElement?.lang || "").toLowerCase();
