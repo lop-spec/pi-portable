@@ -215,7 +215,7 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /plan-first-gate-v15/u);
+assert.match(commands.get("lop-chain-reload").description, /recovery-incremental-v16/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -885,7 +885,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "plan-first-gate-v15");
+assert.equal(runtimeVersionFromSource(source), "recovery-incremental-v16");
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);

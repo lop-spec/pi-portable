@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "plan-first-gate-v15";
+export const LOP_CHAIN_RUNTIME_VERSION = "recovery-incremental-v16";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
