@@ -36,6 +36,7 @@ jobs:
           node --test tests/goal-redirector-contract.mjs
           node --test tests/run-supervisor.mjs
           node --test tests/piweb-session-archive.mjs
+          node --test tests/piweb-archive-confirmation-contract.mjs
           node tests/rules-snapshot-contract.mjs
           node tests/deploy-rules-remote-contract.mjs
           node --test tests/pi-history-contract.mjs

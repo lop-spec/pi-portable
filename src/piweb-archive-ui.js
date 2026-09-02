@@ -66,6 +66,7 @@
     "刪除（按住 Shift 點選可跳過確認）",
   ]);
   const refreshTitles = new Set(["Refresh", "刷新", "重新整理"]);
+  const nativeConfirmLabels = new Set(["Delete", "删除", "刪除", "Archive", "归档", "歸檔", "Restore", "恢复", "還原"]);
   const emptySessionTexts = new Set(["No sessions found", "未找到会话", "暂无会话", "找不到工作階段"]);
 
   function language() {
@@ -274,6 +275,8 @@
     const text = words();
     const restoring = state.view === "archived";
     for (const button of document.querySelectorAll("button")) {
+      const buttonText = String(button.textContent || "").trim();
+      if (!button.dataset.piSessionArchiveConfirm && !nativeConfirmLabels.has(buttonText)) continue;
       const container = button.parentElement;
       const question = container?.previousElementSibling;
       if (!question) continue;
