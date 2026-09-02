@@ -47,6 +47,7 @@ jobs:
           node --test tests/patch-piweb-fold-contract.mjs
           node --test tests/patch-piweb-draft-persist-contract.mjs
           node --test tests/patch-piweb-interactions-contract.mjs
+          node --test tests/patch-piweb-hide-hidden-extension-messages-contract.mjs
           node --test tests/pi-trust-and-proxy-contract.mjs
           node tools/pi-five-chain-benchmark.mjs --dry-run
 
@@ -121,6 +122,7 @@ jobs:
           Copy-Item tools/patch-piweb-draft-persist.mjs stage/tools/patch-piweb-draft-persist.mjs
           Copy-Item tools/patch-piweb-interactions.mjs stage/tools/patch-piweb-interactions.mjs
           Copy-Item tools/patch-piweb-hide-thinking.mjs stage/tools/patch-piweb-hide-thinking.mjs
+          Copy-Item tools/patch-piweb-hide-hidden-extension-messages.mjs stage/tools/patch-piweb-hide-hidden-extension-messages.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
           if (-not (Test-Path stage/pi-portable-launcher.exe)) { throw "native launcher missing" }
@@ -130,6 +132,7 @@ jobs:
           if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
           if (-not (Test-Path stage/tools/deploy-rules-remote.mjs)) { throw "remote rules deployer missing" }
           if (-not (Test-Path stage/tools/patch-piweb-interactions.mjs)) { throw "pi-web interactions patch missing" }
+          if (-not (Test-Path stage/tools/patch-piweb-hide-hidden-extension-messages.mjs)) { throw "pi-web hidden-extension patch missing" }
 
       - name: Assert no embedded assets
         shell: pwsh

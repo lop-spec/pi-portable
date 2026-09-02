@@ -449,9 +449,10 @@ async function main() {
   // 起 pi-web 前先把产物补丁钉在位:npm 升级/异机重装会还原 .next 产物,脚本均幂等
   // (已打 => already-patched 零写入;版本/锚点不符 => exit≠0 零写入)。失败只告警,按现有产物继续。
   // 顺序硬约束:fold 在前,draft-persist 其次,interactions 再按当前 chunk 寻锚;
-  // hide-thinking/hide-recovered/drop-auto 依次链尾(chunk 名指纹含当前 chunk hash,乱序会同名换内容毒缓存)。
+  // hide-thinking/hide-recovered/drop-auto/hide-hidden-extension 依次链尾
+  // (chunk 名指纹含当前 chunk hash,乱序会同名换内容毒缓存)。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-hide-thinking.mjs", "patch-piweb-hide-recovered.mjs", "patch-piweb-drop-auto-thinking.mjs"]) {
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-hide-thinking.mjs", "patch-piweb-hide-recovered.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-hide-hidden-extension-messages.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
