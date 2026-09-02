@@ -11,6 +11,9 @@ process.env.PI_PORTABLE_DATA = contractData;
 process.env.LOP_MEMORY_HOME = path.join(contractData, "memory");
 process.env.LOP_MEMORY_DISABLE_PI_DISCOVERY = "1";
 process.env.PI_CHAIN_SKIP_STARTUP_SCAN = "1";
+// 合同测试禁止打真桥:S6 三路预审对每条 prompt 各发 3 个上游请求(2026-09-02 实录一次测试 27 个)。
+process.env.PI_ADVERSARY_DISABLE = "1";
+process.env.LOP_AUTO_GATE = "0"; // auto-gate 生成器同样经真桥出请求
 process.env.PI_CHAIN_METRICS = path.join(contractData, "metrics.jsonl");
 process.env.PI_CHAIN_LOG = path.join(contractData, "chain.log");
 process.on("exit", () => fs.rmSync(contractData, { recursive: true, force: true }));
