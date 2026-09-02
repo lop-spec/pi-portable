@@ -37,11 +37,13 @@ Pi Portable 对每个真实用户回合执行同一条链。历史、规则和�
    - 执行任务按最近一个真实 user 消息之后的首份 `【验收清单】` 冻结分支持久合同；只接受 `[ ]` 与 `[x]`。解析范围严格限于标题后紧邻的连续清单块，旧任务清单、后文代码示例和普通列表不参与当前任务冻结。
    - 合同未完成项与格式违规诊断分离：只有合同项使用复选框，第三状态、漏清单、删项、改名和缩减仅作为普通诊断文本，禁止模型复制成新项目。合法未完成项与重复格式违规都保持 `active` 且不设续跑上限；重复诊断只计数，不能触发固定重试耗尽。
    - 同一外部阻塞与同一未完成集合连续出现三轮才转 `blocked`；用户发送“继续”会明确推翻旧 `complete` 并恢复 `active`。全部冻结项目均 `[x]` 且无格式违规才转 `complete`；状态以 `lop-checklist-goal-state` custom entry 写入当前分支，恢复/分叉后按分支重建。
+   - persistent checklist 复用 `goal-redirector` 的失败指纹：相同未完成结果第二轮进入 evidence、新证据轮，第三轮进入 tabu、换模块/层次/根因；真实进展信号变化会重置该换向序列。所有 continuation 都先检查过期 `nextAction`，时间受阻时必须生成至少两个独立方向并执行最佳方向，禁止以前台 sleep/轮询冒充持续执行。
    - 对“不达到 X 不允许交付”“直到 X”或显式保持任务开放的持续终态，host 会向冻结合同加入终态项。核验失败、执行禁止交付、保持任务开放只是过程状态；即使模型将这些项目标为 `[x]`，正文仍自报未达到或缺少正向达成证据时也必须自动续跑。只有终态正向证据与完整冻结清单同时闭合才转 `complete`；持续终态诊断不计入格式违规重复计数。
    - 扩展内嵌 `LOP_CHAIN_RUNTIME_VERSION`。活动文件被覆盖后，旧 runner 在下一次真实用户轮检测版本漂移并排队 `/lop-chain-reload`；旧门因已有 pending message 不再追加过期 follow-up。`agent_end` 还会用真实 user entry id 二次对账，覆盖本轮中途 reload 或 `before_agent_start` 尚未落入当前用户消息的窗口。
    - 显式 `【目标门】` 命令仍拥有最高完成优先级；宿主已确定验证的 deterministic fast path 可直接置 `complete`。目标循环不安装或调用 subagent。
 8. **S7 工具门**
    - 每个普通工具调用通过 `rules-pretool.mjs`；可确定修正则最多自动修正一次，阻断则返回结构化错误。
+   - 公有 host guard 独立于私有规则 fail closed：Bash 未声明 timeout 时注入默认 1800 秒 deadline，显式超过上限或超过 300 秒的墙钟等待直接阻断，并在日志/指标中记录。私有 S7 的 `D13-foreground-wait` 提供第二层同语义检查。
 9. **S8 确定性落账**
    - 去除处置凭证和旧 marker 后调用 `recordStop()`；canonical 写入必须返回 `saved=true, derived=true`，否则本回合硬失败。
    - `semanticFull` 最多 2000 字符，长答案保留开头和结论尾部；`summary20` 最多 20 字符。

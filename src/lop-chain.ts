@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-write-side-v20";
+export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-direction-frontier-v21-sidecar-marker";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -253,6 +253,13 @@ const GOAL_GATE_LINE = /^\s*(?:【目标门】|\[goal-gate\])\s*(.*?)\s*$/miu;
 const CHECKLIST_BLOCKER_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_BLOCKER_TURNS || 3));
 const CHECKLIST_VIOLATION_TURNS = Math.max(1, Number(process.env.LOP_CHECKLIST_VIOLATION_TURNS || 3));
 const CHECKLIST_HEADER = "【验收清单】";
+const positiveSeconds = (value: unknown, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const FOREGROUND_BASH_MAX_SECONDS = positiveSeconds(process.env.LOP_FOREGROUND_BASH_MAX_SECONDS, 1800);
+const WALL_CLOCK_WAIT_MAX_SECONDS = Math.min(FOREGROUND_BASH_MAX_SECONDS, positiveSeconds(process.env.LOP_WALL_CLOCK_WAIT_MAX_SECONDS, 300));
+const NEXT_ACTION_STALE_GRACE_MS = positiveSeconds(process.env.LOP_NEXT_ACTION_STALE_GRACE_SECONDS, 300) * 1000;
 const INDEPENDENT_HISTORY_ANCHOR = /(?:[A-Za-z]:[\\/]|https?:\/\/|\b\d{2,}\b|\b[A-Za-z0-9_-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll)\b)/iu;
 const CONTEXT_ONLY_PROMPT = /^(?:继续(?:吧|做|处理|执行|下去|做下去)?|确认(?:一下)?|好(?:的)?|可以|行|是(?:的)?|对|没问题|开始|照办|重试|再试(?:一次)?|(?:按|照)(?:这个|上面|前面|刚才的?)(?:做|处理|执行|修改)?|(?:具体)?(?:怎么|如何)改(?:[，,\s]*(?:说明白|说清楚))?|说明白|说清楚|再说一遍|什么意思|(?:其余|剩下)(?:的)?都做)$/u;
 const CONTEXT_REFERENCE = /(?:这个|那个|这些|那些|上面|前面|刚才|其余|剩下|第\s*\d+\s*项|不做\s*\d+)/u;
@@ -263,6 +270,51 @@ const FUTURE_ACTION_COMMITMENT = /(?:接下来|下一步|然后|随后|现在)?\
 const EXPLICIT_BLOCKER = /(?:需要你|请(?:你)?(?:提供|确认|回复|授权|登录|打开|选择)|等待(?:你|用户)|缺少(?:权限|凭据|信息|参数)|无法(?:安全)?(?:继续|访问|连接|执行|读取|写入|调用)|被阻塞|需要授权|未提供(?:权限|凭据|信息|参数)|(?:工具|调用|执行)(?:通道|层)?(?:异常|不可用|被拦截)|(?:当前会话|本轮).{0,24}(?:没有|未暴露|缺少).{0,24}(?:工具|通道|权限)|(?:需要|必须|只能|只有)(?:等待|积累|收集).{0,48}(?:数据|样本|交易日|工作日|天|日)|当前.{0,24}(?:数据|样本).{0,24}(?:不足|不够))/u;
 const FAILURE_REPORT = /(?:没用|无效|不起作用|不生效|仍然|依然|还是).{0,32}(?:停止|停了|停住|失败|报错|问题|没用|无效)/u;
 const COMPLETION_EVIDENCE = /(?:已(?:完成|修复|修改|执行|运行|验证|部署|安装|提交|推送|上传|处理|落地)|(?:测试|验证)(?:已经)?通过|结果如下|修改如下|代码如下)/u;
+const WALL_CLOCK_WAIT_PATTERN = /(?:\b(?:sleep|start-sleep)\b|\btimeout(?:\.exe)?\s+\/t\b|\bwait_(?:started|heartbeat|complete)\b|\btarget\s*=\s*\$?\(?\s*date\b|while[\s\S]{0,600}\bdate\s+\+%s|(?:等待|睡眠).{0,24}(?:直到|至|小时|分钟))/iu;
+
+export type ForegroundBashDecision = {
+  action: "allow" | "cap" | "block";
+  timeoutSeconds: number;
+  requestedTimeoutSeconds: number | null;
+  wallClockWait: boolean;
+  reason: string;
+};
+
+export function foregroundBashDecision(input: any, maxSeconds = FOREGROUND_BASH_MAX_SECONDS, wallClockMaxSeconds = WALL_CLOCK_WAIT_MAX_SECONDS): ForegroundBashDecision {
+  const command = String(input?.command || "");
+  const rawTimeout = Number(input?.timeout);
+  const requested = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : null;
+  const max = positiveSeconds(maxSeconds, 1800);
+  const wallMax = Math.min(max, positiveSeconds(wallClockMaxSeconds, 300));
+  const wallClockWait = WALL_CLOCK_WAIT_PATTERN.test(command);
+  if (requested !== null && requested > max) return { action: "block", timeoutSeconds: max, requestedTimeoutSeconds: requested, wallClockWait, reason: `foreground timeout ${requested}s exceeds host limit ${max}s` };
+  if (wallClockWait && (requested === null || requested > wallMax)) return { action: "block", timeoutSeconds: wallMax, requestedTimeoutSeconds: requested, wallClockWait, reason: `wall-clock wait exceeds foreground limit ${wallMax}s` };
+  if (requested === null) return { action: "cap", timeoutSeconds: max, requestedTimeoutSeconds: null, wallClockWait, reason: `host deadline injected at ${max}s` };
+  return { action: "allow", timeoutSeconds: requested, requestedTimeoutSeconds: requested, wallClockWait, reason: "within-limit" };
+}
+
+function collectInspectionText(value: any, out: string[] = [], depth = 0): string[] {
+  if (out.join("\n").length >= 500000 || depth > 8 || value === null || value === undefined) return out;
+  if (typeof value === "string") { out.push(value.slice(-100000)); return out; }
+  if (Array.isArray(value)) { for (const item of value.slice(-160)) collectInspectionText(item, out, depth + 1); return out; }
+  if (typeof value !== "object") return out;
+  for (const key of ["text", "content", "output", "message", "arguments", "data", "details", "nextAction"]) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    if (key === "nextAction") out.push(`nextAction:${String(value[key] || "")}`);
+    else collectInspectionText(value[key], out, depth + 1);
+  }
+  return out;
+}
+
+export function staleNextActionDecision(value: unknown, nowMs = Date.now()): { found: boolean; stale: boolean; timestamp: string; directive: string } {
+  const source = collectInspectionText(value).join("\n");
+  const pattern = /(?:["']?nextAction["']?\s*[:=]|下一步\s*[:：]|下一动作\s*[:：])[\s\S]{0,800}?(20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)/giu;
+  let timestamp = "";
+  for (const match of source.matchAll(pattern)) timestamp = match[1];
+  const at = timestamp ? Date.parse(timestamp) : Number.NaN;
+  const stale = Number.isFinite(at) && at + NEXT_ACTION_STALE_GRACE_MS < Number(nowMs);
+  return { found: Number.isFinite(at), stale, timestamp, directive: stale ? `检测到过期 nextAction(${timestamp})，该动作立即失效；禁止平移日期或前台等待。先按硬边界生成至少 2 条相互独立、尚未实测的合法方向 frontier，说明与旧路径的本质差异，并立即执行信息增益/成本最高的一条。` : "" };
+}
 
 export function isContextDependentHistoryPrompt(value: unknown): boolean {
   const text = String(value || "").normalize("NFKC").replace(/\s+/gu, " ").trim()
@@ -410,6 +462,8 @@ export type ChecklistGoalState = {
   // 没有这两个字段，clone 时按 objective 原位迁移。
   persistentOutcome: string;
   outcomeItemKey: string;
+  redirectRounds: any[];
+  redirectLevel: number;
 };
 export type ChecklistGateResult = {
   trigger: boolean;
@@ -532,6 +586,8 @@ export function createChecklistGoalState(
     allowExpansion: false,
     persistentOutcome,
     outcomeItemKey: outcomeText ? normalizeChecklistItem(outcomeText).toLocaleLowerCase() : "",
+    redirectRounds: [],
+    redirectLevel: 0,
   };
 }
 
@@ -547,6 +603,8 @@ function cloneChecklistGoalState(state: ChecklistGoalState): ChecklistGoalState 
     items: state.items.map((item) => ({ ...item })),
     violationKey: String(state.violationKey || ""),
     violationTurns: Math.max(0, Number(state.violationTurns || 0)),
+    redirectRounds: Array.isArray(state.redirectRounds) ? state.redirectRounds.slice(-12).map((round) => ({ ...round })) : [],
+    redirectLevel: Math.max(0, Math.min(2, Number(state.redirectLevel || 0))),
   };
 }
 
@@ -886,6 +944,25 @@ export function checklistGateDecision(input: {
   };
 }
 
+function stableAlphaHash(value: string): string {
+  let hash = 2166136261;
+  for (const char of value) { hash ^= char.codePointAt(0) || 0; hash = Math.imul(hash, 16777619) >>> 0; }
+  return hash.toString(16).padStart(8, "0").replace(/[0-9a-f]/gu, (char) => "abcdefghijklmnop"[Number.parseInt(char, 16)]);
+}
+
+export function checklistRedirectEvidence(result: ChecklistGateResult, assistantText: unknown): string {
+  const body = stripAcceptanceChecklist(assistantText);
+  const signals = [
+    ...(body.match(/\b(?:PASS|FAIL|ERROR|BLOCKED|ACTIVE|COMPLETE)[A-Z0-9_.:-]*/gu) || []),
+    ...(body.match(/\b\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\b/gu) || []),
+    ...(body.match(/\b[0-9a-f]{16,64}\b/giu) || []),
+  ].slice(-80);
+  const progressBasis = signals.length ? signals.join("|") : normalizeChecklistItem(body).slice(-2000);
+  const open = [...new Set(result.open.map((item) => normalizeChecklistItem(item)))].sort().join("|");
+  const reason = /(?:invalid-checklist|repeated-checklist-violation)/u.test(result.reason) ? "checklist-violation" : result.reason;
+  return `failure checklist reason=${reason} open=${open} progress=${stableAlphaHash(progressBasis)}`;
+}
+
 export function formatChecklistGateContinuation(result: ChecklistGateResult, continuation: number): string {
   const openKeys = new Set(result.open.map((item) => normalizeChecklistItem(item).toLocaleLowerCase()));
   const contracts = result.state?.items || [];
@@ -898,7 +975,7 @@ export function formatChecklistGateContinuation(result: ChecklistGateResult, con
   const diagnostics = result.violations.length
     ? `\n\n格式违规诊断（不是验收项目，禁止复制进清单）:\n${result.violations.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。${contractBlock}${diagnostics}\n\n继续执行原始任务。新完成的项在回复中以【验收清单】开头的小块增量声明:只列变化项,"- [x] <与合同原文逐字一致>"表示已有可验证证据,"- [ ]"表示重开;未变化项不要复述。禁止 [~] 或任何第三状态，禁止新增、改名合同项目。全部合同项完成后只写一行“【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成”。命令输出、日志等证据细节写入任务工作区证据文件(默认 acceptance-evidence.md)，正文只留每项一句结论、关键数字与文件指针。如果确有外部阻塞，保留对应项未完成并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。`;
+  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。${contractBlock}${diagnostics}\n\n继续执行原始任务。执行策略硬约束:当前路径若受未来时间、外部事件或同路失败阻塞，禁止用 sleep、轮询或超长 timeout 维持前台会话；先复核 nextAction 是否过期，生成至少 2 条相互独立、尚未实测且不违反硬边界的合法方向 frontier，按预期信息增益/成本排序并立即执行第一条。不得把“禁止同路补丁”自行扩大为“禁止所有新方向”。仅当全部合法方向都有耗尽证据时，才把受阻分支持久化 deferred 并释放当前 run；deferred 不是终态完成。\n\n新完成的项在回复中以【验收清单】开头的小块增量声明:只列变化项,"- [x] <与合同原文逐字一致>"表示已有可验证证据,"- [ ]"表示重开;未变化项不要复述。禁止 [~] 或任何第三状态，禁止新增、改名合同项目。全部合同项完成后只写一行“【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成”。命令输出、日志等证据细节写入任务工作区证据文件(默认 acceptance-evidence.md)，正文只留每项一句结论、关键数字与文件指针。如果确有外部阻塞，保留对应项未完成并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。`;
 }
 
 export const renderChecklistContinuation = formatChecklistGateContinuation;
@@ -1618,7 +1695,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // S7 工具红线:复用 rules-pretool;S6 预审就绪则执行阶段早投递(防长任务超 TTL)
-  pi.on("tool_call", async (event: any) => {
+  pi.on("tool_call", async (event: any, ctx: any) => {
     runHadTool = true;
     // 工具锚点与状态变更记账(写入侧 v3):供 Stop 落账结构化锚点与记忆标记门判定;失败留痕不阻断。
     try {
@@ -1638,6 +1715,25 @@ export default function (pi: ExtensionAPI) {
       if (command && turnToolCommands.length < 8) turnToolCommands.push(command.replace(/\s+/g, " ").slice(0, 160));
       }
     } catch (e) { log(`MEMORY_ANCHORS FAIL_OPEN ${String(e).slice(0, 120)}`); }
+    const toolName = String(event?.toolName || "");
+    if (/^bash$/iu.test(toolName)) {
+      if (!event.input || typeof event.input !== "object") event.input = {};
+      const foreground = foregroundBashDecision(event.input);
+      let branch: any[] = [];
+      try { branch = ctx?.sessionManager?.getBranch?.() || []; } catch {}
+      const stale = staleNextActionDecision(branch);
+      if (foreground.action === "block") {
+        log(`FOREGROUND_WAIT BLOCK tool=${toolName} requested=${foreground.requestedTimeoutSeconds ?? "none"} limit=${foreground.timeoutSeconds} wallClock=${foreground.wallClockWait} staleNextAction=${stale.stale}`);
+        metric({ sessionId, hardGate: "foreground-wait", tool: toolName, requestedTimeout: foreground.requestedTimeoutSeconds, timeoutLimit: foreground.timeoutSeconds, wallClockWait: foreground.wallClockWait, staleNextAction: stale.stale });
+        const frontier = stale.directive || "当前前台路径被 host deadline 拒绝。禁止改写成另一种 sleep/轮询；先生成至少 2 条相互独立、尚未实测且不违反硬边界的合法方向 frontier，并立即执行信息增益/成本最高的一条。只有全部方向均有耗尽证据时才允许持久化 deferred。";
+        return { block: true, reason: `LOP_FOREGROUND_WAIT_BLOCK: ${foreground.reason}。${frontier}` };
+      }
+      if (foreground.action === "cap") {
+        event.input.timeout = foreground.timeoutSeconds;
+        log(`FOREGROUND_DEADLINE APPLY tool=${toolName} timeout=${foreground.timeoutSeconds}s wallClock=${foreground.wallClockWait}`);
+        metric({ sessionId, hardGate: "foreground-deadline-applied", tool: toolName, timeout: foreground.timeoutSeconds });
+      }
+    }
     if (!advRedelivery && !advDeliveredTurn) {
       try {
         const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
@@ -1954,40 +2050,47 @@ export default function (pi: ExtensionAPI) {
       deterministicVerified: deterministicDraftActive,
       blockerTurnsRequired: CHECKLIST_BLOCKER_TURNS,
     });
-    if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
     if (checklistGate.reason === "same-blocker-three-turns") {
+      if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
       checklistRetryActive = false;
       log(`CHECKLIST_GOAL BLOCKED blockerTurns=${checklistGate.state?.blockerTurns || 0} open=${checklistGate.open.length}`);
-      metric({
-        sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
-        checklistGoal: "blocked", checklistOpen: checklistGate.open.length,
-        checklistBlockerTurns: checklistGate.state?.blockerTurns || 0,
-      });
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGoal: "blocked", checklistOpen: checklistGate.open.length, checklistBlockerTurns: checklistGate.state?.blockerTurns || 0 });
     } else if (checklistGate.trigger) {
       checklistRetryActive = true;
       const continuation = checklistGate.state?.continuationCount || 1;
-      log(`CHECKLIST_GOAL CONTINUE turn=${continuation} reason=${checklistGate.reason} open=${checklistGate.open.length}`);
-      metric({
-        sessionId, prompt: prompt.slice(0, 160), ...lastPhase,
-        checklistGoal: "active", checklistReason: checklistGate.reason,
-        checklistContinuation: continuation, checklistOpen: checklistGate.open.length,
-      });
+      let redirectMode = "normal";
+      let continuationText = formatChecklistGateContinuation(checklistGate, continuation);
       try {
-        pi.sendMessage({
-          customType: CHECKLIST_GATE_TYPE,
-          content: formatChecklistGateContinuation(checklistGate, continuation),
-          display: false,
-          details: {
-            status: "active", open: checklistGate.open,
-            continuation, violations: checklistGate.violations,
-          },
-        }, { deliverAs: "followUp", triggerTurn: true });
+        const redirector = await loadRedirector();
+        if (redirector && checklistGate.state) {
+          const previousRounds = Array.isArray(checklistGate.state.redirectRounds) ? checklistGate.state.redirectRounds.slice(-12) : [];
+          const redirect = await redirector.evaluateGoalRound({ cwd: "", output: checklistRedirectEvidence(checklistGate, text), exitCode: 1, attempts: continuation, max: Math.max(3, continuation), prevRounds: previousRounds, prevLevel: checklistGate.state.redirectLevel || 0 });
+          redirectMode = redirect.mode;
+          const progressed = redirect.mode === "normal" && previousRounds.length > 0 && previousRounds.at(-1)?.failFp !== redirect.round?.failFp;
+          checklistGate.state.redirectRounds = progressed ? [redirect.round] : redirect.rounds.slice(-12);
+          checklistGate.state.redirectLevel = progressed ? 0 : redirect.level;
+          const redirected = redirector.renderChecklistRedirect?.({ mode: redirect.mode, tripped: redirect.tripped, rounds: checklistGate.state.redirectRounds, open: checklistGate.open });
+          if (redirected) continuationText = `${redirected}\n\n${continuationText}`;
+          if (redirect.mode !== "normal") log(`CHECKLIST_REDIRECT ${redirect.mode} turn=${continuation} trips=${redirect.tripped.join(",") || "none"} open=${checklistGate.open.length}`);
+        }
+      } catch (e) { log(`CHECKLIST_REDIRECT FAIL_OPEN ${String(e).slice(0, 160)}`); }
+      const staleAction = staleNextActionDecision(branch);
+      if (staleAction.stale) {
+        continuationText = `${staleAction.directive}\n\n${continuationText}`;
+        log(`NEXT_ACTION STALE timestamp=${staleAction.timestamp} turn=${continuation}`);
+      }
+      if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
+      log(`CHECKLIST_GOAL CONTINUE turn=${continuation} reason=${checklistGate.reason} redirect=${redirectMode} open=${checklistGate.open.length}`);
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, checklistGoal: "active", checklistReason: checklistGate.reason, checklistContinuation: continuation, checklistOpen: checklistGate.open.length, checklistRedirect: redirectMode, staleNextAction: staleAction.stale });
+      try {
+        pi.sendMessage({ customType: CHECKLIST_GATE_TYPE, content: continuationText, display: false, details: { status: "active", open: checklistGate.open, continuation, violations: checklistGate.violations, redirect: redirectMode, staleNextAction: staleAction.stale } }, { deliverAs: "followUp", triggerTurn: true });
         return;
       } catch (e) {
         checklistRetryActive = false;
         log(`CHECKLIST_GOAL FAIL_OPEN ${String(e).slice(0, 160)}`);
       }
     } else {
+      if (checklistGate.state) setChecklistGoal(checklistGate.state, checklistGate.reason);
       checklistRetryActive = false;
       if (checklistGate.reason === "goal-complete" || checklistGate.reason === "deterministic-host-verified") {
         log(`CHECKLIST_GOAL COMPLETE reason=${checklistGate.reason}`);
