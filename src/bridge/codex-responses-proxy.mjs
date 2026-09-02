@@ -626,9 +626,11 @@ async function handleResponses(req, res) {
         upstreamTier: usage.serviceTier || "",
       };
       log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} egress=${record.egressKey || "?"}:${record.egressPort} tier=${record.requestedTier || "-"}→${record.upstreamTier || "?"} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
-      // priority 额度耗尽时上游静默降级(2026-09-02 实测 2 倍吞吐差):无条件留痕,不藏在调试开关后。
+      // priority 额度是否被授予只能从吞吐判(2026-09-02 实测:同分钟 A/B priority 47-57 vs default 27
+      // tok/s;但 46-49 tok/s 的快请求回显也是 "default",回显不可作降级证据)。回显不一致仍
+      // 无条件留痕,措辞只陈述事实,不断言降级。
       if (record.requestedTier && record.upstreamTier && record.requestedTier !== record.upstreamTier) {
-        log(`tier 降级：请求 ${record.requestedTier} → 上游实际 ${record.upstreamTier}（priority 额度耗尽或不适用；吞吐按 default 计）originator=${record.originator || "-"}`);
+        log(`tier 回显不一致：请求 ${record.requestedTier} → 上游回显 ${record.upstreamTier}（是否实际降级以 tok/s 为准）originator=${record.originator || "-"}`);
       }
       fs.appendFile(METRICS_FILE, JSON.stringify(record) + "\n", () => {});
     } catch { /* 观测永不阻断转发 */ }

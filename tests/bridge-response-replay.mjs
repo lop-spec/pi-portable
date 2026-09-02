@@ -49,7 +49,7 @@ test('proxy passes session reasoning through untouched (v7.15.0 revokes forced m
   assert.match(source, /gpt56-chain-replay-v7\.17\.0/u);
   // v7.17.0:priority 静默降级必须留痕(失败路径必留痕)。
   assert.match(source, /upstreamTier: usage\.serviceTier/u);
-  assert.match(source, /tier 降级：请求/u);
+  assert.match(source, /tier 回显不一致：请求/u);
   assert.match(source, /requestWithOverloadRetry/u);
   assert.match(source, /selected\.prefixChunks/u);
   assert.match(source, /selected\.exhausted/u);
