@@ -45,7 +45,8 @@ const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
 // key 掺首条 user 项摘要实现并发会话分键(单会话恒定、并发互异)。
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
 // v7.17.0:流指标记录 requestedTier→upstreamTier,priority 静默降级无条件落日志。
-const POLICY_VERSION = "gpt56-chain-replay-v7.17.0";
+// v7.18.0:persistence 证据规则改"重定向落盘 + 只手写结论",配合 launcher BASH_ENV 预加载 helper。
+const POLICY_VERSION = "gpt56-chain-replay-v7.18.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -73,7 +74,9 @@ const PERSISTENCE_APPENDIX = [
   "If the user states an explicit acceptance target (for example a numeric threshold, all tests passing, or a delivery gate), treat the task as unresolved until that target is verifiably met, or until you have concrete evidence it is unreachable under the stated constraints; in that case report the quantified gap instead of silently stopping.",
   // 最高优先级输出规则(2026-09-01,lop 裁决):证据落盘,正文只留结论。放在清单纪律
   // 之前,优先级最高。
-  "Highest-priority output rule: evidence goes to files, reply bodies carry conclusions only. Write detailed verification evidence (command outputs, logs, tables, hash lists, step-by-step traces) into an evidence file in the task workspace — default acceptance-evidence.md, appending a timestamped section per task — and keep only per-item one-line conclusions, key numbers, and the evidence file path in the reply body. Never fake brevity by dropping evidence: evidence must exist on disk and be auditable.",
+  // v7.18.0:证据文件由执行时重定向生成(pi 预加载 helper ev),禁止 write/edit 复述工具输出——
+  // 2026-09-02 实录:单会话把 5K 字符工具输出重打进证据文件,default 档 27 tok/s 下纯浪费。
+  "Highest-priority output rule: evidence goes to files, reply bodies carry conclusions only. The evidence file (default acceptance-evidence.md in the task workspace, one timestamped section per task) is produced at execution time by redirection: run verification commands through the preloaded shell helper `ev <cmd...>` (or append with `>> acceptance-evidence.md`), which stores the full output in the file and echoes only the tail. Never re-type command outputs, logs, tables or hash lists into the evidence file via write/edit; hand-write only per-item conclusion lines there. Keep only per-item one-line conclusions, key numbers, and the evidence file path in the reply body. Never fake brevity by dropping evidence: evidence must exist on disk and be auditable.",
   // 清单纪律 v13(增量协议):与 lop-chain 门构成闭环——host 持久记账 done 状态,
   // 模型只声明变化;首份完整清单仅出现一次并落盘。codex CLI 流量 MARK 命中跳过注入。
   "For any request that requires actions or changes (not a pure question), begin your first reply with an acceptance checklist: the line 【验收清单】 followed by '- [ ] <item>' lines covering each verifiable acceptance criterion of the task. This first checklist is a frozen acceptance contract; also record it into the evidence file. Do not restate the full checklist in later replies: the host tracks item states persistently. Only declare state changes, using a small 【验收清单】 block listing just the changed items — '- [x] <exact item wording>' when an item newly completes with verifiable evidence, '- [ ] <exact item wording>' to reopen one; unchanged items must not be repeated. Only two item states are valid: '- [ ]' means incomplete and '- [x]' means completed with verifiable evidence. Never use '[~]' or any third state. Do not add, rename, merge, or shrink contract items. If blocked, leave the item incomplete and report concrete blocker evidence. Never end your turn while any item remains incomplete. If the user says to continue, or sets an until/not-until acceptance target, a checked item saying the target was not met, delivery was prohibited, or the task remains open is not completion; keep the terminal-outcome item unchecked until there is positive attainment evidence.",

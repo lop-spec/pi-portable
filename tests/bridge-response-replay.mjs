@@ -46,7 +46,10 @@ test('Pi user-role exact history participates in stable response replay identity
 test('proxy passes session reasoning through untouched (v7.15.0 revokes forced max)', () => {
   const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
   const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.17\.0/u);
+  assert.match(source, /gpt56-chain-replay-v7\.18\.0/u);
+  // v7.18.0:证据由执行时重定向生成,禁止 write/edit 复述工具输出。
+  assert.match(source, /preloaded shell helper `ev <cmd\.\.\.>`/u);
+  assert.match(source, /Never re-type command outputs/u);
   // v7.17.0:priority 静默降级必须留痕(失败路径必留痕)。
   assert.match(source, /upstreamTier: usage\.serviceTier/u);
   assert.match(source, /tier 回显不一致：请求/u);

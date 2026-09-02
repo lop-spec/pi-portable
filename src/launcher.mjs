@@ -400,11 +400,18 @@ async function main() {
   log(await httpOk(`http://127.0.0.1:${PORTS.bridge}/health`) ? `桥就绪 :${PORTS.bridge}` : `桥未就绪(继续,pi 可用其它 provider)`);
 
   // 5 起 pi-web
+  // bash 工具预加载:pi 的 bash 工具是每次 `bash -c` 且继承进程 env,非交互 bash 会 source
+  // $BASH_ENV。把 ssh 头/证据落盘等每轮重复生成的样板固化成 helper(assets/bash-prelude.sh),
+  // 模型侧零 token。文件缺失只告警不阻断(失败路径必留痕)。
+  const bashPrelude = path.join(HOME, "assets", "bash-prelude.sh");
+  const bashPreludeEnv = fs.existsSync(bashPrelude) ? { BASH_ENV: bashPrelude.replace(/\\/g, "/") } : {};
+  log(bashPreludeEnv.BASH_ENV ? `bash 预加载:${bashPreludeEnv.BASH_ENV}` : `bash 预加载缺失,跳过:${bashPrelude}`);
   const webEnv = {
     ...portableEnv, PI_PORTABLE_DATA: DATA, PI_PORTABLE_HOME: HOME,
     PI_CODING_AGENT_DIR: path.join(DATA, ".pi", "agent"),
     HOME: DATA, USERPROFILE: DATA, // pi 配置落在数据根(解密出的 pi/ 目录)
     PORT: String(PORTS.webInternal), NO_PROXY: "localhost,127.0.0.1",
+    ...bashPreludeEnv,
   };
   const webLog = path.join(DATA, "pi-web.log");
   const { entry: webEntry, version: webVersion } = resolvePiWebEntry();
