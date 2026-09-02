@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-direction-frontier-v21-sidecar-marker";
+export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-direction-frontier-v22-scoped-next-action";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -308,7 +308,9 @@ function collectInspectionText(value: any, out: string[] = [], depth = 0): strin
 
 export function staleNextActionDecision(value: unknown, nowMs = Date.now()): { found: boolean; stale: boolean; timestamp: string; directive: string } {
   const source = collectInspectionText(value).join("\n");
-  const pattern = /(?:["']?nextAction["']?\s*[:=]|下一步\s*[:：]|下一动作\s*[:：])[\s\S]{0,800}?(20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)/giu;
+  // 只接受一条逻辑记录开头的精确动作键。禁止从 staleNextAction 指标、源码片段中间，
+  // 或后续日志行的普通时间戳拼接出伪 nextAction。
+  const pattern = /^[\t ]*(?:[-*]\s*)?(?:[{,]\s*)?(?:["']?nextAction["']?\s*[:=]|下一步\s*[:：]|下一动作\s*[:：])[^\r\n]{0,800}?(20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)/gimu;
   let timestamp = "";
   for (const match of source.matchAll(pattern)) timestamp = match[1];
   const at = timestamp ? Date.parse(timestamp) : Number.NaN;

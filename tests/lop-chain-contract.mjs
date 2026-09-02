@@ -75,6 +75,11 @@ const staleAction = staleNextActionDecision({ nextAction: "At 2026-09-01T09:31:0
 assert.equal(staleAction.stale, true);
 assert.match(staleAction.directive, /至少 2 条/u);
 assert.equal(staleNextActionDecision({ nextAction: "At 2026-09-03T09:31:00+08:00 run" }, Date.parse("2026-09-02T09:49:00+08:00")).stale, false);
+const pollutedNextActionHistory = [
+  { message: { content: [{ type: "text", text: "FOREGROUND_WAIT BLOCK staleNextAction=false\nlop-chain.log:11563: [2026-09-02T11:23:18.456Z] MEMORY_GATE FAIL_OPEN" }] } },
+  { message: { content: [{ type: "text", text: "const fixture = { nextAction: 'At 2026-09-01T09:31:00+08:00 run' };" }] } },
+];
+assert.equal(staleNextActionDecision(pollutedNextActionHistory, Date.parse("2026-09-02T12:23:15.796Z")).found, false);
 assert.equal(isGoalCancellationPrompt("取消当前目标"), true);
 assert.equal(isGoalCancellationPrompt("/lop-goal-cancel"), true);
 assert.equal(isGoalCancellationPrompt("停止自动续跑"), true);
@@ -231,8 +236,8 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s9-memory-direction-frontier-v21-sidecar-marker");
-assert.match(commands.get("lop-chain-reload").description, /s9-memory-direction-frontier-v21-sidecar-marker/u);
+assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s9-memory-direction-frontier-v22-scoped-next-action");
+assert.match(commands.get("lop-chain-reload").description, /s9-memory-direction-frontier-v22-scoped-next-action/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -913,7 +918,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "s9-memory-direction-frontier-v21-sidecar-marker");
+assert.equal(runtimeVersionFromSource(source), "s9-memory-direction-frontier-v22-scoped-next-action");
 // 写入侧 v3:记忆标记状态差门与工具锚点落账
 assert.match(source, /MEMORY_GATE BLOCK reason=/u);
 assert.match(source, /MEMORY_GATE FAIL_OPEN/u);
