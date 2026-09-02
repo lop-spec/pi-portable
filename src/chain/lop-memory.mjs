@@ -33,7 +33,7 @@ import {
   weeklyCanonical,
 } from './memory-canonical.mjs';
 
-export { memoryMarkerInstruction, normalizeAnchors, normalizeEvidence };
+export { memoryMarkerInstruction, normalizeAnchors, normalizeEvidence, parseMemoryMarker };
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLE_ROOT = path.resolve(HERE, '..', '..');
@@ -568,7 +568,46 @@ const MUTATING_COMMAND_RE = /(?:^|[\s;&|(])(?:rm|mv|cp|mkdir|rmdir|del|erase|mov
 const TOOL_PATH_RE = /(?:[A-Za-z]:)?(?:[\\/][\w.@ -]+){1,12}[\\/][\w.@-]+\.[A-Za-z0-9]{1,8}|\b[\w.-]+\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll|vbs|cmd|log|txt|sqlite3?|env|ini|cfg|conf)\b/gu;
 
 function newToolAnchors() {
-  return { files: new Set(), commands: new Set(), mutated: false };
+  return { files: new Set(), commands: new Set(), mutated: false, marker: '' };
+}
+
+// 记忆标记载体(写入侧 v3.1):Claude 桌面端把 HTML 注释当正文渲染,正文不再带标记;
+// 模型收尾时用写文件工具把标记 JSON 写到 memory-marker/*.json 侧车,宿主从 transcript /
+// turn-state 的 tool_use 取回并还原成注释串交给既有 parseMemoryMarker;正文内旧式注释仍兼容。
+// 侧车写入本身不算状态变更、不进文件锚点。
+export const MEMORY_MARKER_FILE_RE = /memory-marker[\\/][^\\/]*\.json$/iu;
+
+export function memoryMarkerFromToolUse(name, args) {
+  let parsed = args;
+  if (typeof args === 'string') {
+    try { parsed = JSON.parse(args); } catch { parsed = { raw: args }; }
+  }
+  const object = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { raw: String(parsed ?? '') };
+  const body = String(object.content ?? object.input ?? object.patch ?? object.raw ?? '');
+  const patchHead = /\*\*\*\s+(?:Add|Update)\s+File:\s*([^\r\n]+)/u.exec(body);
+  const file = String(object.file_path ?? object.filePath ?? object.path ?? patchHead?.[1] ?? '').trim();
+  if (!MEMORY_MARKER_FILE_RE.test(file)) return '';
+  const text = patchHead
+    ? body.split(/\r?\n/u).filter((line) => line.startsWith('+')).map((line) => line.slice(1)).join('\n')
+    : body;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return '';
+  let json;
+  try { json = JSON.parse(text.slice(start, end + 1)); } catch { return ''; }
+  if (!json || typeof json !== 'object') return '';
+  return '<!-- lop-memory-event ' + JSON.stringify(json) + ' -->';
+}
+
+export function attachMemoryMarker(text, markerText) {
+  const body = String(text || '');
+  const marker = String(markerText || '');
+  if (!marker || parseMemoryMarker(body).ok) return body;
+  return (body ? body + '\n' : '') + marker;
+}
+
+export async function transcriptMemoryMarker(file, turnId) {
+  return (await transcriptToolAnchors(file, turnId)).marker || '';
 }
 
 // 从工具调用记录里抽结构化锚点:文件(路径/补丁头)、命令(首 160 字)、是否发生状态变更。
@@ -580,6 +619,8 @@ export function collectToolAnchors(tools, name, args) {
     try { parsed = JSON.parse(args); } catch { parsed = { raw: args }; }
   }
   const object = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { raw: String(parsed ?? '') };
+  const sidecarMarker = memoryMarkerFromToolUse(name, object);
+  if (sidecarMarker) { tools.marker = sidecarMarker; return tools; }
   const commandValue = object.command ?? object.cmd ?? object.action?.command ?? object.raw ?? '';
   const command = sanitizeText(Array.isArray(commandValue) ? commandValue.join(' ') : String(commandValue || ''))
     .replace(/\s+/g, ' ').trim();
@@ -2500,6 +2541,7 @@ async function transcriptToolAnchors(file, turnId) {
         tools.files.clear();
         tools.commands.clear();
         tools.mutated = false;
+        tools.marker = '';
       }
       continue;
     }
@@ -2525,6 +2567,7 @@ function toolAnchorsFromEvent(event) {
     if (tools.commands.size < 8 && String(command || '').trim()) tools.commands.add(limitText(sanitizeText(command), 160));
   }
   tools.mutated = Boolean(raw.mutated);
+  tools.marker = String(raw.marker || '');
   return tools;
 }
 
@@ -2534,7 +2577,7 @@ function toolAnchorsFromEvent(event) {
 export function decideStopGate(input = {}) {
   const enabled = input.enabled !== false;
   const mutated = Boolean(input.mutated);
-  const text = String(input.lastAssistantMessage || '');
+  const text = attachMemoryMarker(input.lastAssistantMessage, input.memoryMarker);
   if (!enabled) return { block: false, reason: 'disabled' };
   if (!mutated) return { block: false, reason: 'no-mutation' };
   if (input.stopHookActive || input.alreadyBlocked) return { block: false, reason: 'already-retried' };
@@ -2561,9 +2604,16 @@ export async function recordStop(event, options = {}) {
   if (!taskPrompts.length && fallbackPrompt) taskPrompts = [{ prompt: fallbackPrompt, timestamp: '' }];
   const prompt = taskPrompts.at(-1)?.prompt || '';
   if (!prompt) return { skipped: true, reason: 'no-human-prompt' };
-  const rawAssistant = String(event.last_assistant_message || '');
+  const hostMessage = String(event.last_assistant_message || '');
+  const tools = toolAnchorsFromEvent(event) || await transcriptToolAnchors(event.transcript_path, turnId);
+  // 侧车标记:宿主 turn-state 带回 → 否则回扫 transcript 本轮 tool_use;正文内旧式注释优先。
+  let sidecarMarker = String(event.memory_marker || tools.marker || '');
+  if (!sidecarMarker && !parseMemoryMarker(hostMessage).ok && event.transcript_path && event.memory_tool_anchors) {
+    sidecarMarker = await transcriptMemoryMarker(event.transcript_path, turnId);
+  }
+  const rawAssistant = attachMemoryMarker(hostMessage, sidecarMarker);
   // 存储用正文可由宿主预先剥离清单/凭证(memory_answer);标记解析永远看原文。
-  const answer = limitText(sanitizeText(event.memory_answer || rawAssistant), config.answerMaxChars);
+  const answer = limitText(sanitizeText(event.memory_answer || hostMessage), config.answerMaxChars);
   const canonicalTurnId = turnId || sha256(prompt).slice(0, 24);
   const sourceKey = 'live:' + sessionId;
   const source = {
@@ -2571,7 +2621,6 @@ export async function recordStop(event, options = {}) {
     size: (() => { try { return fs.statSync(event.transcript_path).size; } catch { return 0; } })(),
     mtimeMs: Date.now(),
   };
-  const tools = toolAnchorsFromEvent(event) || await transcriptToolAnchors(event.transcript_path, turnId);
   const turns = taskPrompts.map((item, index) => normalizeTurn({
     turnId: index === taskPrompts.length - 1
       ? canonicalTurnId

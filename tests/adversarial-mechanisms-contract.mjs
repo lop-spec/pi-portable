@@ -160,7 +160,7 @@ assert.ok(planNoBanned.includes("证据轮"));
 
 // ---- lop-chain.ts 源级接线钉 ----
 const source = fs.readFileSync(path.join(root, "src", "lop-chain.ts"), "utf8");
-assert.match(source, /LOP_CHAIN_RUNTIME_VERSION = "s8-recovery-canonical-v18"/u);
+assert.match(source, /LOP_CHAIN_RUNTIME_VERSION = "s9-memory-write-side-v20"/u);
 assert.match(source, /LOP_CHAIN_DISABLE/u);
 assert.match(source, /auto-gate\.mjs/u);
 assert.match(source, /best-of-n\.mjs/u);

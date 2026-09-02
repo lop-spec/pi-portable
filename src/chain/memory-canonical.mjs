@@ -1013,12 +1013,14 @@ export function parseMemoryMarker(value) {
 }
 
 // 完成态回复必须附带的隐藏标记模板(单一来源,供 Stop 门与规则投影引用)。
+export const MEMORY_MARKER_SIDECAR = 'C:/Users/lop/.claude/hooks/rule-enforcer/memory-marker/latest.json';
+
 export function memoryMarkerInstruction(options = {}) {
   const compact = options.compact === true;
   const template = '<!-- lop-memory-event {"semanticFull":"用户目标+关键边界+最终有效结论","summary20":"≤20字结论短句","outcome":"已完成|已确认|已纠正|已采纳|待处理|不支持|仅讨论","categoryPaths":[["一级","二级","三级"]],"anchors":{"files":[],"components":[],"topics":[],"commands":[]},"evidence":["验证命令或读回"],"verification":"verified|claimed|inferred"} -->';
   if (compact) return template;
   return [
-    '本轮有状态变更但最终回复缺少记忆标记。请重新给出完整最终回复，并在末尾原样附加一行隐藏标记(HTML 注释，JSON 单行，semanticFull ≤2000 字、summary20 2-20 字、categoryPath 每级 1-5 字，anchors 只填真实涉及的文件/组件/主题/命令，evidence 只填实际执行过的验证命令或读回，verification 按证据如实选择)：',
+    '本轮有状态变更但缺少记忆标记。请用写文件工具(Write/apply_patch)把一份 JSON 单行写到 ' + MEMORY_MARKER_SIDECAR + '(内容即下面注释里的 JSON 对象，semanticFull ≤2000 字、summary20 2-20 字、categoryPath 每级 1-5 字，anchors 只填真实涉及的文件/组件/主题/命令，evidence 只填实际执行过的验证命令或读回，verification 按证据如实选择)，然后重新给出完整最终回复；正文不得出现该 JSON 或 HTML 注释：',
     template,
   ].join('\n');
 }

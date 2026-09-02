@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-write-side-v19";
+export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-write-side-v20";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -993,6 +993,8 @@ export default function (pi: ExtensionAPI) {
   let checklistGoal: ChecklistGoalState | null = null;
   let runHadTool = false;
   let turnMutated = false;
+  // 侧车记忆标记(写入侧 v3.1):模型把标记 JSON 写到 memory-marker/*.json,不再放正文。
+  let turnMemoryMarker = "";
   let turnToolFiles: string[] = [];
   let turnToolCommands: string[] = [];
   let memoryGateRetryActive = false;
@@ -1295,6 +1297,7 @@ export default function (pi: ExtensionAPI) {
     if (memoryGateRetryActive) { log("MEMORY_GATE retry skip reinject"); return; }
     turnStartedAt = performance.now();
     turnMutated = false;
+    turnMemoryMarker = "";
     turnToolFiles = [];
     turnToolCommands = [];
     deterministicDraftActive = false;
@@ -1624,9 +1627,16 @@ export default function (pi: ExtensionAPI) {
       const commandValue = input.command ?? input.cmd ?? "";
       const command = Array.isArray(commandValue) ? commandValue.join(" ") : String(commandValue || "");
       const file = String(input.path || input.file_path || input.filePath || input.notebook_path || "").trim();
-      if (MEMORY_MUTATING_TOOL.test(toolName) || (command && MEMORY_MUTATING_COMMAND.test(command))) turnMutated = true;
+      const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
+      const sidecarMarker = String(mem.memoryMarkerFromToolUse?.(toolName, input) || "");
+      if (sidecarMarker) {
+        turnMemoryMarker = sidecarMarker;
+        log("MEMORY_MARKER sidecar captured");
+      } else if (MEMORY_MUTATING_TOOL.test(toolName) || (command && MEMORY_MUTATING_COMMAND.test(command))) turnMutated = true;
+      if (sidecarMarker) { /* 侧车写入不进锚点 */ } else {
       if (file && turnToolFiles.length < 16 && !turnToolFiles.includes(file)) turnToolFiles.push(file);
       if (command && turnToolCommands.length < 8) turnToolCommands.push(command.replace(/\s+/g, " ").slice(0, 160));
+      }
     } catch (e) { log(`MEMORY_ANCHORS FAIL_OPEN ${String(e).slice(0, 120)}`); }
     if (!advRedelivery && !advDeliveredTurn) {
       try {
@@ -2064,7 +2074,7 @@ export default function (pi: ExtensionAPI) {
         !ctx?.hasPendingMessages?.() && !prompt.startsWith(RUN_SUPERVISOR_RECOVERY_PREFIX)) {
       try {
         const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
-        const gate = mem.decideStopGate({ mutated: turnMutated, lastAssistantMessage: text, stopHookActive: false });
+        const gate = mem.decideStopGate({ mutated: turnMutated, lastAssistantMessage: text, memoryMarker: turnMemoryMarker, stopHookActive: false });
         if (gate.block) {
           memoryGateRetryActive = true;
           log(`MEMORY_GATE BLOCK reason=${gate.reason} files=${turnToolFiles.length} cmds=${turnToolCommands.length}`);
@@ -2115,7 +2125,8 @@ export default function (pi: ExtensionAPI) {
             // 原文(含标记)供标记解析;存储正文用剥离清单/凭证/标记后的 persistenceText。
             last_assistant_message: text,
             memory_answer: persistenceText,
-            memory_tool_anchors: { files: turnToolFiles, commands: turnToolCommands, mutated: turnMutated },
+            memory_marker: turnMemoryMarker,
+            memory_tool_anchors: { files: turnToolFiles, commands: turnToolCommands, mutated: turnMutated, marker: turnMemoryMarker },
             transcript_path: "",
           });
           if (saved?.skipped || saved?.disabled) {
