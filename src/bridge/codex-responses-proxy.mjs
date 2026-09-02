@@ -1,7 +1,7 @@
 // Codex（VS Code / VSCodium 扩展、codex CLI）的透明请求策略代理。
 //
 // 链路：Codex 扩展 --(codex 原生 responses)--> 本进程 :8794
-//       --(保留 Codex 官方登录身份 + 注入请求策略)-->
+//       --(保留/轮转登录身份 + 剥不兼容字段 + 稳定 cache key)-->
 //       chatgpt.com/backend-api/codex/responses
 //
 // 身份默认由客户端的官方登录态负责（透传 Authorization 头）；检测到账号池 homes
@@ -25,7 +25,6 @@ const PORTABLE_DATA = process.env.PI_PORTABLE_DATA
 fs.mkdirSync(PORTABLE_DATA, { recursive: true });
 
 import { compressUpstreamBody, rewriteCodexRequestBody } from "./codex-cache-policy.mjs";
-import { ExactResponseMemo } from "./codex-response-memo.mjs";
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
 import { createModelFallbackPlan, requestWithOverloadRetry } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
@@ -38,15 +37,12 @@ const UPSTREAM_PATH = "/backend-api/codex/responses";
 const UPSTREAM_PROXY_HOST = process.env.CODEX_UPSTREAM_PROXY_HOST || "127.0.0.1";
 const UPSTREAM_PROXY_PORT = Number(process.env.CODEX_UPSTREAM_PROXY_PORT || 0); // [portable] 0=直连
 const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
-const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
-// v7.15.0:撤销全请求强制 reasoning=max(08-30 引入)。强度完全由会话控制——pi 会话对
-// gpt-5.6-sol 默认已是 max(settings.modelThinkingLevels),桥强制只会掩盖会话真实设置。
-// v7.16.0:cache 注入修复——边界兼容 pi 字符串形态系统提示(key-only,blockIndex=-1),
-// key 掺首条 user 项摘要实现并发会话分键(单会话恒定、并发互异)。
-const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-// v7.17.0:流指标记录 requestedTier→upstreamTier,priority 静默降级无条件落日志。
-// v7.18.0:persistence 证据规则改"重定向落盘 + 只手写结论",配合 launcher BASH_ENV 预加载 helper。
-const POLICY_VERSION = "gpt56-chain-replay-v7.18.0";
+// v8.0.0 slim(2026-09-02 lop 裁决):桥只保留 ①协议兼容(剥 max_output_tokens) ②账号池
+// ③出口跟随/连接层/过载保护 ④观测(proxy-metrics) ⑤prompt_cache_key。撤掉 persistence 注入
+// (协议文本移入 pi AGENTS.md 管理块,桥部署不再作废会话前缀)、response memo 精确重放、
+// history 快路 reasoning 改写、tier 兜底——三样从未在真实流量里起作用,却是本周两起静默
+// 缺陷(强制 max、注入失效)的温床。
+const POLICY_VERSION = "gpt56-slim-v8.0.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -59,62 +55,10 @@ const OVERLOAD_PREFIX_MAX_BYTES = Math.max(1024, numberEnv("CODEX_OVERLOAD_PREFI
 const OVERLOAD_PRIMARY_MODEL = process.env.CODEX_OVERLOAD_PRIMARY_MODEL || "gpt-5.6-sol";
 const OVERLOAD_FALLBACK_MODELS = (process.env.CODEX_OVERLOAD_FALLBACK_MODELS ?? "gpt-5.6-terra,gpt-5.6-luna,gpt-reserve")
   .split(",").map((model) => model.trim()).filter(Boolean);
-// persistence 注入:Codex 官方 prompt(codex-rs/core/gpt_5_2_prompt.md)的 Autonomy and
-// Persistence 段原文。gpt-5.x 按这份提示训练对齐"不提前收尾";pi 等 responses 方言
-// 客户端的 instructions 缺该段,同模型在 pi 壳里就会出现"承诺后 stop/如实汇报未达标
-// 后停轮"。幂等判定用官方原文特征串,codex CLI 自带官方提示的流量自动跳过。
-// 可用 CODEX_PROXY_PERSISTENCE=0 关闭。
-const PERSISTENCE_INJECT = process.env.CODEX_PROXY_PERSISTENCE !== "0";
-const PERSISTENCE_MARK = "keep going until the query or task is completely resolved";
-const PERSISTENCE_APPENDIX = [
-  "",
-  "## Autonomy and Persistence",
-  "You must keep going until the query or task is completely resolved, before ending your turn and yielding back to the user. Persist until the task is fully handled end-to-end within the current turn whenever feasible and persevere even when function calls fail. Only terminate your turn when you are sure that the problem is solved. Autonomously resolve the query to the best of your ability, using the tools available to you, before coming back to the user. Do NOT guess or make up an answer.",
-  "Do not stop at analysis or partial fixes; carry changes through implementation, verification, and a clear explanation of outcomes unless the user explicitly pauses or redirects you.",
-  "If the user states an explicit acceptance target (for example a numeric threshold, all tests passing, or a delivery gate), treat the task as unresolved until that target is verifiably met, or until you have concrete evidence it is unreachable under the stated constraints; in that case report the quantified gap instead of silently stopping.",
-  // 最高优先级输出规则(2026-09-01,lop 裁决):证据落盘,正文只留结论。放在清单纪律
-  // 之前,优先级最高。
-  // v7.18.0:证据文件由执行时重定向生成(pi 预加载 helper ev),禁止 write/edit 复述工具输出——
-  // 2026-09-02 实录:单会话把 5K 字符工具输出重打进证据文件,default 档 27 tok/s 下纯浪费。
-  "Highest-priority output rule: evidence goes to files, reply bodies carry conclusions only. The evidence file (default acceptance-evidence.md in the task workspace, one timestamped section per task) is produced at execution time by redirection: run verification commands through the preloaded shell helper `ev <cmd...>` (or append with `>> acceptance-evidence.md`), which stores the full output in the file and echoes only the tail. Never re-type command outputs, logs, tables or hash lists into the evidence file via write/edit; hand-write only per-item conclusion lines there. Keep only per-item one-line conclusions, key numbers, and the evidence file path in the reply body. Never fake brevity by dropping evidence: evidence must exist on disk and be auditable.",
-  // 清单纪律 v13(增量协议):与 lop-chain 门构成闭环——host 持久记账 done 状态,
-  // 模型只声明变化;首份完整清单仅出现一次并落盘。codex CLI 流量 MARK 命中跳过注入。
-  "For any request that requires actions or changes (not a pure question), begin your first reply with an acceptance checklist: the line 【验收清单】 followed by '- [ ] <item>' lines covering each verifiable acceptance criterion of the task. This first checklist is a frozen acceptance contract; also record it into the evidence file. Do not restate the full checklist in later replies: the host tracks item states persistently. Only declare state changes, using a small 【验收清单】 block listing just the changed items — '- [x] <exact item wording>' when an item newly completes with verifiable evidence, '- [ ] <exact item wording>' to reopen one; unchanged items must not be repeated. Only two item states are valid: '- [ ]' means incomplete and '- [x]' means completed with verifiable evidence. Never use '[~]' or any third state. Do not add, rename, merge, or shrink contract items. If blocked, leave the item incomplete and report concrete blocker evidence. Never end your turn while any item remains incomplete. If the user says to continue, or sets an until/not-until acceptance target, a checked item saying the target was not met, delivery was prohibited, or the task remains open is not completion; keep the terminal-outcome item unchecked until there is positive attainment evidence.",
-  // 完成态折叠:与 lop-chain collapsedAcceptanceChecklist 严格对齐(N/N 必须等于
-  // 冻结合同项数)。
-  "Once every item in the frozen contract is complete with verifiable evidence, finish with the single line 【验收清单】N/N 全部完成 where N is the exact number of frozen contract items, instead of any itemized checklist.",
-  "Host-verified deterministic exception: when the request context contains both <deterministic-current-evidence> and <deterministic-final-draft verified=\"true\">, the host has already completed and verified the bounded action. Do not call any tool, do not emit an acceptance checklist, and output the supplied deterministic final draft exactly. This exception never applies without both tags.",
-].join("\n");
-
-function appendPersistence(body) {
-  if (!PERSISTENCE_INJECT) return { body, applied: false };
-  try {
-    const j = JSON.parse(body.toString("utf8"));
-    // 形态1:codex CLI——顶层 instructions 字符串(自带官方提示,MARK 命中即跳过)。
-    if (typeof j.instructions === "string") {
-      if (j.instructions.includes(PERSISTENCE_MARK)) return { body, applied: false };
-      j.instructions += "\n" + PERSISTENCE_APPENDIX;
-      return { body: Buffer.from(JSON.stringify(j)), applied: true, target: "instructions" };
-    }
-    // 形态2:pi 等 responses 方言——系统提示在 input[0] 的 developer/system message,
-    // content 为字符串(pi-ai 序列化实测,2026-08-29)。
-    const first = Array.isArray(j.input) ? j.input[0] : null;
-    if (first && (first.role === "developer" || first.role === "system") && typeof first.content === "string") {
-      if (first.content.includes(PERSISTENCE_MARK)) return { body, applied: false };
-      first.content += "\n" + PERSISTENCE_APPENDIX;
-      return { body: Buffer.from(JSON.stringify(j)), applied: true, target: `input[0].${first.role}` };
-    }
-    return { body, applied: false };
-  } catch {
-    return { body, applied: false }; // 非明文 JSON:保持原样,fail-open
-  }
-}
 // 出口跟随：可选的出口选择状态文件（外部工具写入）。缺失/损坏时保持上次值，
 // 最终回退环境默认（未设 CODEX_UPSTREAM_PROXY_PORT 即直连），fail-open 不断流。
 const EGRESS_STATE_FILE = process.env.CODEX_EGRESS_STATE_FILE || path.join(PORTABLE_DATA, "active-egress.json");
 const METRICS_FILE = path.join(PORTABLE_DATA, "proxy-metrics.jsonl");
-const responseMemo = new ExactResponseMemo({ ttlMs: RESPONSE_MEMO_TTL_MS });
-const replayDiagnostics = new Map();
 
 function log(...args) {
   const line = `[${new Date().toLocaleString("zh-CN", { hour12: false })}] ${args.join(" ")}`;
@@ -380,27 +324,14 @@ function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, er
   }) + "\n", () => {});
 }
 
-// 请求策略注入：一次解压/解析应用可选 Tier 兜底，以及 GPT-5.6 的稳定 key + 显式断点。
-// Tier 缺省为 off：请求未选择时不注入，交给上游；请求已带 service_tier 时永不覆盖。
-// 断点只放在动态 environment/history/user 之前的 developer 块；无安全边界或解析失败时
-// fail-open 原样透传，绝不为了缓存命中率改变模型可见内容。
-const TIER = process.env.CODEX_PROXY_TIER || "off";
+// 请求策略:一次解压/解析,只做 GPT-5.6 的稳定 prompt_cache_key(+可选显式断点)。
+// 无安全边界或解析失败时 fail-open 原样透传,绝不为了缓存命中率改变模型可见内容。
 
 async function handleResponses(req, res) {
   let body = await readBody(req);
   let fwdHeaders = req.headers;
-  // persistence 先于 rewrite:缓存/重放 key 必须基于注入后的真实 body 计算。
-  const persistence = appendPersistence(body);
-  if (persistence.applied) {
-    log(`persistence 注入：${persistence.target} +${persistence.body.length - body.length}B originator=${req.headers.originator || "-"}`);
-    body = persistence.body;
-  }
   const originalBytes = body.length;
-  const rewritten = rewriteCodexRequestBody(body, req.headers, {
-    tier: TIER,
-    explicitBreakpoint: EXPLICIT_BREAKPOINT,
-    historyReplayEffort: HISTORY_REPLAY_EFFORT,
-  });
+  const rewritten = rewriteCodexRequestBody(body, req.headers, { explicitBreakpoint: EXPLICIT_BREAKPOINT });
   ({ body, headers: fwdHeaders } = rewritten);
   // 兼容剥离：ChatGPT codex 上游不认 max_output_tokens（"Unsupported parameter"，2026-08-28 实测），
   // pi/pi-web 等 responses 方言客户端会带上。桥统一剥掉，客户端保持原生不打补丁。
@@ -423,39 +354,6 @@ async function handleResponses(req, res) {
     // 不再用 CODEX_PROXY_DUMP 门控:key 注入静默失效曾隐藏两天(2026-08-31→09-01,
     // pi 的 input[0].content 是字符串形态,findStableBreakpoint 找不到 input_text 块)。
     log(`cache 未注入：${rewritten.meta.cache?.reason || "未命中策略"} originator=${req.headers.originator || "-"}`);
-  }
-  if (rewritten.meta.tierApplied) {
-    log(`tier 兜底：service_tier=${rewritten.meta.effectiveTier} originator=${req.headers.originator || "-"}`);
-  } else if (rewritten.meta.tierSource === "request") {
-    log(`tier 透传：service_tier=${rewritten.meta.effectiveTier} originator=${req.headers.originator || "-"}`);
-  }
-  if (rewritten.meta.reasoningApplied) {
-    log(`history 快路：reasoning ${rewritten.meta.reasoning.from || "default"}→${rewritten.meta.reasoning.to}`);
-  } else if (rewritten.meta.reasoning?.reason === "tool-failure-escalation") {
-    log(`history 快路升级：检测到工具失败，保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
-  } else if (rewritten.meta.reasoning?.reason === "history-first-request-complete") {
-    log(`history 快路结束：仅首个模型请求使用 ${HISTORY_REPLAY_EFFORT}，后续保持 reasoning=${rewritten.meta.reasoning.from || "default"}`);
-  }
-  const replay = rewritten.meta.replay;
-  if (replay?.enabled) {
-    const hit = responseMemo.get(replay.key, replay.usageToken);
-    if (hit) {
-      log(`response memo HIT key=${replay.key.slice(0, 16)} bytes=${hit.body.length} entries=${responseMemo.size}`);
-      res.writeHead(hit.statusCode, hit.headers);
-      return res.end(hit.body);
-    }
-    log(`response memo MISS key=${replay.key.slice(0, 16)} entries=${responseMemo.size}`);
-    if (replay.groupKey) {
-      const previous = replayDiagnostics.get(replay.groupKey);
-      if (previous) {
-        const components = Object.keys({ ...previous.componentHashes, ...replay.componentHashes })
-          .filter((name) => previous.componentHashes?.[name] !== replay.componentHashes?.[name]);
-        const input = Array.from({ length: Math.max(previous.inputHashes.length, replay.inputHashes.length) }, (_, index) => index)
-          .filter((index) => previous.inputHashes[index] !== replay.inputHashes[index]);
-        log(`response memo DRIFT components=${components.join(",") || "-"} input=${input.join(",") || "-"}`);
-      }
-      replayDiagnostics.set(replay.groupKey, replay);
-    }
   }
   if (process.env.CODEX_PROXY_DUMP === "1") {
     try {
@@ -637,16 +535,6 @@ async function handleResponses(req, res) {
       }
       fs.appendFile(METRICS_FILE, JSON.stringify(record) + "\n", () => {});
     } catch { /* 观测永不阻断转发 */ }
-    // 过载失败绝不进入 exact memo，否则会把瞬时故障固化到 TTL 内反复重放。
-    if (!replay?.enabled || selected.exhausted || usedModelFallback) return;
-    const body = Buffer.concat(chunks);
-    const stored = responseMemo.set(replay.key, {
-      statusCode: upRes.statusCode,
-      headers: out,
-      body,
-      usageToken: replay.usageToken,
-    });
-    log(`response memo ${stored ? "STORE" : "SKIP"} key=${replay.key.slice(0, 16)} bytes=${body.length} entries=${responseMemo.size}`);
   };
   for (const chunk of selected.prefixChunks) writeChunk(chunk);
   if (upRes.readableEnded) {
@@ -671,12 +559,8 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
       ok: true, port: PORT, policyVersion: POLICY_VERSION,
-      tierFallback: TIER,
       explicitBreakpoint: EXPLICIT_BREAKPOINT,
-      historyReplayEffort: HISTORY_REPLAY_EFFORT,
       forceReasoningEffort: "off",
-      responseMemoTtlMs: RESPONSE_MEMO_TTL_MS,
-      responseMemoEntries: responseMemo.size,
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
       accountHomes: ACCOUNT_HOMES || null,
       accounts: accountPool ? accountPool.snapshot() : [],
@@ -765,10 +649,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   log(`listening http://${HOST}:${PORT}`);
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
-  log(`Tier 兜底：${TIER === "off" ? "off（请求未指定时交给上游）" : TIER}；请求显式 service_tier 始终优先`);
-  log(`历史快路：exact relevance=1 使用 reasoning=${HISTORY_REPLAY_EFFORT}，工具失败自动保持原强度`);
-  log(`推理强度：透传会话请求值（桥不改写；历史快路除外）`);
-  log(`响应复用：严格 exact 全语义键，TTL=${RESPONSE_MEMO_TTL_MS}ms，最多 64 条/512KiB 每条`);
+  log(`推理强度：透传会话请求值（桥不改写）`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
   log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);
   const bootEgress = currentEgress();

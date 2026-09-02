@@ -148,6 +148,35 @@ function ask(question, { silent = false } = {}) {
   });
 }
 
+// AGENTS 协议管理块:原 8794 桥 persistence 注入的协议文本(Autonomy/Persistence + 验收/证据协议)
+// 改为随启动同步进 data/.pi/agent/AGENTS.md 的标记块——同一份文本进系统提示,桥部署不再作废
+// 会话前缀缓存;块外内容(lop 手工维护的 pi 投影)一律保留。缺失/非法只告警(失败路径必留痕)。
+const PROTOCOL_BEGIN = "<!-- lop-protocol:begin -->";
+const PROTOCOL_END = "<!-- lop-protocol:end -->";
+function syncAgentsProtocol() {
+  const asset = path.join(HOME, "assets", "pi-agents-protocol.md");
+  const target = path.join(DATA, ".pi", "agent", "AGENTS.md");
+  try {
+    if (!fs.existsSync(asset)) { log(`AGENTS 协议块资产缺失,跳过:${asset}`); return null; }
+    const block = fs.readFileSync(asset, "utf8").replace(/\r\n/g, "\n").trim();
+    if (!block.startsWith(PROTOCOL_BEGIN) || !block.endsWith(PROTOCOL_END)) { log("AGENTS 协议块资产标记不合法,跳过"); return null; }
+    const current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
+    const begin = current.indexOf(PROTOCOL_BEGIN);
+    const end = current.indexOf(PROTOCOL_END);
+    const next = begin >= 0 && end > begin
+      ? current.slice(0, begin) + block + current.slice(end + PROTOCOL_END.length)
+      : (current.trimEnd() ? current.trimEnd() + "\n\n" : "") + block + "\n";
+    if (next === current) { log("AGENTS 协议块已是目标态"); return false; }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, next);
+    log(`AGENTS 协议块已${begin >= 0 ? "更新" : "追加"}:${target}`);
+    return true;
+  } catch (e) {
+    log(`AGENTS 协议块同步失败(保留现状):${String(e.message).slice(0, 160)}`);
+    return null;
+  }
+}
+
 function refreshRulesSnapshot() {
   try {
     const rules = syncRulesSnapshot({
@@ -310,6 +339,7 @@ async function main() {
   const nodeExe = fs.existsSync(NODE) ? NODE : process.execPath;
   const portableEnv = withSilentWindowsProcessEnv(withPortableNode(process.env, nodeExe));
   refreshRulesSnapshot(); // 已有实例也先收敛规则；运行中的扩展下一轮直接读取新生成物。
+  syncAgentsProtocol();
   if (process.env.PI_FORCE_FRESH === "1") {
     // 硬重启拉起的冷启实例:残留一律不复用,先清场再起全套(否则会退化成"只开个窗口")。
     log("冷启:不复用任何残留实例,先做全局清场");
@@ -340,6 +370,7 @@ async function main() {
   } else log("无加密资产段(base 版):使用本机已有配置");
 
   refreshRulesSnapshot(); // 首次从 legacy bootstrap 迁移后再生成一次。
+  syncAgentsProtocol();
 
   try {
     const changed = portableizeModelAuth();

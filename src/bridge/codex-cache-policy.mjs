@@ -3,11 +3,6 @@ import { gunzipSync, gzipSync, inflateSync } from 'node:zlib';
 
 const GPT56_MODEL = /^gpt-5\.6(?:-|$)/iu;
 const VOLATILE_DEVELOPER_TEXT = /<\/?(?:environment_context|history-resolved)\b|history-(?:used|conflict):/iu;
-const EXACT_HISTORY = /<history-resolved\b(?=[^>]*\bmode=["']exact["'])(?=[^>]*\brelevance=["']1(?:\.0+)?["'])[^>]*>/iu;
-const HISTORY_USAGE = /<history-resolved\b(?=[^>]*\bmode=["']exact["'])[^>]*\busage=["'](h_[a-z0-9_-]+)["'][^>]*>/iu;
-const FAILED_TOOL_OUTPUT = /(?:["'](?:ok)["']\s*:\s*false|["'](?:isError|timedOut)["']\s*:\s*true|["'](?:exitCode|failed_count)["']\s*:\s*[1-9]\d*|tool call error|validation failed|script failed|\b(?:ENOENT|EACCES)\b|(?:验证|执行|调用|处理)失败)/iu;
-const REPLAY_MAX_REQUEST_BYTES = 256 * 1024;
-const TIMING_SENSITIVE_USER = /(?:耗时|延迟|时延|用时|响应时间|执行时间|毫秒|latency|duration|elapsed|wall\s*time|\bms\b)/iu;
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
@@ -43,160 +38,6 @@ function developerText(item) {
     .filter((block) => block?.type === 'input_text')
     .map((block) => String(block.text || ''))
     .join('\n');
-}
-
-function visibleText(value) {
-  if (typeof value === 'string') return value;
-  try { return JSON.stringify(value ?? ''); } catch { return String(value ?? ''); }
-}
-
-function exactHistoryPresent(input) {
-  // pi 宿主的历史注入走 user 消息(2026-08-28),标记语义同 developer 注入,扫描面放宽。
-  return input.some((item) => (item?.role === 'developer' || item?.role === 'user') && EXACT_HISTORY.test(developerText(item)));
-}
-
-function failedToolOutputPresent(input) {
-  return input.some((item) =>
-    ['custom_tool_call_output', 'function_call_output'].includes(String(item?.type || '')) &&
-    FAILED_TOOL_OUTPUT.test(visibleText(item?.output))
-  );
-}
-
-function conversationAlreadyStarted(input) {
-  // 历史摘要只允许降低新会话的首个模型请求。摘要标记会随线程上下文继续
-  // 出现在后续请求中，不能据此把工具轮、追问轮和其余整条线程永久降为 low。
-  return input.some((item) =>
-    item?.role === 'assistant' ||
-    ['custom_tool_call', 'function_call', 'custom_tool_call_output', 'function_call_output'].includes(String(item?.type || ''))
-  );
-}
-
-function replayString(value) {
-  return String(value)
-    .replace(/(\busage=["'])h_[a-z0-9_-]+/giu, '$1h_*')
-    .replace(/history-(used|conflict):h_[a-z0-9_-]+/giu, 'history-$1:h_*');
-}
-
-function replayToolReceiptString(value) {
-  return replayString(value)
-    .replace(/(Wall time:?\s+)\d+(?:\.\d+)?(\s+seconds)/giu, '$1*$2')
-    .replace(/((?:"|\\")(?:ms|durationMs|duration_ms)(?:"|\\")\s*:\s*)\d+(?:\.\d+)?/gu, '$1*');
-}
-
-function replayToolReceipt(value) {
-  if (typeof value === 'string') return replayToolReceiptString(value);
-  if (Array.isArray(value)) return value.map(replayToolReceipt);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, replayToolReceipt(child)]));
-}
-
-function normalizeReplayInputReceipts(input, timingSensitive = false) {
-  if (!Array.isArray(input)) return input;
-  if (timingSensitive) return input;
-  return input.map((item) => {
-    if (!['custom_tool_call_output', 'function_call_output'].includes(String(item?.type || ''))) {
-      return item;
-    }
-    return { ...item, output: replayToolReceipt(item.output) };
-  });
-}
-
-function replayVisible(value) {
-  if (typeof value === 'string') return replayString(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => replayVisible(item));
-  }
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  for (const [childKey, child] of Object.entries(value)) {
-    out[childKey] = replayVisible(child);
-  }
-  return out;
-}
-
-function replayInputItem(item) {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-  const visible = { ...item };
-  delete visible.id;
-  delete visible.internal_chat_message_metadata_passthrough;
-  return visible;
-}
-
-function timingSensitiveReplay(input) {
-  return input.some((item) => item?.role === 'user' && TIMING_SENSITIVE_USER.test(developerText(item)));
-}
-
-export function responseReplayIdentity(payload, options = {}) {
-  const disabled = (reason) => ({ enabled: false, reason, key: '', usageToken: '' });
-  if (!GPT56_MODEL.test(String(payload?.model || ''))) return disabled('unsupported-model');
-  if (!Array.isArray(payload?.input)) return disabled('missing-input');
-  // v7.8.1 链式重放:previous_response_id 不再挡门也不进 key——追问轮请求携带全量
-  // input,归一后 payload 逐字节等价才重放,语义与首轮重放同等守恒。此前只重放
-  // 首轮,追问轮永远真实生成,受上游生成速度方差摆布(2026-08-27 五链 run5/6:
-  // t1 follow 196ms↔4269ms 同内容波动 20 倍)。
-
-  let usageToken = '';
-  for (const item of payload.input) {
-    if (item?.role !== 'developer' && item?.role !== 'user') continue;
-    const text = developerText(item);
-    if (!EXACT_HISTORY.test(text)) continue;
-    usageToken = HISTORY_USAGE.exec(text)?.[1] || '';
-    break;
-  }
-  if (!usageToken) return disabled('no-exact-history');
-
-  const replayPayload = { ...payload };
-  delete replayPayload.metadata;
-  delete replayPayload.client_metadata;
-  delete replayPayload.prompt_cache_key;
-  delete replayPayload.previous_response_id;
-  const visiblePayload = replayVisible(replayPayload);
-  visiblePayload.input = normalizeReplayInputReceipts(
-    visiblePayload.input.map(replayInputItem),
-    timingSensitiveReplay(payload.input),
-  );
-  const canonical = canonicalJson(visiblePayload);
-  const maxRequestBytes = Number(options.maxRequestBytes) || REPLAY_MAX_REQUEST_BYTES;
-  if (Buffer.byteLength(canonical) > maxRequestBytes) return disabled('request-too-large');
-  return {
-    enabled: true,
-    reason: 'exact-history-request',
-    key: createHash('sha256').update(canonical).digest('hex'),
-    usageToken,
-    groupKey: String(payload.prompt_cache_key || ''),
-    componentHashes: Object.fromEntries(Object.entries(visiblePayload).map(([name, value]) => [
-      name,
-      createHash('sha256').update(canonicalJson(value)).digest('hex').slice(0, 12),
-    ])),
-    inputHashes: Array.isArray(visiblePayload.input) ? visiblePayload.input.map((value) =>
-      createHash('sha256').update(canonicalJson(value)).digest('hex').slice(0, 12)
-    ) : [],
-  };
-}
-
-function applyHistoryReplayEffort(payload, effort) {
-  const from = String(payload?.reasoning?.effort || '');
-  const result = { applied: false, reason: 'disabled', from, to: from };
-  if (!effort || effort === 'off') return result;
-  if (!exactHistoryPresent(payload.input)) {
-    result.reason = 'no-exact-history';
-    return result;
-  }
-  if (failedToolOutputPresent(payload.input)) {
-    result.reason = 'tool-failure-escalation';
-    return result;
-  }
-  if (conversationAlreadyStarted(payload.input)) {
-    result.reason = 'history-first-request-complete';
-    return result;
-  }
-  payload.reasoning = { ...(payload.reasoning || {}), effort };
-  Object.assign(result, {
-    applied: from !== effort,
-    reason: 'exact-history-replay',
-    to: effort,
-  });
-  return result;
 }
 
 function findStableBreakpoint(input) {
@@ -268,17 +109,8 @@ function stableCacheKey(payload, itemIndex) {
   return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-export function applyCodexRequestPolicy(
-  payload,
-  { explicitBreakpoint = true, historyReplayEffort = 'off' } = {},
-) {
+export function applyCodexRequestPolicy(payload, { explicitBreakpoint = true } = {}) {
   const copy = cloneJson(payload);
-  let reasoning = {
-    applied: false,
-    reason: 'unsupported-model',
-    from: String(copy?.reasoning?.effort || ''),
-    to: String(copy?.reasoning?.effort || ''),
-  };
   const cache = {
     applied: false,
     breakpointApplied: false,
@@ -289,20 +121,17 @@ export function applyCodexRequestPolicy(
   };
   if (!GPT56_MODEL.test(String(copy?.model || ''))) {
     cache.reason = 'unsupported-model';
-    return { payload: copy, cache, reasoning };
+    return { payload: copy, cache };
   }
   if (!Array.isArray(copy.input)) {
     cache.reason = 'missing-input';
-    reasoning.reason = 'missing-input';
-    return { payload: copy, cache, reasoning };
+    return { payload: copy, cache };
   }
-
-  reasoning = applyHistoryReplayEffort(copy, historyReplayEffort);
 
   const boundary = findStableBreakpoint(copy.input);
   if (!boundary) {
     cache.reason = 'no-safe-stable-boundary';
-    return { payload: copy, cache, reasoning };
+    return { payload: copy, cache };
   }
 
   // 字符串形态边界(blockIndex=-1)无块可挂显式断点:恒 key-only,不改写 content 形态。
@@ -323,7 +152,7 @@ export function applyCodexRequestPolicy(
     key: copy.prompt_cache_key,
     ...boundary,
   });
-  return { payload: copy, cache, reasoning };
+  return { payload: copy, cache };
 }
 
 // 上行重压缩：改写后的明文 JSON 在发往上游前恢复 gzip（客户端原本就发 gzip，
@@ -353,52 +182,27 @@ function removeHeader(headers, name) {
   return out;
 }
 
-export function rewriteCodexRequestBody(
-  body,
-  headers,
-  {
-    tier = 'off',
-    explicitBreakpoint = true,
-    historyReplayEffort = 'off',
-  } = {},
-) {
+export function rewriteCodexRequestBody(body, headers, { explicitBreakpoint = true } = {}) {
   try {
     const encoding = String(headerValue(headers, 'content-encoding') || '').toLowerCase();
     let raw = body;
     if (encoding.includes('gzip')) raw = gunzipSync(body);
     else if (encoding.includes('deflate')) raw = inflateSync(body);
     const original = JSON.parse(raw.toString('utf8'));
-    const { payload, cache, reasoning } = applyCodexRequestPolicy(original, {
-      explicitBreakpoint,
-      historyReplayEffort,
-    });
-    // reasoning 强度完全由会话控制(2026-09-01 lop 裁决,撤销 08-30 的全请求强制 max):
-    // 桥不再改写 reasoning.effort;历史快路(applyHistoryReplayEffort)是显式规则例外,保留。
-    let tierApplied = false;
-    const hasRequestTier = Object.prototype.hasOwnProperty.call(payload, 'service_tier');
-    if (tier !== 'off' && !hasRequestTier) {
-      payload.service_tier = tier;
-      tierApplied = true;
-    }
-    const tierSource = tierApplied ? 'fallback' : hasRequestTier ? 'request' : 'upstream';
+    const { payload, cache } = applyCodexRequestPolicy(original, { explicitBreakpoint });
+    // tier 只读不改:请求带什么 service_tier 就透传什么(是否被授予以 tok/s 判)。
     const effectiveTier = Object.prototype.hasOwnProperty.call(payload, 'service_tier')
       ? payload.service_tier
       : null;
-    const replay = responseReplayIdentity(payload);
-    if (!cache.applied && !tierApplied && !reasoning.applied) {
+    if (!cache.applied) {
       return {
         body,
         headers,
         meta: {
           parseFailed: false,
           cacheApplied: false,
-          tierApplied: false,
-          tierSource,
           effectiveTier,
-          reasoningApplied: false,
           cache,
-          reasoning,
-          replay,
         },
       };
     }
@@ -408,13 +212,8 @@ export function rewriteCodexRequestBody(
       meta: {
         parseFailed: false,
         cacheApplied: cache.applied,
-        tierApplied,
-        tierSource,
         effectiveTier,
-        reasoningApplied: reasoning.applied,
         cache,
-        reasoning,
-        replay,
       },
     };
   } catch {
@@ -424,13 +223,8 @@ export function rewriteCodexRequestBody(
       meta: {
         parseFailed: true,
         cacheApplied: false,
-        tierApplied: false,
-        tierSource: 'unknown',
         effectiveTier: null,
-        reasoningApplied: false,
         cache: null,
-        reasoning: null,
-        replay: null,
       },
     };
   }

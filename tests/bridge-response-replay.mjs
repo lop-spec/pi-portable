@@ -1,11 +1,14 @@
 #!/usr/bin/env node
+// 桥 v8 slim 合同:只保留 ①兼容剥离 ②账号池 ③出口/过载 ④观测 ⑤prompt_cache_key;
+// persistence/memo/history 快路/tier 兜底必须不存在;协议文本改由 launcher 同步进 AGENTS.md。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
-import { responseReplayIdentity, rewriteCodexRequestBody } from '../src/bridge/codex-cache-policy.mjs';
-import { ExactResponseMemo } from '../src/bridge/codex-response-memo.mjs';
+import { rewriteCodexRequestBody } from '../src/bridge/codex-cache-policy.mjs';
 import { extractUsage } from '../src/bridge/codex-stream-metrics.mjs';
+
+const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 
 test('stream metrics surface the upstream-applied service tier (v7.17.0)', () => {
   const tail = 'data: {"type":"response.completed","response":{"id":"r","service_tier":"default","usage":{"input_tokens":822,"input_tokens_details":{"cached_tokens":0},"output_tokens":362,"output_tokens_details":{"reasoning_tokens":41}}}}\n';
@@ -15,96 +18,77 @@ test('stream metrics surface the upstream-applied service tier (v7.17.0)', () =>
   assert.equal(extractUsage('data: {"type":"response.completed","response":{"usage":{"output_tokens":1}}}').serviceTier, null);
 });
 
-function payload(token) {
-  return {
-    model: 'gpt-5.6-sol',
-    stream: true,
-    metadata: { volatile: 'session-a' },
-    input: [{
-      role: 'user',
-      content: [{
-        type: 'input_text',
-        text: `<history-resolved mode="exact" relevance="1" usage="${token}">same semantic history</history-resolved>`,
-      }],
-    }, {
-      role: 'user',
-      content: [{ type: 'input_text', text: '解释 JSONL 与 JSON 的区别' }],
-    }],
-  };
-}
-
-test('Pi user-role exact history participates in stable response replay identity', () => {
-  const first = responseReplayIdentity(payload('h_12345678'));
-  const second = responseReplayIdentity(payload('h_abcdef123456'));
-  assert.equal(first.enabled, true, JSON.stringify(first));
-  assert.equal(second.enabled, true, JSON.stringify(second));
-  assert.equal(first.key, second.key);
-  assert.equal(first.usageToken, 'h_12345678');
-  assert.equal(second.usageToken, 'h_abcdef123456');
-});
-
-test('proxy passes session reasoning through untouched (v7.15.0 revokes forced max)', () => {
-  const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
-  const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.18\.0/u);
-  // v7.18.0:证据由执行时重定向生成,禁止 write/edit 复述工具输出。
-  assert.match(source, /preloaded shell helper `ev <cmd\.\.\.>`/u);
-  assert.match(source, /Never re-type command outputs/u);
-  // v7.17.0:priority 静默降级必须留痕(失败路径必留痕)。
-  assert.match(source, /upstreamTier: usage\.serviceTier/u);
-  assert.match(source, /tier 回显不一致：请求/u);
+test('v8 slim: proxy keeps compat/pool/egress/overload/metrics/cache-key and nothing else', () => {
+  const source = read('../src/bridge/codex-responses-proxy.mjs');
+  const policy = read('../src/bridge/codex-cache-policy.mjs');
+  const adversary = read('../src/chain/portable-adversary.mjs');
+  assert.match(source, /gpt56-slim-v8\.0\.0/u);
+  // 保留项
+  assert.match(source, /兼容剥离：max_output_tokens/u);
+  assert.match(source, /sendWithAccountFailover/u);
   assert.match(source, /requestWithOverloadRetry/u);
   assert.match(source, /selected\.prefixChunks/u);
-  assert.match(source, /selected\.exhausted/u);
   assert.match(source, /gpt-5\.6-terra,gpt-5\.6-luna,gpt-reserve/u);
   assert.match(source, /x-lop-upstream-model/u);
-  assert.match(source, /usedModelFallback/u);
-  assert.match(source, /Only two item states are valid/u);
-  assert.match(source, /Never use '\[~\]'/u);
-  assert.match(source, /checked item saying the target was not met/u);
-  assert.match(source, /CODEX_HISTORY_REPLAY_EFFORT \|\| "max"/u);
-  // 2026-09-01 lop 裁决:reasoning 强度完全由会话控制,桥不得全局强制。
-  assert.doesNotMatch(source, /CODEX_FORCE_REASONING_EFFORT/u);
+  assert.match(source, /currentEgress\(\)/u);
+  assert.match(source, /upstreamTier: usage\.serviceTier/u);
+  assert.match(source, /tier 回显不一致：请求/u);
+  assert.match(source, /cache 未注入：/u);
+  // 撤掉项(源级钉死,任何回流先红)
+  for (const gone of [/PERSISTENCE/u, /appendPersistence/u, /ExactResponseMemo/u, /responseMemo/u, /HISTORY_REPLAY_EFFORT/u, /CODEX_PROXY_TIER/u, /CODEX_FORCE_REASONING_EFFORT/u, /keep going until the query or task is completely resolved/u]) {
+    assert.doesNotMatch(source, gone);
+  }
+  for (const gone of [/responseReplayIdentity/u, /applyHistoryReplayEffort/u, /EXACT_HISTORY/u, /tierApplied/u]) {
+    assert.doesNotMatch(policy, gone);
+  }
+  assert.equal(fs.existsSync(new URL('../src/bridge/codex-response-memo.mjs', import.meta.url)), false);
+  // 预审 lane 仍显式 max;桥不改写任何请求的 reasoning/service_tier。
   assert.match(adversary, /reasoning: \{ effort: "max" \}/u);
-  assert.match(adversary, /PI_CODING_AGENT_DIR/u);
-  assert.match(adversary, /\.pi", "agent", "auth\.json"/u);
-  assert.doesNotMatch(adversary, /reasoning: \{ effort: "low" \}/u);
-
   const rewritten = rewriteCodexRequestBody(Buffer.from(JSON.stringify({
     model: 'gpt-5.6-sol',
     reasoning: { effort: 'low', summary: 'auto' },
+    service_tier: 'priority',
     input: [{ role: 'user', content: [{ type: 'input_text', text: 'probe' }] }],
   })), { 'content-type': 'application/json' }, {});
   const payload = JSON.parse(rewritten.body.toString('utf8'));
   assert.equal(payload.reasoning.effort, 'low');
-  assert.equal(payload.reasoning.summary, 'auto');
-  assert.equal(rewritten.meta.reasoningApplied, false);
-  assert.equal(rewritten.meta.forcedReasoningApplied, undefined);
+  assert.equal(payload.service_tier, 'priority');
+  assert.equal(rewritten.meta.effectiveTier, 'priority');
+  assert.equal(rewriteCodexRequestBody(Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', input: [{ role: 'user', content: [{ type: 'input_text', text: 'probe' }] }],
+  })), { 'content-type': 'application/json' }, {}).meta.effectiveTier, null, '无 tier 时不得兜底注入');
 });
 
-test('persistence prompt yields to host-verified deterministic final drafts', () => {
-  const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
-  assert.match(source, /both <deterministic-current-evidence> and <deterministic-final-draft/u);
-  assert.match(source, /Do not call any tool, do not emit an acceptance checklist/u);
+test('protocol text lives in the AGENTS managed block asset and launcher syncs it', () => {
+  const asset = read('../assets/pi-agents-protocol.md');
+  const launcher = read('../src/launcher.mjs');
+  assert.match(asset, /^<!-- lop-protocol:begin -->/u);
+  assert.match(asset, /<!-- lop-protocol:end -->\s*$/u);
+  assert.match(asset, /keep going until the query or task is completely resolved/u);
+  assert.match(asset, /both <deterministic-current-evidence> and <deterministic-final-draft/u);
+  assert.match(asset, /Do not call any tool, do not emit an acceptance checklist/u);
+  // 与 lop-chain collapsedAcceptanceChecklist / checklist gate 的协议闭环:任一端单边删改先红。
+  assert.match(asset, /【验收清单】N\/N 全部完成/u);
+  assert.match(asset, /exact number of frozen contract items/u);
+  assert.match(asset, /Only two item states are valid/u);
+  assert.match(asset, /Never use '\[~\]'/u);
+  assert.match(asset, /checked item saying the target was not met/u);
+  assert.match(asset, /Do not restate the full checklist in later replies/u);
+  assert.match(asset, /listing just the changed items/u);
+  assert.match(asset, /Highest-priority output rule/u);
+  assert.match(asset, /acceptance-evidence\.md/u);
+  assert.match(asset, /one-line conclusions, key numbers, and the evidence file path/u);
+  assert.match(asset, /preloaded shell helper `ev <cmd\.\.\.>`/u);
+  assert.match(asset, /Never re-type command outputs/u);
+  assert.match(launcher, /function syncAgentsProtocol\(\)/u);
+  assert.match(launcher, /syncAgentsProtocol\(\);/u);
+  assert.match(launcher, /assets", "pi-agents-protocol\.md"/u);
 });
 
-test('persistence prompt teaches completed-state collapse and evidence-to-file protocol', () => {
-  // 与 lop-chain collapsedAcceptanceChecklist 的协议闭环:任一端被单边删改时此钉先红。
-  const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
-  assert.match(source, /【验收清单】N\/N 全部完成/u);
-  assert.match(source, /exact number of frozen contract items/u);
-  assert.match(source, /acceptance-evidence\.md/u);
-  assert.match(source, /one-line conclusions, key numbers, and the evidence file path/u);
-  // v13 增量协议 + 最高优先级落盘规则(2026-09-01 lop 裁决)。
-  assert.match(source, /Highest-priority output rule/u);
-  assert.match(source, /Do not restate the full checklist in later replies/u);
-  assert.match(source, /listing just the changed items/u);
-});
-
-// v7.16.0 pi 形态:pi-ai 序列化=单条 developer 字符串系统提示 + user 块数组。
+// pi 形态:pi-ai 序列化=单条 developer 字符串系统提示 + user 块数组。
 function piPayload(task, turns = 1) {
   const input = [
-    { role: 'developer', content: 'PI 系统提示常量前缀,含 Autonomy and Persistence 附录。' },
+    { role: 'developer', content: 'PI 系统提示常量前缀(含 AGENTS 协议块)。' },
     { role: 'user', content: [{ type: 'input_text', text: task }] },
   ];
   for (let i = 1; i < turns; i += 1) {
@@ -127,7 +111,6 @@ test('pi string-form developer prompt gets a cache key without content mutation 
   const { key, meta } = rewriteKey(payload);
   assert.equal(meta.cache.itemIndex, 0);
   assert.equal(meta.cache.blockIndex, -1);
-  // 字符串边界无块可挂断点:即使 explicitBreakpoint 默认开也必须恒 key-only。
   assert.equal(meta.cache.breakpointApplied, false);
   assert.match(key, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   const out = JSON.parse(rewriteCodexRequestBody(
@@ -162,18 +145,12 @@ test('codex block-form developer prefix keeps explicit breakpoint behavior (v7.1
   assert.deepEqual(out.input[0].content[0].prompt_cache_breakpoint, { mode: 'explicit' });
 });
 
-test('memo replays equivalent SSE while replacing 8-16 hex history token', () => {
-  const memo = new ExactResponseMemo();
-  const body = Buffer.from('data: {"type":"response.output_text.done","text":"ok <!-- history-used:h_1234567890abcdef -->"}\n\n');
-  assert.equal(memo.set('same', {
-    statusCode: 200,
-    headers: { 'content-type': 'text/event-stream', 'content-length': String(body.length) },
-    body,
-    usageToken: 'h_1234567890abcdef',
-  }), true);
-  const replay = memo.get('same', 'h_abcdef12');
-  assert.equal(replay.statusCode, 200);
-  assert.match(replay.body.toString('utf8'), /history-used:h_abcdef12/u);
-  assert.doesNotMatch(replay.body.toString('utf8'), /h_1234567890abcdef/u);
-  assert.equal(replay.headers['x-lop-exact-response-cache'], 'hit');
+test('non-JSON or unsupported bodies pass through untouched (fail-open)', () => {
+  const raw = Buffer.from('not json');
+  const rewritten = rewriteCodexRequestBody(raw, { 'content-type': 'application/json' }, {});
+  assert.equal(rewritten.meta.parseFailed, true);
+  assert.equal(rewritten.body, raw);
+  const other = rewriteCodexRequestBody(Buffer.from(JSON.stringify({ model: 'gpt-4.1', input: [] })), { 'content-type': 'application/json' }, {});
+  assert.equal(other.meta.cacheApplied, false);
+  assert.equal(other.meta.cache.reason, 'unsupported-model');
 });
