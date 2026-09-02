@@ -3,6 +3,7 @@
 // 用法: node patch-piweb-fold.mjs [--pkg <包目录>] [--backup <原始备份目录>] [--upgrade-backup <升级前备份目录>] [--check]
 // 约束: 仅 0.8.11；任一锚点命中数不符 => 中止且零写入；可重入（v1-v3 自动补齐到 v4）。
 // 回滚: upgrade-backup 整体拷回 .next 对应路径并删除 page-f01dc0de20260831.js；或用原始 backup 全量回滚；随后重启服务。旧 chunk 会保留，避免运行中的旧进程 404。
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,12 +130,33 @@ function applyR2c(src, label) {
 }
 
 // ---------- 可重入升级：v1-v3 补齐语义补丁，并换 page chunk URL 绕过 SW cacheFirst ----------
-const stage = [
-  { name: "v4", file: pageClientNew, hash: PAGE_NEW },
-  { name: "v3", file: pageClientV3, hash: PAGE_V3 },
-  { name: "v1", file: pageClientV1, hash: PAGE_V1 },
-].find((candidate) => fs.existsSync(candidate.file));
+// stage 以 server 侧当前引用的 page chunk 为准,而不是按固定文件名猜:链尾补丁(draft/interactions/
+// hide-*/drop-auto)会把 chunk 改名成 pw…,旧的 f01dc0de… 文件只是被保留的孤儿,按它找引用必为 0
+// (对端 DESKTOP-3EGB4LB 2026-09-01→09-02 fold 每次冷启都 ABORT,R3 隐藏工具卡从未落地)。
+const refManifest = path.join(PKG, ".next", "server", "app", "page_client-reference-manifest.js");
+const refHashes = fs.existsSync(refManifest)
+  ? [...new Set([...fs.readFileSync(refManifest, "utf8").matchAll(/static\/chunks\/app\/page-([a-z0-9]+)\.js/g)].map((m) => m[1]))]
+  : [];
+if (refHashes.length > 1) die(`page chunk 引用解析异常: ${JSON.stringify(refHashes)}`);
+const refHash = refHashes[0];
+const stage = (() => {
+  if (!refHash || refHash === PAGE_OLD) return [
+    { name: "v4", file: pageClientNew, hash: PAGE_NEW },
+    { name: "v3", file: pageClientV3, hash: PAGE_V3 },
+    { name: "v1", file: pageClientV1, hash: PAGE_V1 },
+  ].find((candidate) => fs.existsSync(candidate.file));
+  const file = path.join(chunkDir, `page-${refHash}.js`);
+  if (!fs.existsSync(file)) die("当前引用的 page chunk 不存在: " + file);
+  const known = { [PAGE_NEW]: "v4", [PAGE_V3]: "v3", [PAGE_V1]: "v1" }[refHash];
+  if (known) return { name: known, file, hash: refHash, target: PAGE_NEW };
+  // 链式 pw… chunk:补齐 R2b/R2c/R3 后等长改名(pwf+13hex,指纹含当前 hash+内容),绕过 SW cacheFirst。
+  const digest = crypto.createHash("sha256").update(refHash + PAGE_NEW + fs.readFileSync(file, "utf8")).digest("hex");
+  const target = ("pwf" + digest).slice(0, refHash.length);
+  return { name: "chained", file, hash: refHash, target, chained: true };
+})();
 if (stage) {
+  const TARGET = stage.target ?? PAGE_NEW;
+  const targetFile = path.join(chunkDir, `page-${TARGET}.js`);
   let cs = fs.readFileSync(stage.file, "utf8");
   let ss = fs.readFileSync(pageServer, "utf8");
   const edits = [];
@@ -152,7 +174,7 @@ if (stage) {
     if (legacy.applied) legacyPageWrites.push({ file, out: legacy.out });
   }
 
-  const needsRename = stage.hash !== PAGE_NEW;
+  const needsRename = stage.chained ? edits.length > 0 : stage.hash !== PAGE_NEW;
   const refEdits = [];
   if (needsRename) {
     (function walk(d) {
@@ -162,19 +184,19 @@ if (stage) {
         if (path.resolve(p) === path.resolve(pageServer)) continue;
         const s = fs.readFileSync(p, "utf8");
         const count = s.split(stage.hash).length - 1;
-        if (count > 0) refEdits.push({ file: p, count, out: s.replaceAll(stage.hash, PAGE_NEW) });
+        if (count > 0) refEdits.push({ file: p, count, out: s.replaceAll(stage.hash, TARGET) });
       }
     })(path.join(PKG, ".next", "server", "app"));
     if (refEdits.reduce((sum, item) => sum + item.count, 0) < 1) die(`${stage.name}: page chunk 引用未找到，拒绝改名`);
-    ss = ss.replaceAll(stage.hash, PAGE_NEW);
+    ss = ss.replaceAll(stage.hash, TARGET);
   }
 
   if (CHECK) {
-    console.log(JSON.stringify({ status: "check-ok", mode: "reentrant", from: stage.name, target: "v4", edits, legacyPageEdits: legacyPageWrites.length, needsRename, refFiles: refEdits.length }));
+    console.log(JSON.stringify({ status: "check-ok", mode: "reentrant", from: stage.name, target: "v4", chunk: { from: `page-${stage.hash}.js`, to: `page-${needsRename ? TARGET : stage.hash}.js` }, edits, legacyPageEdits: legacyPageWrites.length, needsRename, refFiles: refEdits.length }));
     process.exit(0);
   }
   if (!edits.length && !legacyPageWrites.length && !needsRename) {
-    console.log(JSON.stringify({ status: "already-patched", mode: "v4", hideAgentToolCalls: true, legacyPagesPatched: true, pkg: PKG }));
+    console.log(JSON.stringify({ status: "already-patched", mode: "v4", chunk: `page-${stage.hash}.js`, hideAgentToolCalls: true, legacyPagesPatched: true, pkg: PKG }));
     process.exit(0);
   }
 
@@ -187,13 +209,13 @@ if (stage) {
     fs.copyFileSync(file, dst);
   }
 
-  fs.writeFileSync(pageClientNew, cs);
+  fs.writeFileSync(needsRename ? targetFile : stage.file, cs);
   fs.writeFileSync(pageServer, ss);
   for (const item of legacyPageWrites) fs.writeFileSync(item.file, item.out);
   for (const item of refEdits) fs.writeFileSync(item.file, item.out);
   // 不删 stage.file：运行中的 Next 进程可能仍返回旧 hash；保留旧 chunk 才能零中断。
   console.log(JSON.stringify({
-    status: "upgraded", from: stage.name, target: "v4", edits,
+    status: "upgraded", from: stage.name, target: "v4", chunk: { from: `page-${stage.hash}.js`, to: `page-${needsRename ? TARGET : stage.hash}.js` }, edits,
     hideAgentToolCalls: true, pageRenamed: needsRename, previousPageRetained: needsRename,
     legacyPagesPatched: legacyPageWrites.length, refFilesRenamed: refEdits.length, upgradeBackup: UPGRADE_BACKUP, pkg: PKG,
   }));
