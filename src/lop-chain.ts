@@ -8,7 +8,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "s8-recovery-canonical-v18";
+export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-write-side-v19";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -231,9 +231,13 @@ const CHECKLIST_STATE_TYPE = "lop-checklist-goal-state";
 const RUN_CONTROL_TYPE = "lop-run-control";
 const BEST_OF_N_TYPE = "lop-best-of-n";
 const RUN_SUPERVISOR_RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
+// 记忆标记状态差门(写入侧 v3):本轮有状态变更且最终回复缺 lop-memory-event 标记时追一轮补标记。
+const MEMORY_GATE_TYPE = "lop-memory-gate";
+const MEMORY_MUTATING_TOOL = /^(?:write|edit|multi_edit|multiedit|notebook_edit|notebookedit|apply_patch|write_file|edit_file|create_file)$/iu;
+const MEMORY_MUTATING_COMMAND = /(?:^|[\s;&|(])(?:rm|mv|cp|mkdir|rmdir|del|erase|move|copy|xcopy|robocopy|touch|tee|truncate|chmod|chown|sed\s+-i|git\s+(?:commit|push|add|checkout|reset|merge|rebase|tag|rm|mv|stash|apply|cherry-pick|worktree)|npm\s+(?:install|i|ci|uninstall|publish|link)|pip\s+install|pnpm\s+(?:add|install)|schtasks|scp|sftp|new-item|set-content|add-content|out-file|remove-item|copy-item|move-item|rename-item|mklink|reg\s+add|wget|dd)\b|(?:^|[^<>|])>{1,2}\s*(?!&|\/dev\/null|nul\b)[^&|\s]/iu;
 const TURN_SCOPED_CUSTOM_TYPES = new Set([
   "lop-chain", COMPLETION_GUARD_TYPE, GOAL_GATE_TYPE, HISTORY_GUARD_TYPE,
-  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE, RUN_CONTROL_TYPE, BEST_OF_N_TYPE,
+  ADVERSARY_REDELIVERY_TYPE, CHECKLIST_GATE_TYPE, RUN_CONTROL_TYPE, BEST_OF_N_TYPE, MEMORY_GATE_TYPE,
 ]);
 // 目标门:用户在消息里显式声明一条可执行校验命令,agent_end 时 exit!=0 就自动续跑。
 // 只认显式声明(【目标门】/[goal-gate] 行),不做任何语义猜测——"不达标不许交付"类
@@ -988,6 +992,10 @@ export default function (pi: ExtensionAPI) {
   let runtimeReloadQueued = false;
   let checklistGoal: ChecklistGoalState | null = null;
   let runHadTool = false;
+  let turnMutated = false;
+  let turnToolFiles: string[] = [];
+  let turnToolCommands: string[] = [];
+  let memoryGateRetryActive = false;
   // 目标门状态:会话生命周期内持续,直到用户显式关闭或被新目标门覆盖。
   // auto=由 auto-gate 生成安装(exhausted 时降级清门而非锁死会话);
   // bestOfNUsed=单门生命周期内 fan-out 只允许一次(防额度爆炸);
@@ -1284,7 +1292,11 @@ export default function (pi: ExtensionAPI) {
     if (checklistRetryActive) { log(`CHECKLIST_GOAL continuation=${checklistGoal?.continuationCount || 0} skip reinject`); return; }
     if (historyRetryActive) { log(`S3 USAGE_RETRY ${historyRetryCount}/2 skip reinject`); return; }
     if (completionRetryActive) { log("COMPLETION_GUARD retry skip reinject"); return; }
+    if (memoryGateRetryActive) { log("MEMORY_GATE retry skip reinject"); return; }
     turnStartedAt = performance.now();
+    turnMutated = false;
+    turnToolFiles = [];
+    turnToolCommands = [];
     deterministicDraftActive = false;
     modelTurnDurations = [];
     modelTtfbDurations = [];
@@ -1418,6 +1430,9 @@ export default function (pi: ExtensionAPI) {
             ...opts,
             candidateQuery: expanded.forHistory,
             associationTerms: expanded.historyTerms.join(" "),
+            // 写入侧 v3:resolver 只认 expansionTerms/expansionAllTerms 扩池,此前扩写二次检索是空操作。
+            expansionTerms: expanded.historyTerms.slice(0, 8),
+            expansionAllTerms: expanded.historyTerms,
           });
           if (expandedResult?.hit) { resolved = expandedResult; viaExpansion = true; }
           phase.s3ExpandedReason = expandedResult?.reason || "-";
@@ -1602,6 +1617,17 @@ export default function (pi: ExtensionAPI) {
   // S7 工具红线:复用 rules-pretool;S6 预审就绪则执行阶段早投递(防长任务超 TTL)
   pi.on("tool_call", async (event: any) => {
     runHadTool = true;
+    // 工具锚点与状态变更记账(写入侧 v3):供 Stop 落账结构化锚点与记忆标记门判定;失败留痕不阻断。
+    try {
+      const toolName = String(event?.toolName || "").trim().toLowerCase();
+      const input = event?.input && typeof event.input === "object" ? event.input : {};
+      const commandValue = input.command ?? input.cmd ?? "";
+      const command = Array.isArray(commandValue) ? commandValue.join(" ") : String(commandValue || "");
+      const file = String(input.path || input.file_path || input.filePath || input.notebook_path || "").trim();
+      if (MEMORY_MUTATING_TOOL.test(toolName) || (command && MEMORY_MUTATING_COMMAND.test(command))) turnMutated = true;
+      if (file && turnToolFiles.length < 16 && !turnToolFiles.includes(file)) turnToolFiles.push(file);
+      if (command && turnToolCommands.length < 8) turnToolCommands.push(command.replace(/\s+/g, " ").slice(0, 160));
+    } catch (e) { log(`MEMORY_ANCHORS FAIL_OPEN ${String(e).slice(0, 120)}`); }
     if (!advRedelivery && !advDeliveredTurn) {
       try {
         const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
@@ -2032,6 +2058,35 @@ export default function (pi: ExtensionAPI) {
     }
     historyRetryActive = false;
 
+    // 记忆标记状态差门(写入侧 v3):有状态变更且最终回复无标记 → 追一轮补标记(每轮最多一次);
+    // 纯问答不阻断;判定或发送失败 fail-open 留痕;补标记轮回来直接落账。
+    if (prompt && text && !memoryGateRetryActive && lastAssistant?.stopReason === "stop" &&
+        !ctx?.hasPendingMessages?.() && !prompt.startsWith(RUN_SUPERVISOR_RECOVERY_PREFIX)) {
+      try {
+        const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
+        const gate = mem.decideStopGate({ mutated: turnMutated, lastAssistantMessage: text, stopHookActive: false });
+        if (gate.block) {
+          memoryGateRetryActive = true;
+          log(`MEMORY_GATE BLOCK reason=${gate.reason} files=${turnToolFiles.length} cmds=${turnToolCommands.length}`);
+          metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, memoryGate: "block" });
+          pi.sendMessage({
+            customType: MEMORY_GATE_TYPE,
+            content: String(gate.instruction || ""),
+            display: false,
+            details: { reason: gate.reason, files: turnToolFiles.slice(0, 8) },
+          }, { deliverAs: "followUp", triggerTurn: true });
+          return;
+        }
+        if (turnMutated) log(`MEMORY_GATE PASS reason=${gate.reason}`);
+      } catch (e) {
+        log(`MEMORY_GATE FAIL_OPEN ${String(e).slice(0, 160)}`);
+      }
+    }
+    if (memoryGateRetryActive) {
+      memoryGateRetryActive = false;
+      log("MEMORY_GATE RETRY_CONSUMED");
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...lastPhase, memoryGate: "retry-consumed" });
+    }
     const t8 = performance.now();
     try {
       if (prompt && text) {
@@ -2057,7 +2112,10 @@ export default function (pi: ExtensionAPI) {
             session_id: sessionId,
             turn_id: "",
             prompt: canonicalPrompt,
-            last_assistant_message: persistenceText,
+            // 原文(含标记)供标记解析;存储正文用剥离清单/凭证/标记后的 persistenceText。
+            last_assistant_message: text,
+            memory_answer: persistenceText,
+            memory_tool_anchors: { files: turnToolFiles, commands: turnToolCommands, mutated: turnMutated },
             transcript_path: "",
           });
           if (saved?.skipped || saved?.disabled) {

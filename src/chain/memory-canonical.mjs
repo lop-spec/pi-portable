@@ -3,10 +3,95 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-export const CANONICAL_SCHEMA_VERSION = 2;
+export const CANONICAL_SCHEMA_VERSION = 3;
 export const OUTCOMES = Object.freeze([
   '已采纳', '已纠正', '已确认', '已完成', '待处理', '不支持', '仅讨论',
 ]);
+// 可信度分级(写入侧 v3):verified=有验证命令/读回证据;claimed=模型自述完成无证据;
+// extracted=空闲/离线模型抽取(历史推断);derived=确定性派生;inferred=未经验证的历史推断。
+export const VERIFICATIONS = Object.freeze(['verified', 'claimed', 'extracted', 'derived', 'inferred']);
+export const MODEL_EVENT_SOURCES = Object.freeze(['stop-marker', 'offline-purifier-v2', 'idle-extract-v1']);
+const ANCHOR_KINDS = Object.freeze(['file', 'component', 'topic', 'command', 'id']);
+const ANCHOR_MAX = 24;
+const EVIDENCE_MAX = 12;
+
+function normalizeAnchorValue(kind, value) {
+  let text = normalizeSpace(value);
+  if (!text) return '';
+  if (kind === 'file' || kind === 'command') text = text.replace(/\\/g, '/');
+  if (kind === 'file') text = text.replace(/^["'`]+|["'`]+$/g, '');
+  if (kind !== 'topic' && kind !== 'component') text = text.toLowerCase();
+  return limitChars(text, kind === 'command' ? 160 : 120);
+}
+
+// 结构化锚点:接受模型输出 {files,components,topics,commands,ids} 或 [{kind,value}] 或字符串数组。
+export function normalizeAnchors(input) {
+  const out = [];
+  const seen = new Set();
+  const push = (kind, value) => {
+    if (!ANCHOR_KINDS.includes(kind)) return;
+    const normalized = normalizeAnchorValue(kind, value);
+    if (!normalized || normalized.length < 2) return;
+    const key = kind + '\u0000' + normalized.toLowerCase();
+    if (seen.has(key) || out.length >= ANCHOR_MAX) return;
+    seen.add(key);
+    out.push({ kind, value: normalized });
+  };
+  const guessKind = (value) => {
+    const text = String(value || '');
+    if (/[\\/]|\.(?:mjs|cjs|js|ts|tsx|jsx|jsonl?|toml|ya?ml|md|sql|py|ps1|exe|dll|vbs|cmd|txt|log|sqlite3?)$/iu.test(text)) return 'file';
+    if (/^(?:node|npm|npx|git|python|py|pwsh|powershell|ssh|scp|curl|schtasks|sqlite3)\b/iu.test(text) || /\s--?[a-z]/iu.test(text)) return 'command';
+    if (/^[\p{Script=Han}]{2,12}$/u.test(text)) return 'topic';
+    return 'component';
+  };
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      if (item && typeof item === 'object') push(String(item.kind || guessKind(item.value)), item.value);
+      else push(guessKind(item), item);
+    }
+  } else if (input && typeof input === 'object') {
+    const groups = [
+      ['file', input.files], ['component', input.components], ['topic', input.topics],
+      ['command', input.commands], ['id', input.ids],
+    ];
+    for (const [kind, values] of groups) {
+      for (const value of Array.isArray(values) ? values : []) push(kind, value);
+    }
+  }
+  return out;
+}
+
+export function normalizeEvidence(input) {
+  const out = [];
+  for (const item of Array.isArray(input) ? input : (input ? [input] : [])) {
+    const text = limitChars(normalizeSpace(item), 200);
+    if (text && !out.includes(text) && out.length < EVIDENCE_MAX) out.push(text);
+  }
+  return out;
+}
+
+export function normalizeVerification(value, fallback = 'claimed') {
+  const text = normalizeSpace(value).toLowerCase();
+  return VERIFICATIONS.includes(text) ? text : fallback;
+}
+
+export function anchorsText(anchors) {
+  return normalizeAnchors(anchors).map((item) => {
+    if (item.kind !== 'file') return item.value;
+    const base = item.value.split('/').at(-1) || item.value;
+    return base === item.value ? item.value : item.value + ' ' + base;
+  }).join(' ');
+}
+
+export function verificationRank(value) {
+  const index = VERIFICATIONS.indexOf(normalizeVerification(value, 'inferred'));
+  return index < 0 ? VERIFICATIONS.length : index;
+}
+
+function anchorsFromRow(row) {
+  const parsed = safeJson(row?.anchors_json ?? row?.anchorsJson, []);
+  return normalizeAnchors(parsed);
+}
 const STRONG_RELATIVE_SCORE_RATIO = 0.7;
 
 function nowIso() {
@@ -113,6 +198,9 @@ export function deriveMemoryMarker(input = {}) {
     summary20,
     outcome,
     categoryPaths: derivedCategoryPaths(prompt),
+    anchors: normalizeAnchors(input.anchors),
+    evidence: normalizeEvidence(input.evidence),
+    verification: 'derived',
   };
   if (charLength(marker.semanticFull) < 4 || charLength(marker.summary20) < 2 ||
       !marker.categoryPaths.length) return { ok: false, reason: 'invalid-derived-marker' };
@@ -230,11 +318,35 @@ export function ensureCanonicalSchema(db) {
     ');',
     'CREATE INDEX IF NOT EXISTS event_categories_category_idx ON event_categories(category_id,is_primary,event_id);',
     'CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);',
-    "CREATE VIRTUAL TABLE IF NOT EXISTS memory_events_fts USING fts5(",
-    " event_id UNINDEXED, summary_terms, semantic_terms, category_terms,",
-    " tokenize='unicode61 remove_diacritics 2'",
+    'CREATE TABLE IF NOT EXISTS anchor_lexicon (',
+    ' term TEXT PRIMARY KEY, kind TEXT NOT NULL, df INTEGER NOT NULL DEFAULT 0,',
+    ' sessions INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL',
     ');',
+    'CREATE INDEX IF NOT EXISTS anchor_lexicon_sessions_idx ON anchor_lexicon(sessions DESC);',
   ].join('\n'));
+  const eventColumns = new Set(db.prepare('PRAGMA table_info(memory_events)').all().map((row) => row.name));
+  for (const [name, definition] of [
+    ['anchors_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ['evidence_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ['verification', "TEXT NOT NULL DEFAULT ''"],
+  ]) {
+    if (!eventColumns.has(name)) db.exec(`ALTER TABLE memory_events ADD COLUMN ${name} ${definition}`);
+  }
+  const ftsColumns = hasTable(db, 'memory_events_fts')
+    ? new Set(db.prepare('PRAGMA table_info(memory_events_fts)').all().map((row) => row.name))
+    : new Set();
+  if (!ftsColumns.has('anchor_terms')) {
+    // v2 → v3:FTS 增加 anchor_terms 列只能重建(fts5 不支持 ALTER);事件表是真值,可完整重放。
+    if (hasTable(db, 'memory_events_fts')) db.exec('DROP TABLE memory_events_fts');
+    db.exec([
+      'CREATE VIRTUAL TABLE memory_events_fts USING fts5(',
+      ' event_id UNINDEXED, summary_terms, semantic_terms, category_terms, anchor_terms,',
+      " tokenize='unicode61 remove_diacritics 2'",
+      ');',
+    ].join('\n'));
+    rebuildFts(db);
+    setMeta(db, 'canonical_schema', CANONICAL_SCHEMA_VERSION);
+  }
   return db;
 }
 
@@ -270,9 +382,9 @@ function semanticTokens(value, maxTokens = 4096) {
   return [...out].slice(0, maxTokens);
 }
 
-function ftsExpression(value, columns = []) {
+function ftsExpression(value, columns = [], maxTokens = 64) {
   const scope = columns.length ? '{' + columns.join(' ') + '} : ' : '';
-  return semanticTokens(value, 64).map((token) =>
+  return semanticTokens(value, maxTokens).map((token) =>
     scope + '"' + token.replace(/"/g, '""') + '"'
   ).join(' OR ');
 }
@@ -292,13 +404,14 @@ function indexEvent(db, eventId) {
   const categoryPaths = eventCategoryPaths(db, eventId);
   const categoryText = categoryPaths.map((item) => item.join(' ')).join(' ');
   db.prepare([
-    'INSERT INTO memory_events_fts(event_id,summary_terms,semantic_terms,category_terms)',
-    'VALUES(?,?,?,?)',
+    'INSERT INTO memory_events_fts(event_id,summary_terms,semantic_terms,category_terms,anchor_terms)',
+    'VALUES(?,?,?,?,?)',
   ].join(' ')).run(
     eventId,
     semanticTokens(event.summary20, 256).join(' '),
     semanticTokens(event.semantic_full, 4096).join(' '),
-    semanticTokens(categoryText, 512).join(' ')
+    semanticTokens(categoryText, 512).join(' '),
+    semanticTokens(anchorsText(safeJson(event.anchors_json, [])), 512).join(' ')
   );
 }
 
@@ -563,16 +676,39 @@ function semanticTokenWeight(token) {
 }
 
 function rankCandidates(db, rows, wantedText, options = {}) {
+  if (options.rankMode === 'bm25') {
+    // resolver 路径:候选随后由 scoreAssociation 重打分,这里只保留 bm25 顺序与字段(省 ~100ms/次)。
+    return rows.map((row) => ({
+      eventId: row.event_id,
+      sessionId: row.session_id,
+      semanticFull: row.semantic_full,
+      summary20: row.summary20,
+      outcome: row.outcome,
+      firstAt: row.first_at,
+      lastAt: row.last_at,
+      needsCategory: Boolean(row.needs_category),
+      categoryPaths: [],
+      source: row.source,
+      verification: normalizeVerification(row.verification, row.source === 'derived-completion' ? 'derived' : 'inferred'),
+      anchors: anchorsFromRow(row),
+      overlap: 0,
+      wantedWeight: 0,
+      coverage: 0,
+      bm25: Number.isFinite(Number(row.rank)) ? -Number(row.rank) : 0,
+      score: Number.isFinite(Number(row.rank)) ? -Number(row.rank) : 0,
+    }));
+  }
   const wanted = new Set(semanticTokens(wantedText, 128));
   const wantedWeight = [...wanted].reduce((sum, token) => sum + semanticTokenWeight(token), 0);
   return rows.map((row) => {
-    const categoryPaths = eventCategoryPaths(db, row.event_id);
+    // semanticOnly 检索不需要分类路径:省掉每候选一次分类查询与分类分词(200 候选实测 ~100ms)。
+    const categoryPaths = options.includeCategoryTerms === false ? [] : eventCategoryPaths(db, row.event_id);
     const available = new Set(semanticTokens(
-      row.summary20 + '\n' + row.semantic_full + '\n' +
+      row.summary20 + '\n' + row.semantic_full + '\n' + anchorsText(safeJson(row.anchors_json, [])) + '\n' +
       (options.includeCategoryTerms === false
         ? ''
         : categoryPaths.map((item) => item.join(' ')).join('\n')),
-      4096
+      options.includeCategoryTerms === false ? 1536 : 4096
     ));
     let overlap = 0;
     for (const token of wanted) {
@@ -592,6 +728,9 @@ function rankCandidates(db, rows, wantedText, options = {}) {
       lastAt: row.last_at,
       needsCategory: Boolean(row.needs_category),
       categoryPaths,
+      source: row.source,
+      verification: normalizeVerification(row.verification, row.source === 'derived-completion' ? 'derived' : 'inferred'),
+      anchors: anchorsFromRow(row),
       overlap,
       wantedWeight,
       coverage: wantedWeight ? overlap / wantedWeight : 1,
@@ -608,12 +747,15 @@ function queryCanonicalEventsSingle(db, prompt, options = {}) {
   const limit = Math.max(1, Math.min(500, Number(options.limit) || 150));
   const sessionId = String(options.sessionId || '');
   const semanticOnly = options.semanticOnly === true;
-  const match = ftsExpression(prompt, semanticOnly ? ['summary_terms', 'semantic_terms'] : []);
+  // resolver(semanticOnly+bm25):分类列权重为 0,列作用域不改变结果集只增加匹配成本;词数 40 足够。
+  const match = options.rankMode === 'bm25'
+    ? ftsExpression(prompt, [], 28)
+    : ftsExpression(prompt, semanticOnly ? ['summary_terms', 'semantic_terms', 'anchor_terms'] : []);
   let rows;
   if (match) {
     rows = db.prepare([
       'SELECT e.*,bm25(memory_events_fts,0.0,8.0,3.0,' +
-        (semanticOnly ? '0.0' : '6.0') + ') rank',
+        (semanticOnly ? '0.0' : '6.0') + ',10.0) rank',
       'FROM memory_events_fts JOIN memory_events e ON e.event_id=memory_events_fts.event_id',
       "WHERE memory_events_fts MATCH ? AND (?='' OR e.session_id<>?)",
       'ORDER BY rank,e.last_at DESC LIMIT ?',
@@ -624,7 +766,7 @@ function queryCanonicalEventsSingle(db, prompt, options = {}) {
       "WHERE (?='' OR e.session_id<>?) ORDER BY e.last_at DESC LIMIT ?",
     ].join(' ')).all(sessionId, sessionId, limit);
   }
-  return rankCandidates(db, rows, prompt, { includeCategoryTerms: !semanticOnly });
+  return rankCandidates(db, rows, prompt, { includeCategoryTerms: !semanticOnly, rankMode: options.rankMode });
 }
 
 export function queryCanonicalEvents(db, prompt, options = {}) {
@@ -851,14 +993,34 @@ export function parseMemoryMarker(value) {
   const outcome = normalizeSpace(parsed.outcome);
   const categoryPaths = (Array.isArray(parsed.categoryPaths) ? parsed.categoryPaths : [])
     .map(normalizedCategoryPath).filter(Boolean).slice(0, 8);
-  if (charLength(semanticFull) < 4 || charLength(semanticFull) > 2000 ||
-      semanticFull.includes('[中段省略]')) return { ok: false, reason: 'invalid-semantic-full' };
-  if (charLength(summary20) < 2 || charLength(summary20) > 20) {
-    return { ok: false, reason: 'invalid-summary20' };
-  }
+  if (charLength(semanticFull) < 4 || semanticFull.includes('[中段省略]')) return { ok: false, reason: 'invalid-semantic-full' };
+  // 宽容解析(写入侧 v3):模型多写几个字不应整条丢弃——超长截断,缺摘要从语义首句取,缺分类走派生。
+  let summary20Text = summary20;
+  if (charLength(summary20Text) > 20) summary20Text = limitChars(summary20Text, 20);
+  if (charLength(summary20Text) < 2) summary20Text = limitChars(semanticFull.replace(/^(?:用户目标[:：]?)/u, ''), 20);
+  const semanticFullText = limitChars(semanticFull, 2000);
   if (!OUTCOMES.includes(outcome)) return { ok: false, reason: 'invalid-outcome' };
-  if (!categoryPaths.length) return { ok: false, reason: 'invalid-category-paths' };
-  return { ok: true, semanticFull, summary20, outcome, categoryPaths };
+  const categoryPathsText = categoryPaths.length ? categoryPaths : derivedCategoryPaths(semanticFullText);
+  if (!categoryPathsText.length) return { ok: false, reason: 'invalid-category-paths' };
+  const anchors = normalizeAnchors(parsed.anchors);
+  const evidence = normalizeEvidence(parsed.evidence);
+  const verification = normalizeVerification(parsed.verification, evidence.length ? 'verified' : 'claimed');
+  return {
+    ok: true, semanticFull: semanticFullText, summary20: summary20Text, outcome,
+    categoryPaths: categoryPathsText, anchors, evidence, verification,
+    lenient: summary20Text !== summary20 || semanticFullText !== semanticFull || categoryPathsText !== categoryPaths,
+  };
+}
+
+// 完成态回复必须附带的隐藏标记模板(单一来源,供 Stop 门与规则投影引用)。
+export function memoryMarkerInstruction(options = {}) {
+  const compact = options.compact === true;
+  const template = '<!-- lop-memory-event {"semanticFull":"用户目标+关键边界+最终有效结论","summary20":"≤20字结论短句","outcome":"已完成|已确认|已纠正|已采纳|待处理|不支持|仅讨论","categoryPaths":[["一级","二级","三级"]],"anchors":{"files":[],"components":[],"topics":[],"commands":[]},"evidence":["验证命令或读回"],"verification":"verified|claimed|inferred"} -->';
+  if (compact) return template;
+  return [
+    '本轮有状态变更但最终回复缺少记忆标记。请重新给出完整最终回复，并在末尾原样附加一行隐藏标记(HTML 注释，JSON 单行，semanticFull ≤2000 字、summary20 2-20 字、categoryPath 每级 1-5 字，anchors 只填真实涉及的文件/组件/主题/命令，evidence 只填实际执行过的验证命令或读回，verification 按证据如实选择)：',
+    template,
+  ].join('\n');
 }
 
 function inputContentHash(prompt, answer) {
@@ -938,12 +1100,26 @@ export function recordCanonicalTurn(db, input, options = {}) {
       lastAssistantMessage: input.lastAssistantMessage,
       summary20: input.summary20,
       contextPrompt: input.contextPrompt || input.relatedTurns?.at?.(-1)?.prompt || '',
+      anchors: input.turnAnchors,
+      evidence: input.turnEvidence,
     });
   }
   if (!marker.ok) {
     saveInbox(db, normalizedInput, marker.reason);
     return { saved: false, inbox: true, reason: marker.reason, inputId: normalizedInput.inputId };
   }
+  // 宿主提供的工具锚点(文件/命令)与模型标记并集:模型漏填不丢对象,模型填了不重复。
+  const mergedAnchors = normalizeAnchors([
+    ...normalizeAnchors(marker.anchors),
+    ...normalizeAnchors(input.turnAnchors),
+  ]);
+  const mergedEvidence = normalizeEvidence([
+    ...normalizeEvidence(marker.evidence),
+    ...normalizeEvidence(input.turnEvidence),
+  ]);
+  const verification = marker.derived
+    ? 'derived'
+    : normalizeVerification(marker.verification, mergedEvidence.length ? 'verified' : 'claimed');
   const existing = db.prepare(
     'SELECT event_id eventId FROM memory_event_inputs WHERE input_id=?'
   ).get(normalizedInput.inputId);
@@ -954,13 +1130,16 @@ export function recordCanonicalTurn(db, input, options = {}) {
     const at = nowIso();
     db.prepare([
       'INSERT INTO memory_events(event_id,session_id,semantic_full,summary20,outcome,first_at,last_at,',
-      'source,needs_category,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,0,?,?)',
+      'source,needs_category,created_at,updated_at,anchors_json,evidence_json,verification)',
+      'VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?)',
       'ON CONFLICT(event_id) DO UPDATE SET semantic_full=excluded.semantic_full,summary20=excluded.summary20,',
-      'outcome=excluded.outcome,last_at=excluded.last_at,source=excluded.source,updated_at=excluded.updated_at',
+      'outcome=excluded.outcome,last_at=excluded.last_at,source=excluded.source,updated_at=excluded.updated_at,',
+      'anchors_json=excluded.anchors_json,evidence_json=excluded.evidence_json,verification=excluded.verification',
     ].join(' ')).run(
       eventId, normalizedInput.sessionId, marker.semanticFull, marker.summary20, marker.outcome,
       normalizedInput.timestamp, normalizedInput.timestamp,
-      marker.derived ? 'derived-completion' : 'stop-marker', at, at
+      marker.derived ? 'derived-completion' : 'stop-marker', at, at,
+      JSON.stringify(mergedAnchors), JSON.stringify(mergedEvidence), verification
     );
     db.prepare([
       'INSERT INTO memory_event_inputs(input_id,event_id,session_id,turn_id,selected_turn_key,ordinal)',
@@ -1050,6 +1229,8 @@ export function recordCanonicalTurn(db, input, options = {}) {
         }
       }
     }
+    // 分类不设容量门(写入侧 v3):叶子超限只标记 split_needed 供周任务拆分,事件照常入库、
+    // 照常可召回。旧容量门曾把 2853 条完成态堆进 inbox(category-capacity-full)。
     for (const categoryPath of marker.categoryPaths) {
       const id = ensureCategory(db, categoryPath, leafLimit);
       const count = Number(db.prepare([
@@ -1058,7 +1239,6 @@ export function recordCanonicalTurn(db, input, options = {}) {
       ].join(' ')).get(id, eventId)?.count || 0);
       if (count >= leafLimit) {
         db.prepare('UPDATE categories SET split_needed=1,updated_at=? WHERE category_id=?').run(at, id);
-        continue;
       }
       acceptedCategories.push({ id, categoryPath });
       if (acceptedCategories.length >= 3) break;
@@ -1072,10 +1252,8 @@ export function recordCanonicalTurn(db, input, options = {}) {
       db.prepare('UPDATE memory_events SET needs_category=0 WHERE event_id=?').run(eventId);
     } else {
       db.prepare('UPDATE memory_events SET needs_category=1 WHERE event_id=?').run(eventId);
-      saveInbox(db, normalizedInput, 'category-capacity-full');
     }
-    db.prepare('DELETE FROM memory_inbox WHERE input_id=? AND ?=1')
-      .run(normalizedInput.inputId, acceptedCategories.length ? 1 : 0);
+    db.prepare('DELETE FROM memory_inbox WHERE input_id=?').run(normalizedInput.inputId);
     indexEvent(db, eventId);
     commit(db);
   } catch (error) {
@@ -1085,10 +1263,12 @@ export function recordCanonicalTurn(db, input, options = {}) {
   return {
     saved: true,
     derived: Boolean(marker.derived),
-    inbox: acceptedCategories.length === 0,
+    inbox: false,
     eventId,
     inputId: normalizedInput.inputId,
     summary20: marker.summary20,
+    verification,
+    anchors: mergedAnchors,
     categories: acceptedCategories.map((item) => item.categoryPath),
   };
 }
@@ -1140,11 +1320,14 @@ export function canonicalizeCompletedTurns(db, options = {}) {
   ensureCanonicalSchema(db);
   if (!hasTable(db, 'turns')) return { added: 0, remaining: 0 };
   const limit = Math.max(1, Math.min(100000, Number(options.limit) || 100000));
+  const turnColumns = new Set(db.prepare('PRAGMA table_info(turns)').all().map((row) => row.name));
+  const anchorSelect = turnColumns.has('anchors_json') ? ',t.anchors_json anchorsJson,t.evidence_json evidenceJson' : '';
+  const noiseFilter = turnColumns.has('noise') ? ' AND t.noise=0' : '';
   const rows = db.prepare([
     'SELECT t.turn_key turnKey,t.source_key sourceKey,t.session_id sessionId,t.turn_id turnId,',
-    't.timestamp,t.prompt,t.answer,t.summary',
+    't.timestamp,t.prompt,t.answer,t.summary' + anchorSelect,
     'FROM turns t LEFT JOIN memory_event_turns met ON met.turn_key=t.turn_key',
-    "WHERE met.turn_key IS NULL AND t.complete=1 AND t.answer<>''",
+    "WHERE met.turn_key IS NULL AND t.complete=1 AND t.answer<>''" + noiseFilter,
     'ORDER BY t.timestamp,t.turn_key LIMIT ?',
   ].join(' ')).all(limit);
   let added = 0;
@@ -1161,6 +1344,8 @@ export function canonicalizeCompletedTurns(db, options = {}) {
       lastAssistantMessage: row.answer,
       summary20: row.summary,
       contextPrompt: previous?.prompt || '',
+      turnAnchors: safeJson(row.anchorsJson, []),
+      turnEvidence: safeJson(row.evidenceJson, []),
     }, {
       leafLimit: options.leafLimit,
       allowDerivedMarker: true,
@@ -1170,7 +1355,7 @@ export function canonicalizeCompletedTurns(db, options = {}) {
   const remaining = Number(db.prepare([
     'SELECT count(*) count FROM turns t',
     'LEFT JOIN memory_event_turns met ON met.turn_key=t.turn_key',
-    "WHERE met.turn_key IS NULL AND t.complete=1 AND t.answer<>''",
+    "WHERE met.turn_key IS NULL AND t.complete=1 AND t.answer<>''" + noiseFilter,
   ].join(' ')).get()?.count || 0);
   return { added, remaining };
 }
@@ -1183,9 +1368,11 @@ export function refreshDerivedCanonicalEvents(db, options = {}) {
   const sourceFilter = options.all === true
     ? ''
     : ` AND t.source_key IN (${sourceKeys.map(() => '?').join(',')})`;
+  const turnColumns = new Set(db.prepare('PRAGMA table_info(turns)').all().map((row) => row.name));
+  const anchorSelect = turnColumns.has('anchors_json') ? ',t.anchors_json anchorsJson,t.evidence_json evidenceJson' : '';
   const rows = db.prepare([
-    'SELECT e.event_id eventId,e.summary20,e.semantic_full semanticFull,e.outcome,',
-    'met.input_id inputId,t.session_id sessionId,t.timestamp,t.prompt,t.answer,t.summary',
+    'SELECT e.event_id eventId,e.summary20,e.semantic_full semanticFull,e.outcome,e.anchors_json anchorsJsonEvent,',
+    'met.input_id inputId,t.session_id sessionId,t.timestamp,t.prompt,t.answer,t.summary' + anchorSelect,
     'FROM memory_events e JOIN memory_event_turns met ON met.event_id=e.event_id AND met.selected=1',
     'JOIN turns t ON t.turn_key=met.turn_key',
     "WHERE e.source='derived-completion' AND t.complete=1 AND t.answer<>''" + sourceFilter,
@@ -1196,8 +1383,8 @@ export function refreshDerivedCanonicalEvents(db, options = {}) {
   let updated = 0;
   const now = new Date().toISOString();
   const save = db.prepare([
-    'UPDATE memory_events SET semantic_full=?,summary20=?,outcome=?,last_at=?,updated_at=?',
-    'WHERE event_id=?',
+    'UPDATE memory_events SET semantic_full=?,summary20=?,outcome=?,last_at=?,updated_at=?,',
+    "anchors_json=?,evidence_json=?,verification='derived' WHERE event_id=?",
   ].join(' '));
   begin(db);
   try {
@@ -1208,11 +1395,15 @@ export function refreshDerivedCanonicalEvents(db, options = {}) {
         answer: row.answer,
         summary20: row.summary,
         contextPrompt: previous?.prompt || '',
+        anchors: safeJson(row.anchorsJson, []),
+        evidence: safeJson(row.evidenceJson, []),
       });
+      const anchorsJson = JSON.stringify(marker.ok ? marker.anchors : []);
       if (!marker.ok || (marker.semanticFull === row.semanticFull &&
-          marker.summary20 === row.summary20 && marker.outcome === row.outcome)) continue;
+          marker.summary20 === row.summary20 && marker.outcome === row.outcome &&
+          anchorsJson === String(row.anchorsJsonEvent || '[]'))) continue;
       save.run(marker.semanticFull, marker.summary20, marker.outcome,
-        String(row.timestamp || now), now, row.eventId);
+        String(row.timestamp || now), now, anchorsJson, JSON.stringify(marker.evidence), row.eventId);
       indexEvent(db, row.eventId);
       updated += 1;
     }
@@ -1250,6 +1441,11 @@ export function syncCanonicalInbox(db, options = {}) {
   ensureCanonicalSchema(db);
   if (!hasTable(db, 'turns')) return { added: 0, total: 0, mappedTurns: 0 };
   const sessionId = String(options.sessionId || '');
+  // 容量门已取消:历史残留的 category-capacity-full 条目(事件已存在)直接清理。
+  db.prepare([
+    "DELETE FROM memory_inbox WHERE reason='category-capacity-full'",
+    "AND (?='' OR session_id=?) AND input_id IN (SELECT input_id FROM memory_event_inputs)",
+  ].join(' ')).run(sessionId, sessionId);
   const rows = db.prepare([
     'SELECT turn_key,source_key,session_id,turn_id,prompt,answer,timestamp FROM turns',
     "WHERE (?='' OR session_id=?)",
@@ -1506,13 +1702,18 @@ export function readCanonicalSemantic(db, eventId) {
   assertCanonicalReadable(db);
   const event = db.prepare([
     'SELECT event_id eventId,session_id sessionId,semantic_full semanticFull,summary20,outcome,',
-    'first_at firstAt,last_at lastAt,source,needs_category needsCategory',
+    'first_at firstAt,last_at lastAt,source,needs_category needsCategory,',
+    'anchors_json anchorsJson,evidence_json evidenceJson,verification',
     'FROM memory_events WHERE event_id=?',
   ].join(' ')).get(String(eventId || ''));
   if (!event) return null;
+  const { anchorsJson, evidenceJson, ...rest } = event;
   return {
-    ...event,
+    ...rest,
     needsCategory: Boolean(event.needsCategory),
+    anchors: normalizeAnchors(safeJson(anchorsJson, [])),
+    evidence: normalizeEvidence(safeJson(evidenceJson, [])),
+    verification: normalizeVerification(event.verification, event.source === 'derived-completion' ? 'derived' : 'inferred'),
     categoryPaths: eventCategoryPaths(db, event.eventId),
   };
 }
@@ -1548,6 +1749,9 @@ export function expandCanonicalEvent(db, eventId) {
     lastAt: event.last_at,
     source: event.source,
     needsCategory: Boolean(event.needs_category),
+    anchors: normalizeAnchors(safeJson(event.anchors_json, [])),
+    evidence: normalizeEvidence(safeJson(event.evidence_json, [])),
+    verification: normalizeVerification(event.verification, event.source === 'derived-completion' ? 'derived' : 'inferred'),
     categoryPaths: eventCategoryPaths(db, event.event_id),
     inputs,
     turns,
@@ -1575,6 +1779,239 @@ export function canonicalStats(db) {
     needsCategory: Number(db.prepare(
       'SELECT count(*) count FROM memory_events WHERE needs_category<>0'
     ).get().count),
+    eventsBySource: Object.fromEntries(db.prepare(
+      'SELECT source,count(*) count FROM memory_events GROUP BY source ORDER BY count DESC'
+    ).all().map((row) => [row.source, Number(row.count)])),
+    eventsByVerification: Object.fromEntries(db.prepare(
+      'SELECT verification,count(*) count FROM memory_events GROUP BY verification ORDER BY count DESC'
+    ).all().map((row) => [row.verification || '', Number(row.count)])),
+    inboxByReason: Object.fromEntries(db.prepare(
+      'SELECT reason,count(*) count FROM memory_inbox GROUP BY reason ORDER BY count DESC'
+    ).all().map((row) => [row.reason, Number(row.count)])),
+    eventsWithAnchors: Number(db.prepare(
+      "SELECT count(*) count FROM memory_events WHERE anchors_json<>'[]'"
+    ).get().count),
+    lexiconTerms: hasTable(db, 'anchor_lexicon')
+      ? Number(db.prepare('SELECT count(*) count FROM anchor_lexicon').get().count)
+      : 0,
     importedAt: db.prepare("SELECT value FROM memory_meta WHERE key='imported_at'").get()?.value || '',
   };
+}
+
+// ---- 写入侧 v3:模型抽取事件写入(空闲抽取/离线净化共用) ----
+function extractedEventId(sessionId, memberTurnKeys) {
+  return 'e_x_' + sha256(String(sessionId || '') + '\u0000' + [...memberTurnKeys].sort().join('\n')).slice(0, 24);
+}
+
+// events: [{sessionId, memberTurnKeys, semanticFull, summary20, outcome, categoryPaths, anchors, evidence, verification}]
+// 成员 turn 若已映射到模型生成事件则跳过该事件(不覆盖更高可信度写入);映射到派生事件则改挂到新事件。
+export function upsertExtractedEvents(db, events, options = {}) {
+  ensureCanonicalSchema(db);
+  const source = String(options.source || 'idle-extract-v1');
+  const leafLimit = Math.max(1, Number(options.leafLimit) || 50);
+  const at = nowIso();
+  const turnInfo = hasTable(db, 'turns')
+    ? db.prepare('SELECT turn_key turnKey,source_key sourceKey,session_id sessionId,turn_id turnId,timestamp,prompt,answer FROM turns WHERE turn_key=?')
+    : null;
+  const mapped = db.prepare([
+    'SELECT met.event_id eventId,e.source FROM memory_event_turns met',
+    'JOIN memory_events e ON e.event_id=met.event_id WHERE met.turn_key=?',
+  ].join(' '));
+  const result = { saved: 0, skipped: 0, replacedDerived: 0, eventIds: [], reasons: [] };
+  begin(db);
+  try {
+    for (const event of Array.isArray(events) ? events : []) {
+      const memberTurnKeys = [...new Set((event.memberTurnKeys || []).map(String).filter(Boolean))];
+      const members = memberTurnKeys.map((turnKey) => turnInfo?.get(turnKey)).filter(Boolean);
+      if (!members.length) { result.skipped += 1; result.reasons.push('no-raw-members'); continue; }
+      const sessionId = String(event.sessionId || members[0].sessionId);
+      if (members.some((row) => row.sessionId !== sessionId)) { result.skipped += 1; result.reasons.push('cross-session'); continue; }
+      const existingModel = members.map((row) => mapped.get(row.turnKey))
+        .find((row) => row && MODEL_EVENT_SOURCES.includes(row.source) && row.source !== source);
+      if (existingModel) { result.skipped += 1; result.reasons.push('already-model-event'); continue; }
+      const semanticFull = limitChars(normalizeSpace(event.semanticFull), 2000);
+      const summary20 = limitChars(normalizeSpace(event.summary20), 20);
+      const outcome = normalizeSpace(event.outcome);
+      const categoryPaths = (Array.isArray(event.categoryPaths) ? event.categoryPaths : [event.categoryPath])
+        .map(normalizedCategoryPath).filter(Boolean).slice(0, 3);
+      if (charLength(semanticFull) < 4 || charLength(summary20) < 2 || !OUTCOMES.includes(outcome) || !categoryPaths.length) {
+        result.skipped += 1; result.reasons.push('invalid-event'); continue;
+      }
+      const eventId = extractedEventId(sessionId, memberTurnKeys);
+      const derivedToDrop = new Set();
+      for (const row of members) {
+        const current = mapped.get(row.turnKey);
+        if (current && current.eventId !== eventId) derivedToDrop.add(current.eventId);
+      }
+      const times = members.map((row) => row.timestamp).sort();
+      const anchors = normalizeAnchors(event.anchors);
+      const evidence = normalizeEvidence(event.evidence);
+      const verification = normalizeVerification(event.verification, 'extracted');
+      db.prepare([
+        'INSERT INTO memory_events(event_id,session_id,semantic_full,summary20,outcome,first_at,last_at,',
+        'source,needs_category,created_at,updated_at,anchors_json,evidence_json,verification)',
+        'VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?)',
+        'ON CONFLICT(event_id) DO UPDATE SET semantic_full=excluded.semantic_full,summary20=excluded.summary20,',
+        'outcome=excluded.outcome,first_at=excluded.first_at,last_at=excluded.last_at,source=excluded.source,',
+        'updated_at=excluded.updated_at,anchors_json=excluded.anchors_json,evidence_json=excluded.evidence_json,',
+        'verification=excluded.verification',
+      ].join(' ')).run(
+        eventId, sessionId, semanticFull, summary20, outcome, times[0], times.at(-1), source, at, at,
+        JSON.stringify(anchors), JSON.stringify(evidence), verification
+      );
+      const richest = members.reduce((best, row) => (charLength(row.answer) > charLength(best.answer) ? row : best), members[0]);
+      members.forEach((row, index) => {
+        const inputId = logicalInputId(sessionId, row.turnId);
+        db.prepare([
+          'INSERT INTO memory_event_inputs(input_id,event_id,session_id,turn_id,selected_turn_key,ordinal)',
+          'VALUES(?,?,?,?,?,?)',
+          'ON CONFLICT(input_id) DO UPDATE SET event_id=excluded.event_id,selected_turn_key=excluded.selected_turn_key,ordinal=excluded.ordinal',
+        ].join(' ')).run(inputId, eventId, sessionId, row.turnId, row.turnKey, index + 1);
+        db.prepare([
+          'INSERT INTO memory_event_turns(turn_key,event_id,input_id,source_key,selected) VALUES(?,?,?,?,?)',
+          'ON CONFLICT(turn_key) DO UPDATE SET event_id=excluded.event_id,input_id=excluded.input_id,',
+          'source_key=excluded.source_key,selected=excluded.selected',
+        ].join(' ')).run(row.turnKey, eventId, inputId, row.sourceKey, row.turnKey === richest.turnKey ? 1 : 0);
+        db.prepare('DELETE FROM memory_inbox WHERE input_id=?').run(inputId);
+      });
+      for (const oldId of derivedToDrop) {
+        const remaining = Number(db.prepare('SELECT count(*) count FROM memory_event_turns WHERE event_id=?').get(oldId)?.count || 0);
+        if (remaining > 0) continue;
+        db.prepare('DELETE FROM event_categories WHERE event_id=?').run(oldId);
+        db.prepare('DELETE FROM memory_events_fts WHERE event_id=?').run(oldId);
+        db.prepare('DELETE FROM memory_event_inputs WHERE event_id=?').run(oldId);
+        db.prepare('DELETE FROM memory_events WHERE event_id=?').run(oldId);
+        result.replacedDerived += 1;
+      }
+      db.prepare('DELETE FROM event_categories WHERE event_id=?').run(eventId);
+      categoryPaths.forEach((categoryPath, index) => {
+        const id = ensureCategory(db, categoryPath, leafLimit);
+        db.prepare('INSERT OR IGNORE INTO event_categories(event_id,category_id,is_primary,assigned_at) VALUES(?,?,?,?)')
+          .run(eventId, id, index === 0 ? 1 : 0, at);
+      });
+      indexEvent(db, eventId);
+      result.saved += 1;
+      result.eventIds.push(eventId);
+    }
+    commit(db);
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+  return result;
+}
+
+// ---- 写入侧 v3:对象词典(中文口语 prompt 的锚点来源) ----
+const LEXICON_STOP = new Set([
+  '请问', '帮我', '一下', '这个', '那个', '这些', '那些', '为什么', '怎么', '如何', '是否', '现在', '当前',
+  '任务', '问题', '用户', '本机', '另一台', '执行', '检查', '查看', '解释', '配置', '修改', '实现', '可以',
+  '已经', '需要', '继续', '然后', '直接', '没有', '不要', '不能', '还是', '就是', '因为', '所以', '如果',
+  '什么', '哪里', '这样', '那样', '一个', '两个', '所有', '全部', '结果', '完成', '成功', '失败', '正常',
+  '目前', '刚才', '之前', '上面', '下面', '开始', '结束', '进行', '处理', '使用', '通过', '根据', '进入',
+  '我们', '你们', '他们', '自己', '时候', '情况', '方式', '方法', '内容', '文件', '代码', '数据', '信息',
+]);
+const LEXICON_MAX_TERMS = 12000;
+
+// 挖掘短语的形态过滤:代词/副词/疑问/助动开头,助词/语气词/动词性结尾的碎片不是对象词
+// (实测词典曾混入"我感觉""我当前""应该怎么""有没有""了哪些"等碎片,把主题层变成噪声源)。
+const PHRASE_BAD_START = /^(?:我|你|他|她|它|咱|这|那|哪|什么|怎|如何|是否|有没|没有|可以|可否|能否|应该|需要|必须|不要|不能|不是|就是|还是|但是|然后|所以|因为|如果|已经|正在|刚刚|之前|上次|现在|当前|先|再|都|也|又|很|太|最|更|请|帮|把|将|被|让|给|对|向|从|在|和|与|或|及|了|的|地|得|着|过)/u;
+const PHRASE_BAD_END = /(?:的|了|着|过|地|得|呢|吗|啊|吧|嘛|呀|哦|么|是|有|在|要|会|能|可|去|来|做|看|说|想|给|把|被|让|和|与|或|及|到|上|下|里|中|后|前|时|个|些|种|次|下|一下|一个|怎么|什么|如何|为什么)$/u;
+const PHRASE_BAD_ANY = /(?:感觉|觉得|认为|希望|应该|需要|可以|能不能|是不是|有没有|怎么|如何|为什么|什么|哪些|这个|那个|这些|那些|一下|一些)/u;
+
+function looksLikeObjectPhrase(phrase) {
+  if (charLength(phrase) < 3) return false;
+  if (LEXICON_STOP.has(phrase)) return false;
+  if (PHRASE_BAD_START.test(phrase) || PHRASE_BAD_END.test(phrase) || PHRASE_BAD_ANY.test(phrase)) return false;
+  return true;
+}
+
+function hanPhraseCandidates(text, maxSize = 6) {
+  const out = new Set();
+  for (const run of String(text || '').match(/[\p{Script=Han}]{2,}/gu) || []) {
+    const values = chars(run);
+    for (let size = 3; size <= Math.min(maxSize, values.length); size += 1) {
+      for (let index = 0; index + size <= values.length; index += 1) {
+        const phrase = values.slice(index, index + size).join('');
+        if (looksLikeObjectPhrase(phrase)) out.add(phrase);
+      }
+    }
+  }
+  return out;
+}
+
+// 词典来源:1) 事件结构化锚点(component/topic/file 基名);2) 完成态 turn 的中文短语——
+// 同时出现在 prompt 与 answer(有证据)且跨 ≥minSessions 个会话,再按会话占比上限剔除泛词。
+export function rebuildAnchorLexicon(db, options = {}) {
+  ensureCanonicalSchema(db);
+  const minSessions = Math.max(2, Number(options.minSessions) || 3);
+  const maxSessionRatio = Math.min(0.5, Math.max(0.01, Number(options.maxSessionRatio) || 0.05));
+  const terms = new Map();
+  const bump = (term, kind, sessionId, weight = 1, modelBacked = false) => {
+    if (!term || charLength(term) < 2) return;
+    const key = term.toLowerCase();
+    const current = terms.get(key) || { term, kind, df: 0, sessions: new Set(), modelBacked: false };
+    current.df += weight;
+    current.sessions.add(String(sessionId || ''));
+    if (kind === 'component' || kind === 'file') current.kind = kind;
+    if (modelBacked) current.modelBacked = true;
+    terms.set(key, current);
+  };
+  // 模型生成事件(净化/空闲抽取/标记)的锚点是可信对象词;派生事件的锚点只是解析期文本锚点,不算模型背书。
+  const modelSources = MODEL_EVENT_SOURCES.map((item) => "'" + item + "'").join(',');
+  for (const row of db.prepare("SELECT session_id sessionId,anchors_json anchorsJson,source FROM memory_events WHERE anchors_json<>'[]'").all()) {
+    const backed = MODEL_EVENT_SOURCES.includes(String(row.source || ''));
+    for (const anchor of normalizeAnchors(safeJson(row.anchorsJson, []))) {
+      if (anchor.kind === 'command' || anchor.kind === 'id') continue;
+      const value = anchor.kind === 'file' ? (anchor.value.split('/').at(-1) || anchor.value) : anchor.value;
+      if (anchor.kind === 'topic' && !backed) continue;
+      if (anchor.kind === 'topic' && !looksLikeObjectPhrase(value) && charLength(value) < 3) continue;
+      bump(value, anchor.kind, row.sessionId, backed ? 2 : 1, backed);
+    }
+  }
+  void modelSources;
+  let totalSessions = 0;
+  if (hasTable(db, 'turns')) {
+    totalSessions = Number(db.prepare("SELECT count(DISTINCT session_id) count FROM turns WHERE complete=1 AND answer<>''").get()?.count || 0);
+    const rows = db.prepare("SELECT session_id sessionId,prompt,answer FROM turns WHERE complete=1 AND answer<>''").all();
+    for (const row of rows) {
+      const promptPhrases = hanPhraseCandidates(row.prompt);
+      if (!promptPhrases.size) continue;
+      const answer = String(row.answer || '');
+      for (const phrase of promptPhrases) {
+        if (answer.includes(phrase)) bump(phrase, 'topic', row.sessionId, 1);
+      }
+    }
+  }
+  const sessionCap = Math.max(minSessions, Math.floor(Math.max(totalSessions, 1) * maxSessionRatio));
+  const selected = [...terms.values()]
+    .map((item) => ({ ...item, sessions: item.sessions.size }))
+    .filter((item) => item.kind !== 'topic'
+      ? item.sessions >= Math.max(2, minSessions - 1)
+      : (item.modelBacked
+        ? item.sessions >= Math.max(2, minSessions - 1)
+        : (item.sessions >= minSessions + 3 && item.sessions <= sessionCap && looksLikeObjectPhrase(item.term))))
+    .sort((left, right) => right.sessions - left.sessions || right.df - left.df || left.term.localeCompare(right.term))
+    .slice(0, LEXICON_MAX_TERMS);
+  const at = nowIso();
+  begin(db);
+  try {
+    db.prepare('DELETE FROM anchor_lexicon').run();
+    const save = db.prepare('INSERT OR REPLACE INTO anchor_lexicon(term,kind,df,sessions,updated_at) VALUES(?,?,?,?,?)');
+    for (const item of selected) save.run(item.term, item.kind, item.df, item.sessions, at);
+    setMeta(db, 'lexicon_at', at);
+    commit(db);
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+  return { terms: selected.length, totalSessions, sessionCap, minSessions };
+}
+
+export function loadAnchorLexicon(db) {
+  if (!hasTable(db, 'anchor_lexicon')) return new Map();
+  const out = new Map();
+  for (const row of db.prepare('SELECT term,kind,sessions FROM anchor_lexicon').all()) {
+    out.set(String(row.term).toLowerCase(), { term: row.term, kind: row.kind, sessions: Number(row.sessions) });
+  }
+  return out;
 }
