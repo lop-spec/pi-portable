@@ -44,7 +44,8 @@ const HISTORY_REPLAY_EFFORT = process.env.CODEX_HISTORY_REPLAY_EFFORT || "max";
 // v7.16.0:cache 注入修复——边界兼容 pi 字符串形态系统提示(key-only,blockIndex=-1),
 // key 掺首条 user 项摘要实现并发会话分键(单会话恒定、并发互异)。
 const RESPONSE_MEMO_TTL_MS = Number(process.env.CODEX_RESPONSE_MEMO_TTL_MS || 600000);
-const POLICY_VERSION = "gpt56-chain-replay-v7.16.0";
+// v7.17.0:流指标记录 requestedTier→upstreamTier,priority 静默降级无条件落日志。
+const POLICY_VERSION = "gpt56-chain-replay-v7.17.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -519,6 +520,7 @@ async function handleResponses(req, res) {
       activeUpRes.lopMeta.requestedModel = modelPlan.primaryModel;
       activeUpRes.lopMeta.upstreamModel = candidate.model;
       activeUpRes.lopMeta.modelFallback = candidate.fallback;
+      activeUpRes.lopMeta.requestedTier = String(rewritten.meta.effectiveTier || "");
       return activeUpRes;
     }, {
       maxRetries: OVERLOAD_MAX_RETRIES,
@@ -620,8 +622,14 @@ async function handleResponses(req, res) {
         requestedModel: meta.requestedModel || "",
         upstreamModel: meta.upstreamModel || "",
         modelFallback: Boolean(meta.modelFallback),
+        requestedTier: meta.requestedTier || "",
+        upstreamTier: usage.serviceTier || "",
       };
-      log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} egress=${record.egressKey || "?"}:${record.egressPort} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
+      log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} egress=${record.egressKey || "?"}:${record.egressPort} tier=${record.requestedTier || "-"}→${record.upstreamTier || "?"} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
+      // priority 额度耗尽时上游静默降级(2026-09-02 实测 2 倍吞吐差):无条件留痕,不藏在调试开关后。
+      if (record.requestedTier && record.upstreamTier && record.requestedTier !== record.upstreamTier) {
+        log(`tier 降级：请求 ${record.requestedTier} → 上游实际 ${record.upstreamTier}（priority 额度耗尽或不适用；吞吐按 default 计）originator=${record.originator || "-"}`);
+      }
       fs.appendFile(METRICS_FILE, JSON.stringify(record) + "\n", () => {});
     } catch { /* 观测永不阻断转发 */ }
     // 过载失败绝不进入 exact memo，否则会把瞬时故障固化到 TTL 内反复重放。

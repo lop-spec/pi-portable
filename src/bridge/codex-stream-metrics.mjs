@@ -31,11 +31,16 @@ function lastNumber(text, pattern) {
 // usage 出现在流末尾的 response.completed 事件里；取最后一次出现的值。
 export function extractUsage(tailText) {
   const text = String(tailText || '');
+  // 上游在 response.completed 里回显实际执行的 service_tier:请求 priority 而额度耗尽时
+  // 静默降为 "default"(2026-09-02 实测:同分钟内 47-57 tok/s → 27 tok/s,别无任何信号)。
+  let tier = null;
+  for (const found of text.matchAll(/"service_tier"\s*:\s*"([a-z_]+)"/gu)) tier = found[1];
   return {
     inputTokens: lastNumber(text, /"input_tokens"\s*:\s*(\d+)/gu),
     cachedInputTokens: lastNumber(text, /"cached_tokens"\s*:\s*(\d+)/gu),
     outputTokens: lastNumber(text, /"output_tokens"\s*:\s*(\d+)/gu),
     reasoningTokens: lastNumber(text, /"reasoning_tokens"\s*:\s*(\d+)/gu),
+    serviceTier: tier,
   };
 }
 

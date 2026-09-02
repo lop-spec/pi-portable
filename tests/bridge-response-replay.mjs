@@ -5,6 +5,15 @@ import test from 'node:test';
 
 import { responseReplayIdentity, rewriteCodexRequestBody } from '../src/bridge/codex-cache-policy.mjs';
 import { ExactResponseMemo } from '../src/bridge/codex-response-memo.mjs';
+import { extractUsage } from '../src/bridge/codex-stream-metrics.mjs';
+
+test('stream metrics surface the upstream-applied service tier (v7.17.0)', () => {
+  const tail = 'data: {"type":"response.completed","response":{"id":"r","service_tier":"default","usage":{"input_tokens":822,"input_tokens_details":{"cached_tokens":0},"output_tokens":362,"output_tokens_details":{"reasoning_tokens":41}}}}\n';
+  const usage = extractUsage(tail);
+  assert.equal(usage.serviceTier, 'default');
+  assert.equal(usage.outputTokens, 362);
+  assert.equal(extractUsage('data: {"type":"response.completed","response":{"usage":{"output_tokens":1}}}').serviceTier, null);
+});
 
 function payload(token) {
   return {
@@ -37,7 +46,10 @@ test('Pi user-role exact history participates in stable response replay identity
 test('proxy passes session reasoning through untouched (v7.15.0 revokes forced max)', () => {
   const source = fs.readFileSync(new URL('../src/bridge/codex-responses-proxy.mjs', import.meta.url), 'utf8');
   const adversary = fs.readFileSync(new URL('../src/chain/portable-adversary.mjs', import.meta.url), 'utf8');
-  assert.match(source, /gpt56-chain-replay-v7\.16\.0/u);
+  assert.match(source, /gpt56-chain-replay-v7\.17\.0/u);
+  // v7.17.0:priority 静默降级必须留痕(失败路径必留痕)。
+  assert.match(source, /upstreamTier: usage\.serviceTier/u);
+  assert.match(source, /tier 降级：请求/u);
   assert.match(source, /requestWithOverloadRetry/u);
   assert.match(source, /selected\.prefixChunks/u);
   assert.match(source, /selected\.exhausted/u);
