@@ -24,7 +24,7 @@ process.on("exit", () => fs.rmSync(contractData, { recursive: true, force: true 
 const redirector = await import(pathToFileURL(path.join(root, "src", "chain", "goal-redirector.mjs")).href);
 const {
   normalizeVolatile, failureFingerprint, normalizeDiff, diffFingerprint,
-  decideRedirect, captureWorkspace, evaluateGoalRound, writeGoalLedger,
+  decideRedirect, captureWorkspace, evaluateGoalRound, renderChecklistRedirect, writeGoalLedger,
 } = redirector;
 
 // --- 归一化与指纹:易变数字不改变指纹,不同失败改变指纹 ---
@@ -97,6 +97,9 @@ ev = await evaluateGoalRound({ cwd: "", output: "FAIL x", exitCode: 3, attempts:
 assert.equal(ev.mode, "tabu");
 assert.match(ev.content, /禁忌换路/u);
 assert.match(ev.content, /已被实测证伪/u);
+assert.match(renderChecklistRedirect({ mode: "evidence", tripped: ["failure-stagnant"], rounds: ev.rounds, open: ["终态"] }), /证据轮/u);
+assert.match(renderChecklistRedirect({ mode: "tabu", tripped: ["failure-stagnant"], rounds: ev.rounds, open: ["终态"] }), /禁忌换路/u);
+assert.equal(renderChecklistRedirect({ mode: "normal", rounds: ev.rounds, open: ["终态"] }), "");
 
 // --- 账本落盘 ---
 const ledgerFile = writeGoalLedger({

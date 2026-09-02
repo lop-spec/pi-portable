@@ -120,6 +120,24 @@ export async function evaluateGoalRound({ cwd, output, exitCode, attempts, max, 
   return { round, rounds, level: decision.level, mode: decision.mode, tripped: decision.tripped, content };
 }
 
+// persistent checklist 专用文案：复用同一确定性指纹和升级状态，但不把 checklist
+// 伪装成可执行目标门。换向优先于延期；前台 sleep 永远不算进展。
+export function renderChecklistRedirect({ mode, tripped = [], rounds = [], open = [] }) {
+  if (!mode || mode === "normal") return "";
+  const why = tripped.map((item) => TRIP_LABEL[item] || item).join("、") || "开放项无可辨别进展";
+  const openText = [...new Set(open.map((item) => String(item || "").trim()).filter(Boolean))]
+    .slice(0, 8).map((item) => `- ${item}`).join("\n");
+  if (mode === "evidence") {
+    return `【Checklist 换向器：证据轮】判定:${why}。以下开放项仍无可辨别进展:\n${openText}\n` +
+      `禁止重复上一方案，禁止用 sleep、轮询或超长 timeout 等待未来事件。先生成至少 2 条相互独立、尚未实测且不违反硬边界的方向 frontier；本轮立即执行信息增益/成本最高的一条并取得新证据。`;
+  }
+  const banned = rounds.slice(-6).map((round) =>
+    `- 第${round.attempt}轮 failure=${round.failFp}${round.outputHead ? ` 证据:${round.outputHead}` : ""}`,
+  ).join("\n");
+  return `【Checklist 换向器：禁忌换路】判定:${why}。以下重复路径已进入 tabu，禁止等价重试:\n${banned}\n` +
+    `换模块、换层次或换根因假设；动手前说明新方向与旧路径的本质区别，然后立即执行。只有所有合法方向均有耗尽证据时才允许持久化 deferred；不得保持前台等待，deferred 也不是终态完成。`;
+}
+
 // 方案先行(plan-first,2026-09-01 lop 裁决):门未通过时不再让模型直接重做——
 // 换向器跳闸(同路无进展)即先强制"作答轮":基于已有数据收敛出完整通过方案(禁动手),
 // 下一轮按方案延伸实施。作答不是尝试,不占 attempts 预算;每个升级 level 只插一次(有界)。

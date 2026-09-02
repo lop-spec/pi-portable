@@ -21,8 +21,10 @@ const sourcePath = process.env.LOP_CHAIN_SOURCE || path.join(root, "src", "lop-c
 const policy = await import(pathToFileURL(sourcePath).href + `?contract=${Date.now()}`);
 const {
   default: lopChainExtension,
+  LOP_CHAIN_RUNTIME_VERSION,
   auditRuleRouting,
   checklistGateDecision,
+  checklistRedirectEvidence,
   collapsedAcceptanceChecklist,
   completionGuardAlreadyQueued,
   completionGuardDecision,
@@ -30,6 +32,7 @@ const {
   expandPrompt,
   firstChecklistForLatestUser,
   formatChecklistGateContinuation,
+  foregroundBashDecision,
   freezeChecklistGoalContract,
   goalGateVerdict,
   historyUsageDecision,
@@ -45,6 +48,7 @@ const {
   runtimeVersionFromSource,
   s6BlockDisposition,
   scopeLopChainContext,
+  staleNextActionDecision,
   stripAcceptanceChecklist,
 } = policy;
 
@@ -62,6 +66,15 @@ assert.equal(isContextDependentHistoryPrompt("具体怎么改，说明白"), tru
 assert.equal(isContextDependentHistoryPrompt("不做1，其余的都做，也改到异机"), true);
 assert.equal(isContextDependentHistoryPrompt("继续修复 8794 的 history 快路"), false);
 assert.equal(isContextDependentHistoryPrompt("确认 30141 端口是否监听"), false);
+assert.equal(foregroundBashDecision({ command: "printf ok" }).action, "cap");
+assert.equal(foregroundBashDecision({ command: "printf ok", timeout: 60 }).action, "allow");
+assert.equal(foregroundBashDecision({ command: "while true; do sleep 600; done", timeout: 45000 }).action, "block");
+assert.equal(foregroundBashDecision({ command: "while true; do sleep 10; done" }).action, "block");
+assert.equal(foregroundBashDecision({ command: "sleep 10", timeout: 30 }).action, "allow");
+const staleAction = staleNextActionDecision({ nextAction: "At 2026-09-01T09:31:00+08:00 run" }, Date.parse("2026-09-02T09:49:00+08:00"));
+assert.equal(staleAction.stale, true);
+assert.match(staleAction.directive, /至少 2 条/u);
+assert.equal(staleNextActionDecision({ nextAction: "At 2026-09-03T09:31:00+08:00 run" }, Date.parse("2026-09-02T09:49:00+08:00")).stale, false);
 assert.equal(isGoalCancellationPrompt("取消当前目标"), true);
 assert.equal(isGoalCancellationPrompt("/lop-goal-cancel"), true);
 assert.equal(isGoalCancellationPrompt("停止自动续跑"), true);
@@ -218,7 +231,8 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.match(commands.get("lop-chain-reload").description, /s9-memory-write-side-v20/u);
+assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s9-memory-direction-frontier-v21-sidecar-marker");
+assert.match(commands.get("lop-chain-reload").description, /s9-memory-direction-frontier-v21-sidecar-marker/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -600,6 +614,8 @@ for (let index = 0; index < 19; index += 1) {
 }
 assert.equal(longRunning.state.continuationCount, 20);
 assert.equal(longRunning.state.status, "active");
+assert.deepEqual(longRunning.state.redirectRounds, []);
+assert.equal(longRunning.state.redirectLevel, 0);
 
 // 同一外部阻塞连续三轮才转 blocked；完成合同则 complete。
 const blockerText = `${openChecklistText}\n无法继续：缺少权限，需要你授权。`;
@@ -678,6 +694,11 @@ assert.match(collapsedPersistentBypass.reason, /^persistent-outcome/u);
 // 续跑注入文案必须教折叠形态与证据落盘约定。
 assert.match(formatChecklistGateContinuation(frozen, 1), /3\/3 全部完成/u);
 assert.match(formatChecklistGateContinuation(frozen, 1), /acceptance-evidence\.md/u);
+assert.match(formatChecklistGateContinuation(frozen, 1), /禁止用 sleep、轮询或超长 timeout/u);
+assert.match(formatChecklistGateContinuation(frozen, 1), /至少 2 条相互独立/u);
+const redirectFixture = { reason: "active-items", open: frozen.open, violations: [], state: frozen.state };
+assert.equal(checklistRedirectEvidence(redirectFixture, "当前 2/30"), checklistRedirectEvidence(redirectFixture, "当前 2/30"));
+assert.notEqual(checklistRedirectEvidence(redirectFixture, "当前 2/30"), checklistRedirectEvidence(redirectFixture, "当前 3/30"));
 
 // v13 增量协议:done 由 host 持久记账——缺席=保持、[x] 置真、显式 [ ] 重开;
 // 无需逐轮复述清单;折叠行可直接收口增量态。
@@ -812,8 +833,12 @@ for (let index = 0; index < 3; index += 1) {
 }
 assert.equal(loopMessages().length, 4);
 assert.equal(loopNotifications.length, 0);
+assert.ok(loopMessages().some((item) => /Checklist 换向器：证据轮/u.test(item.message.content)));
+assert.ok(loopMessages().some((item) => /Checklist 换向器：禁忌换路/u.test(item.message.content)));
 assert.equal(loopEntries.at(-1).data.status, "active");
 assert.equal(loopEntries.at(-1).data.violationTurns, 3);
+assert.equal(loopEntries.at(-1).data.redirectLevel, 2);
+assert.ok(loopEntries.at(-1).data.redirectRounds.length >= 3);
 await loopHandlers.get("before_agent_start")[0]({ prompt: loopMessages().at(-1).message.content }, loopCtx);
 await loopEnd(fullyClosedChecklistText);
 assert.equal(loopMessages().length, 4);
@@ -888,7 +913,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "s9-memory-write-side-v20");
+assert.equal(runtimeVersionFromSource(source), "s9-memory-direction-frontier-v21-sidecar-marker");
 // 写入侧 v3:记忆标记状态差门与工具锚点落账
 assert.match(source, /MEMORY_GATE BLOCK reason=/u);
 assert.match(source, /MEMORY_GATE FAIL_OPEN/u);
@@ -911,6 +936,9 @@ assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
 assert.match(source, /context-dependent-prompt/u);
 assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /CHECKLIST_GOAL CONTINUE/u);
+assert.match(source, /CHECKLIST_REDIRECT/u);
+assert.match(source, /FOREGROUND_WAIT BLOCK/u);
+assert.match(source, /NEXT_ACTION STALE/u);
 assert.match(source, /RUNTIME_DRIFT loaded=/u);
 assert.match(source, /sendUserMessage\("\/lop-chain-reload", \{ deliverAs: "followUp" \}\)/u);
 assert.match(source, /普通问题\/授权信息\/短回复不改变 active 状态/u);
@@ -921,8 +949,10 @@ assert.doesNotMatch(source, /CHECKLIST_GATE_MAX/u);
 assert.doesNotMatch(source, /deferred\s*[:=]/u);
 assert.match(source, /windowsHide:\s*true/u);
 const proxySource = fs.readFileSync(path.join(root, "src", "bridge", "codex-responses-proxy.mjs"), "utf8");
-assert.match(proxySource, /Only two item states are valid/u);
-assert.match(proxySource, /Never use '\[~\]'/u);
+const protocolSource = fs.readFileSync(path.join(root, "assets", "pi-agents-protocol.md"), "utf8");
+assert.match(protocolSource, /Only two item states are valid/u);
+assert.match(protocolSource, /Never use '\[~\]'/u);
+assert.match(proxySource, /协议文本移入 pi AGENTS\.md 管理块/u);
 assert.doesNotMatch(`${source}\n${proxySource}`, /registerTool\([\s\S]{0,80}subagent/iu);
 const adversary = await import(pathToFileURL(path.join(root, "src", "chain", "portable-adversary.mjs")).href);
 const missingAuth = path.join(contractData, "missing-auth.json");
