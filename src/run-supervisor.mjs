@@ -249,10 +249,13 @@ export function decideRunAction({ snapshot, running, fileActive = false }) {
     if (!last) return { action: "wait", reason: "no-message" };
     if (last.role === "assistant") {
       if (last.stopReason === "error" || last.stopReason === "aborted") return { action: "recover", reason: `assistant-${last.stopReason}` };
+      // An interrupted call remains journal truth for recovery safety, but after the agent has
+      // read back its side effects and closes the durable checklist, that historical orphan must
+      // not poison every later terminal answer forever (2026-09-01 live loop: 14 redispatches).
+      if (last.stopReason === "stop" && snapshot.goalState?.status !== "active") return { action: "complete", reason: "terminal-assistant" };
       if (last.stopReason === "toolUse" || snapshot.unresolvedToolCalls?.length) return { action: "recover", reason: "tool-call-unsettled" };
       if (last.stopReason === "stop") {
-        if (snapshot.goalState?.status === "active") return { action: "recover", reason: "active-goal-stopped" };
-        return { action: "complete", reason: "terminal-assistant" };
+        return { action: "recover", reason: "active-goal-stopped" };
       }
       return { action: "recover", reason: "assistant-without-terminal-reason" };
     }

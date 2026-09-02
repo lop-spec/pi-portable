@@ -90,6 +90,30 @@ test("incremental index resolves a previously incomplete tool without reparsing 
   assert.deepEqual(snapshot.unresolvedToolCalls, []);
 });
 
+test("a terminal answer with a completed goal is not poisoned forever by a historical interrupted tool call", () => {
+  const rows = [
+    header(),
+    message("u1", null, "user", { text: "实施并验证" }),
+    custom("g1", "u1", "lop-checklist-goal-state", {
+      version: 1, status: "active", taskUserEntryId: "u1", items: [{ text: "完成", key: "完成", done: false }],
+    }),
+    message("a1", "g1", "assistant", {
+      message: { stopReason: "toolUse" },
+      content: [{ type: "toolCall", id: "call-interrupted", name: "write", arguments: { path: "C:/tmp/a", content: "x" } }],
+    }),
+    message("r1", "a1", "user", { text: `${RECOVERY_PREFIX} run=r1 attempt=1` }),
+    custom("g2", "r1", "lop-checklist-goal-state", {
+      version: 1, status: "complete", taskUserEntryId: "u1", items: [{ text: "完成", key: "完成", done: true }],
+    }),
+    message("a2", "g2", "assistant", { message: { stopReason: "stop" }, text: "【验收清单】1/1 全部完成" }),
+  ];
+  const { file } = fixture(rows);
+  const snapshot = new SessionFileIndex(file).refresh();
+  assert.equal(snapshot.unresolvedToolCalls.length, 1, "journal truth keeps the interrupted call available for recovery safety");
+  assert.equal(snapshot.goalState.status, "complete");
+  assert.deepEqual(decideRunAction({ snapshot, running: false }), { action: "complete", reason: "terminal-assistant" });
+});
+
 test("durable cancellation wins even when before_agent_start writes it before the user entry", () => {
   const rows = [
     header(),
