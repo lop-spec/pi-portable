@@ -13,6 +13,7 @@ export const RUN_CONTROL_TYPE = "lop-run-control";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v1";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
+const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 const GOAL_STATE_TYPE = "lop-checklist-goal-state";
 const DEFAULT_BACKOFF_MS = Object.freeze([2000, 5000, 15000]);
 const DEFAULT_POLL_MS = 500;
@@ -528,6 +529,31 @@ function timeoutSignal(ms) {
   return AbortSignal.timeout(Math.max(1, ms));
 }
 
+export function resolvePiWebPageChunk(packageRoot) {
+  if (!packageRoot) return null;
+  const manifestFile = path.join(packageRoot, ".next", "server", "app", "page_client-reference-manifest.js");
+  const manifest = fs.readFileSync(manifestFile, "utf8");
+  const names = [...new Set([...manifest.matchAll(PIWEB_PAGE_CHUNK_REF_RE)].map((match) => match[1]))];
+  if (names.length !== 1) throw new Error(`pi-web page chunk manifest references ${names.length} assets (expected 1)`);
+  const name = names[0];
+  const file = path.join(packageRoot, ".next", "static", "chunks", "app", name);
+  if (!fs.existsSync(file)) throw new Error(`pi-web page chunk missing: ${file}`);
+  return { name, file, manifestFile };
+}
+
+export function rewritePiWebPageChunkReferences(html, currentAsset) {
+  if (!currentAsset?.name) return { html: String(html), replacements: 0, staleNames: [] };
+  let replacements = 0;
+  const staleNames = new Set();
+  const out = String(html).replace(PIWEB_PAGE_CHUNK_REF_RE, (reference, name) => {
+    if (name === currentAsset.name) return reference;
+    replacements += 1;
+    staleNames.add(name);
+    return `static/chunks/app/${currentAsset.name}`;
+  });
+  return { html: out, replacements, staleNames: [...staleNames] };
+}
+
 export class RunSupervisor {
   constructor(options = {}) {
     const dataRoot = path.resolve(options.dataRoot || process.env.PI_PORTABLE_DATA || path.join(process.cwd(), "data"));
@@ -550,6 +576,14 @@ export class RunSupervisor {
     );
     this.archiveUiSource = options.archiveUiSource || fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
     this.logFile = path.resolve(options.logFile || path.join(dataRoot, "run-supervisor.log"));
+    const portableHome = String(process.env.PI_PORTABLE_HOME || "").trim();
+    const configuredPiWebRoot = options.piWebPackageRoot || (portableHome ? path.join(portableHome, "app", "node_modules", "@agegr", "pi-web") : "");
+    this.piWebPackageRoot = configuredPiWebRoot ? path.resolve(configuredPiWebRoot) : "";
+    this.pageChunkAsset = null;
+    this.pageChunkManifestStamp = "";
+    this.pageChunkFailure = "";
+    this.pageChunkRewriteKeys = new Set();
+    this.pageChunkServedNames = new Set();
     this.indexes = new Map();
     this.filesBySession = new Map();
     this.knownFileStats = new Map();
@@ -870,6 +904,53 @@ export class RunSupervisor {
     response.end(body);
   }
 
+  currentPiWebPageChunk() {
+    if (!this.piWebPackageRoot) return null;
+    const manifestFile = path.join(this.piWebPackageRoot, ".next", "server", "app", "page_client-reference-manifest.js");
+    try {
+      const stat = fs.statSync(manifestFile);
+      const stamp = `${stat.mtimeMs}:${stat.size}`;
+      if (this.pageChunkAsset && this.pageChunkManifestStamp === stamp) return this.pageChunkAsset;
+      const previous = this.pageChunkAsset?.name || "";
+      const asset = resolvePiWebPageChunk(this.piWebPackageRoot);
+      this.pageChunkAsset = asset;
+      this.pageChunkManifestStamp = stamp;
+      this.pageChunkFailure = "";
+      if (asset?.name !== previous) this.log("piweb-page-chunk-selected", { previous: previous || null, current: asset?.name || null });
+      return asset;
+    } catch (error) {
+      const reason = normalizeError(error?.message || error);
+      if (reason !== this.pageChunkFailure) this.log("piweb-page-chunk-unavailable", { packageRoot: this.piWebPackageRoot, reason });
+      this.pageChunkFailure = reason;
+      return this.pageChunkAsset && fs.existsSync(this.pageChunkAsset.file) ? this.pageChunkAsset : null;
+    }
+  }
+
+  serveCurrentPiWebPageChunk(parsedUrl, response) {
+    const asset = this.currentPiWebPageChunk();
+    if (!asset || parsedUrl.pathname !== `/_next/static/chunks/app/${asset.name}`) return false;
+    try {
+      const body = fs.readFileSync(asset.file);
+      response.writeHead(200, {
+        "content-type": "application/javascript; charset=utf-8",
+        "content-length": String(body.length),
+        "cache-control": "public, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(body);
+      if (!this.pageChunkServedNames.has(asset.name)) {
+        this.pageChunkServedNames.add(asset.name);
+        this.log("piweb-page-chunk-served", { asset: asset.name, bytes: body.length });
+      }
+    } catch (error) {
+      const reason = normalizeError(error?.message || error);
+      this.log("piweb-page-chunk-serve-error", { asset: asset.name, reason });
+      response.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      response.end(`Pi Web current page chunk unavailable: ${reason}`);
+    }
+    return true;
+  }
+
   async handleHtmlProxy(request, response) {
     const upstreamResult = await this.fetchBufferedUpstream(request);
     const contentType = String(upstreamResult.headers["content-type"] || "");
@@ -878,6 +959,16 @@ export class RunSupervisor {
       return;
     }
     let html = upstreamResult.body.toString("utf8");
+    const currentPageChunk = this.currentPiWebPageChunk();
+    const rewrite = rewritePiWebPageChunkReferences(html, currentPageChunk);
+    html = rewrite.html;
+    if (rewrite.replacements > 0) {
+      const key = `${rewrite.staleNames.join(",")}=>${currentPageChunk.name}`;
+      if (!this.pageChunkRewriteKeys.has(key)) {
+        this.pageChunkRewriteKeys.add(key);
+        this.log("piweb-page-chunk-rewritten", { stale: rewrite.staleNames, current: currentPageChunk.name, replacements: rewrite.replacements });
+      }
+    }
     if (!html.includes(PIWEB_ARCHIVE_UI_PATH)) {
       const nonce = /<script\b[^>]*\bnonce=["']([^"']+)["']/iu.exec(html)?.[1];
       const nonceAttribute = nonce ? ` nonce="${nonce.replace(/["&<>]/gu, "")}"` : "";
@@ -1005,6 +1096,7 @@ export class RunSupervisor {
       this.serveArchiveUi(response);
       return;
     }
+    if (request.method === "GET" && this.serveCurrentPiWebPageChunk(parsedUrl, response)) return;
     if (request.method === "GET" && parsedUrl.pathname === "/api/sessions") {
       await this.handleSessionList(request, response, parsedUrl);
       return;

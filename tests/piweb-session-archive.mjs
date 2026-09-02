@@ -20,6 +20,9 @@ const SECOND_SESSION_ID = "22222222-2222-7222-8222-222222222222";
 const CHILD_SESSION_ID = "44444444-4444-7444-8444-444444444444";
 const fixedNow = () => Date.parse("2026-09-01T11:00:00.000Z");
 const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
+const OLD_PAGE_HASH = "pwaaaaaaaaaaaaaa";
+const CURRENT_PAGE_HASH = "pwbbbbbbbbbbbbbb";
+const CURRENT_PAGE_MARK = "__pwHideHiddenExtensionMessagesV1";
 
 function writeSession(file, id = SESSION_ID, marker = "ARCHIVE-A9Z7") {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -42,7 +45,17 @@ function makeFixture() {
   writeSession(second, SECOND_SESSION_ID, "ARCHIVE-B8Y6");
   writeSession(child, CHILD_SESSION_ID, "ARCHIVE-CHILD-C7X5");
   const archiveFile = path.join(root, ".pi", "agent", "session-archive.json");
-  return { root, sessionRoot, first, second, child, archiveFile };
+  const piWebPackageRoot = path.join(root, "app", "node_modules", "@agegr", "pi-web");
+  const pageChunkDir = path.join(piWebPackageRoot, ".next", "static", "chunks", "app");
+  const pageManifestDir = path.join(piWebPackageRoot, ".next", "server", "app");
+  fs.mkdirSync(pageChunkDir, { recursive: true });
+  fs.mkdirSync(pageManifestDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pageManifestDir, "page_client-reference-manifest.js"),
+    `self.__RSC_MANIFEST={chunk:"static/chunks/app/page-${CURRENT_PAGE_HASH}.js"}`,
+  );
+  fs.writeFileSync(path.join(pageChunkDir, `page-${CURRENT_PAGE_HASH}.js`), `/*${CURRENT_PAGE_MARK}*/`);
+  return { root, sessionRoot, first, second, child, archiveFile, piWebPackageRoot };
 }
 
 async function reservePort() {
@@ -142,7 +155,7 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
     }
     if (request.method === "GET" && request.url === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end("<!doctype html><html><head><title>Pi Web</title></head><body><main>ok</main></body></html>");
+      response.end(`<!doctype html><html><head><title>Pi Web</title><script src="/_next/static/chunks/app/page-${OLD_PAGE_HASH}.js"></script></head><body><main>ok</main></body></html>`);
       return;
     }
     response.writeHead(404, { "content-type": "application/json" });
@@ -159,6 +172,7 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
     webPort,
     publicWebPort,
     healthPort,
+    piWebPackageRoot: fx.piWebPackageRoot,
     pollMs: 60_000,
     now: fixedNow,
   });
@@ -219,6 +233,13 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
 
   const html = await (await fetch(`${base}/`)).text();
   assert.equal((html.match(new RegExp(PIWEB_ARCHIVE_UI_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length, 1);
+  assert.match(html, new RegExp(`page-${CURRENT_PAGE_HASH}\\.js`), "public HTML must switch a stale running Next server to the current patched page chunk");
+  assert.doesNotMatch(html, new RegExp(`page-${OLD_PAGE_HASH}\\.js`));
+  const pageChunkResponse = await fetch(`${base}/_next/static/chunks/app/page-${CURRENT_PAGE_HASH}.js`);
+  assert.equal(pageChunkResponse.status, 200, "the supervisor must serve a current chunk that stale Next has not indexed");
+  assert.match(await pageChunkResponse.text(), new RegExp(CURRENT_PAGE_MARK));
+  assert.equal(upstreamRequests.some((item) => item.url?.includes(CURRENT_PAGE_HASH)), false, "current page chunk is served directly rather than forwarded to stale Next");
+  assert.match(fs.readFileSync(path.join(fx.root, "run-supervisor.log"), "utf8"), /"event":"piweb-page-chunk-served"/u);
   const uiResponse = await fetch(`${base}${PIWEB_ARCHIVE_UI_PATH}`);
   assert.equal(uiResponse.status, 200);
   assert.match(uiResponse.headers.get("content-type") || "", /javascript/u);
