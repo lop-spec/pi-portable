@@ -2850,3 +2850,5 @@ NODE_CHECK_OK; SUMMARY 8/8 passed; SELFTEST_EXIT=0; PASS pi-load cli=D:\Download
 | S6 提交 | 见本段之后的 ledger 追加(commit/push/tag) |
 | 未验证 | 对端 e2e(对端桥本轮未启);live pi-web 主模型经工具调用 swarm_run 一次(本轮 e2e 为 runtime 直调) |
 | 剩余风险 | 并发子代理打 8794 桥触发 priority 降档;本机只配 gpt-5.6-sol,验证者独立性来自进程/上下文隔离而非跨模型;单机并发上限 8 槽 |
+
+### [2026-09-03 18:24:48] S6 commit 9cc94db → origin/main;tag v0.0.4-rc37 已推送触发 CI(上一 tag v0.0.4-rc36)
