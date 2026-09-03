@@ -1,6 +1,7 @@
 // lop 执行链 v2 的 pi 承接层(规格:decision-replay-engine/specs/gpt-exec-chain-v2.md)
 // 进程内 import rule-enforcer 核心,单源三宿主(claude/codex/pi)。
-// S2/S3/S4 是交付硬门;S6/S7 外部可选能力才允许 fail-open。S8 确定性落账并输出审计指标。
+// v23(2026-09-03 审计):S2/S3/S4 失败一律留痕后 fail-open,记忆/规则层故障不得打死用户轮
+// (实录:S3/S8 因模块路径错误连续中断 4 个用户轮);S6/S7 外部能力同样 fail-open。S8 确定性落账并输出审计指标。
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { exec } from "node:child_process";
 import fs from "node:fs";
@@ -8,7 +9,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "s9-memory-direction-frontier-v22-scoped-next-action";
+export const LOP_CHAIN_RUNTIME_VERSION = "s9-native-rules-failopen-v23";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -209,9 +210,10 @@ export function historyUsageDecision(resolved: any, answer: unknown) {
   const overlap = usageTerms(`${resolved.summary20 || ""}\n${resolved.full || ""}`)
     .filter((term) => available.has(term)).slice(0, 12);
   const dispositionPass = Number(used) + Number(conflict) === 1;
+  // v23:采纳分支不再要求可见结论与历史词面重叠(此前 41 轮注入 16 轮被打回重试);冲突分支仍需说明冲突。
   const evidencePass = conflict
     ? /冲突|变化|不同|推翻|不一致/u.test(visible)
-    : overlap.length > 0;
+    : true;
   return {
     required: true,
     pass: dispositionPass && evidencePass,
@@ -977,7 +979,8 @@ export function formatChecklistGateContinuation(result: ChecklistGateResult, con
   const diagnostics = result.violations.length
     ? `\n\n格式违规诊断（不是验收项目，禁止复制进清单）:\n${result.violations.map((item) => `- ${item}`).join("\n")}`
     : "";
-  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。${contractBlock}${diagnostics}\n\n继续执行原始任务。执行策略硬约束:当前路径若受未来时间、外部事件或同路失败阻塞，禁止用 sleep、轮询或超长 timeout 维持前台会话；先复核 nextAction 是否过期，生成至少 2 条相互独立、尚未实测且不违反硬边界的合法方向 frontier，按预期信息增益/成本排序并立即执行第一条。不得把“禁止同路补丁”自行扩大为“禁止所有新方向”。仅当全部合法方向都有耗尽证据时，才把受阻分支持久化 deferred 并释放当前 run；deferred 不是终态完成。\n\n新完成的项在回复中以【验收清单】开头的小块增量声明:只列变化项,"- [x] <与合同原文逐字一致>"表示已有可验证证据,"- [ ]"表示重开;未变化项不要复述。禁止 [~] 或任何第三状态，禁止新增、改名合同项目。全部合同项完成后只写一行“【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成”。命令输出、日志等证据细节写入任务工作区证据文件(默认 acceptance-evidence.md)，正文只留每项一句结论、关键数字与文件指针。如果确有外部阻塞，保留对应项未完成并报告可验证证据。对冻结持续终态，“已核验未达标/已禁止交付/任务保持开放”都不是完成，只有正文中的正向达成证据才能将该终态标为 [x]。`;
+  // v23:续跑文本只带未完成项与换向硬约束;清单格式与证据规则已在 AGENTS.md,不再逐轮复述。
+  return `目标仍为 ACTIVE(自动续跑第 ${continuation} 轮)。${contractBlock}${diagnostics}\n\n继续执行原始任务。受阻时禁止用 sleep、轮询或超长 timeout 维持前台会话;先复核 nextAction 是否过期,列出至少 2 条相互独立、尚未实测且不违反硬边界的新方向,立即执行预期信息增益最高的一条;只有全部合法方向都有耗尽证据时才把受阻分支持久化 deferred 并释放当前 run,deferred 不是完成。清单以增量块只列变化项,只有 [ ]/[x] 两态,禁止 [~];证据写证据文件;冻结的持续终态只有正向达成证据才能标为 [x];全部完成只写一行"【验收清单】${contracts.length || "N"}/${contracts.length || "N"} 全部完成"。`;
 }
 
 export const renderChecklistContinuation = formatChecklistGateContinuation;
@@ -1207,8 +1210,12 @@ export default function (pi: ExtensionAPI) {
     try {
       const tokens = ctx?.getContextUsage?.()?.tokens;
       const overLine = typeof tokens === "number" && tokens > COMPACT_TRIGGER_TOKENS;
-      if (frozenKeepFrom === null || overLine) {
-        if (overLine) {
+      // v23:冻结后复用边界,直到上下文比上次冻结再涨 TRIM_KEEP_RECENT_TOKENS 才重冻结。此前 overLine 每轮重冻结,
+      // 冻结复用分支从未执行(2026-09-03 live 日志 freeze=1296 / frozen=0),每轮都是缓存 miss 轮。
+      const refreeze = overLine && (frozenKeepFrom === null || Number(tokens) - frozenAtTokens >= TRIM_KEEP_RECENT_TOKENS);
+      if (refreeze) {
+        {
+          frozenAtTokens = Number(tokens);
           // (重)冻结轮:按当前尾部 50k 重算边界并定格。这是唯一允许的缓存 miss 轮。
           const r = microcompact(messages);
           frozenKeepFrom = r.keepFrom;
@@ -1218,7 +1225,7 @@ export default function (pi: ExtensionAPI) {
           log(`COMPACT_GUARD freeze#${freezeCount} tokens=${tokens} keepFrom=${r.keepFrom} trim n=${r.trimmed} tok≈${r.beforeTok}->${r.afterTok} keep=${TRIM_KEEP_RECENT_TOKENS}`);
           metric({ sessionId, compactGuard: true, freeze: freezeCount, trimCount: r.trimmed, trimBeforeTok: r.beforeTok, trimAfterTok: r.afterTok });
         }
-      } else {
+      } else if (frozenKeepFrom !== null) {
         // 冻结期:复用定格边界,同一裁剪集逐字节复现,新消息只追加。
         const r = microcompact(messages, frozenKeepFrom);
         if (r.trimmed) messages = r.messages;
@@ -1288,6 +1295,7 @@ export default function (pi: ExtensionAPI) {
   // 冻结边界:null=未触发。触发后 keepFrom 定格,投影逐字节稳定(前缀缓存友好);
   // 真实用量再次越线才重冻——缓存 miss 只发生在(重)冻结轮,不再每轮滑动。
   let frozenKeepFrom: number | null = null;
+  let frozenAtTokens = 0;
   let freezeCount = 0;
   let lastTrimCount = -1;
 
@@ -1350,7 +1358,7 @@ export default function (pi: ExtensionAPI) {
     }
     return { messages: out, trimmed, beforeTok, afterTok: beforeTok - saved, keepFrom };
   }
-  pi.on("session_compact", () => { frozenKeepFrom = null; lastTrimCount = -1; });
+  pi.on("session_compact", () => { frozenKeepFrom = null; frozenAtTokens = 0; lastTrimCount = -1; });
 
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     const prompt = String(event?.prompt || "");
@@ -1470,8 +1478,9 @@ export default function (pi: ExtensionAPI) {
       phase.s2Error = String(error).slice(0, 180);
       phase.s2Ms = +(performance.now() - t2).toFixed(1);
       lastPhase = phase;
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S2" });
-      throw error;
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S2", failOpen: true });
+      log(`S2 FAIL_OPEN ${phase.s2Error}`);
+      expanded = { forRules: prompt, forHistory: prompt, anchors: 0, charRatio: 1, historyTerms: [], ruleTerms: [], personalizedTerms: [] };
     }
     phase.s2Ms = +(performance.now() - t2).toFixed(1);
     phase.s2Anchors = expanded.anchors;
@@ -1544,8 +1553,9 @@ export default function (pi: ExtensionAPI) {
       phase.s3Error = String(error).slice(0, 220);
       phase.s3Ms = +(performance.now() - t3).toFixed(1);
       lastPhase = phase;
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S3" });
-      throw error;
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S3", failOpen: true });
+      log(`S3 FAIL_OPEN ${phase.s3Error}`);
+      lastResolved = null;
     }
     phase.s3Ms = +(performance.now() - t3).toFixed(1);
 
@@ -1585,8 +1595,8 @@ export default function (pi: ExtensionAPI) {
       phase.s4Error = String(error).slice(0, 220);
       phase.s4Ms = +(performance.now() - t4).toFixed(1);
       lastPhase = phase;
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S4" });
-      throw error;
+      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S4", failOpen: true });
+      log(`S4 FAIL_OPEN ${phase.s4Error}`);
     }
     phase.s4Ms = +(performance.now() - t4).toFixed(1);
 
@@ -1645,14 +1655,7 @@ export default function (pi: ExtensionAPI) {
     }
     phase.s5Ms = +(performance.now() - t5).toFixed(1);
 
-    if (lastResolved?.hit && phase.s5Kind !== "jsonl-json-explanation") {
-      contexts.push([
-        '<history-disposition-gate>',
-        '历史只用于选择最小验证路径，不能替代用户本轮要求的当前工具执行、读回或运行态证据。',
-        `取得当前证据后，最终可见结论引用至少一个相关历史事实，并且仅附加 <!-- history-used:${lastResolved.usageToken} -->；若当前证据推翻历史则明确冲突且仅附加 <!-- history-conflict:${lastResolved.usageToken} -->。`,
-        '</history-disposition-gate>',
-      ].join("\n"));
-    }
+    // v23:history-disposition 指令已由 renderResolvedHistory 随历史卡一并注入,此处不再重复注入。
 
     // S6 后台对抗预审起审(v2 三路正交盲聚合):agent_end 消费,外部能力 fail-open。
     const t6 = performance.now();

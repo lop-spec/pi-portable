@@ -119,9 +119,15 @@ assert.equal(historyUsageDecision(
   resolvedHistory,
   "SSH 双向连接已经通过。\n<!-- history-used:h_contract -->",
 ).pass, true);
+// v23:采纳分支只要求处置凭证唯一,不再要求可见结论与历史词面重叠;缺凭证或双凭证仍不通过。
 assert.equal(historyUsageDecision(
   resolvedHistory,
   "已完成。\n<!-- history-used:h_contract -->",
+).pass, true);
+assert.equal(historyUsageDecision(resolvedHistory, "已完成。").pass, false);
+assert.equal(historyUsageDecision(
+  resolvedHistory,
+  "已完成。\n<!-- history-used:h_contract -->\n<!-- history-conflict:h_contract -->",
 ).pass, false);
 assert.equal(historyUsageDecision(
   resolvedHistory,
@@ -236,8 +242,8 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s9-memory-direction-frontier-v22-scoped-next-action");
-assert.match(commands.get("lop-chain-reload").description, /s9-memory-direction-frontier-v22-scoped-next-action/u);
+assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s9-native-rules-failopen-v23");
+assert.match(commands.get("lop-chain-reload").description, /s9-native-rules-failopen-v23/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -698,7 +704,7 @@ assert.equal(collapsedPersistentBypass.trigger, true);
 assert.match(collapsedPersistentBypass.reason, /^persistent-outcome/u);
 // 续跑注入文案必须教折叠形态与证据落盘约定。
 assert.match(formatChecklistGateContinuation(frozen, 1), /3\/3 全部完成/u);
-assert.match(formatChecklistGateContinuation(frozen, 1), /acceptance-evidence\.md/u);
+assert.match(formatChecklistGateContinuation(frozen, 1), /证据文件/u);
 assert.match(formatChecklistGateContinuation(frozen, 1), /禁止用 sleep、轮询或超长 timeout/u);
 assert.match(formatChecklistGateContinuation(frozen, 1), /至少 2 条相互独立/u);
 const redirectFixture = { reason: "active-items", open: frozen.open, violations: [], state: frozen.state };
@@ -918,7 +924,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "s9-memory-direction-frontier-v22-scoped-next-action");
+assert.equal(runtimeVersionFromSource(source), "s9-native-rules-failopen-v23");
 // 写入侧 v3:记忆标记状态差门与工具锚点落账
 assert.match(source, /MEMORY_GATE BLOCK reason=/u);
 assert.match(source, /MEMORY_GATE FAIL_OPEN/u);
@@ -954,9 +960,8 @@ assert.doesNotMatch(source, /CHECKLIST_GATE_MAX/u);
 assert.doesNotMatch(source, /deferred\s*[:=]/u);
 assert.match(source, /windowsHide:\s*true/u);
 const proxySource = fs.readFileSync(path.join(root, "src", "bridge", "codex-responses-proxy.mjs"), "utf8");
-const protocolSource = fs.readFileSync(path.join(root, "assets", "pi-agents-protocol.md"), "utf8");
-assert.match(protocolSource, /Only two item states are valid/u);
-assert.match(protocolSource, /Never use '\[~\]'/u);
+// 2026-09-03:lop-protocol 协议块资产退役,验收合同规则改由 pi 原生 AGENTS.md 手工维护;资产必须不存在,launcher 缺失即跳过。
+assert.equal(fs.existsSync(path.join(root, "assets", "pi-agents-protocol.md")), false, "pi-agents-protocol.md 应已退役");
 assert.match(proxySource, /协议文本移入 pi AGENTS\.md 管理块/u);
 assert.doesNotMatch(`${source}\n${proxySource}`, /registerTool\([\s\S]{0,80}subagent/iu);
 const adversary = await import(pathToFileURL(path.join(root, "src", "chain", "portable-adversary.mjs")).href);
