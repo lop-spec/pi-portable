@@ -10,6 +10,7 @@ GPT 全执行链、历史/规则/扩写硬门及五类性能回放：[`docs/gpt-
 
 - `src/bridge/` — 受版本控制的便携桥层；随生产桥同步升级，并在本仓维护 Pi user-role 历史与 exact response memo 适配。
 - `src/lop-chain.ts` — 执行链扩展；包含确定性目标门，以及无 subagent 的两态验收目标循环（冻结合同、active/complete/blocked、分支持久恢复）；persistent checklist 停滞时复用换向器，过期 `nextAction` 仅从精确动作记录识别，Bash 前台 deadline 阻止跨小时 sleep 冒充进展。
+- `src/browser-agent/` — 浏览器工具扩展(工具名 `browser`):Playwright-core 走 loopback CDP 驱动独立 profile 的无头 Edge/Chrome,**默认常驻**(会话结束只断连不杀进程,靠 profile/DevToolsActivePort 跨会话重连;`PI_BROWSER_RESIDENT=0` 回到会话即关),动作 open/goto/snapshot/text/eval/click/type/press/wait/screenshot/tabs;`tools/sync-cli-home.mjs` 以 junction 装进 `~/.pi/agent/extensions/browser-agent`;自检 `selftest.mjs`(0 可见窗口)/`selftest-resident.mjs`(跨进程重连+延迟)/`selftest-pi-load.mjs`(pi RPC 装载)。**备份目录不得放在 extensions 目录内,pi 会把它当第二个扩展装载并报 Tool browser conflicts。**
 - `src/run-supervisor.mjs` — 会话级持久化运行监督器；在转发前保存 prompt/Abort，监听 Pi Web 运行注册表与 session JSONL，并从最后叶节点续接；同时提供不改写原生 JSONL 的会话归档/恢复代理，绝不直接重放工具调用或硬删除会话。
 - `packaging/windows-launcher.cpp` — 由云 CI 编译的 Win32 GUI 宿主；以 `DETACHED_PROCESS` 和显式标准流拉起主 Node，并作为 bridge/web 子 Node 的无控制台进程宿主；同时监督重启并用 Job Object 兜底清理进程树。相同云构建还发布独立的 `windows-silent-exec-host.exe`，供交互会话中的计划任务静默启动任意精确路径程序。
 - `src/egress-autodetect.mjs` — 出口自适应(直连探测 → 常见代理端口探测 → 引导输入),换机第一难题的解法。

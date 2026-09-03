@@ -62,3 +62,18 @@ if (current === wanted) {
 const probe = path.join(CLI_SRC, "chain", "lop-memory.mjs");
 if (!fs.existsSync(probe)) fail(`读回失败,链模块不可达: ${probe}`);
 console.log(`[sync-cli-home] OK 链模块可达: ${probe}`);
+
+// 3) extensions/browser-agent → 仓库 src/browser-agent 的 junction(单源;pi 按目录内 index.ts 装载)
+const baFrom = path.join(REPO_SRC, "browser-agent");
+const baTo = path.join(CLI_EXT, "browser-agent");
+const baStat = fs.lstatSync(baTo, { throwIfNoEntry: false });
+if (!baStat) {
+  fs.symlinkSync(baFrom, baTo, "junction");
+  console.log(`[sync-cli-home] junction 创建: ${baTo} → ${baFrom}`);
+} else if (baStat.isSymbolicLink() || fs.realpathSync(baTo).toLowerCase() !== baTo.toLowerCase()) {
+  const target = fs.realpathSync(baTo);
+  if (target.toLowerCase() !== fs.realpathSync(baFrom).toLowerCase()) fail(`已有 junction 指向别处: ${baTo} → ${target};人工确认后再处理`);
+  console.log(`[sync-cli-home] junction 已就位: ${baTo} → ${target}`);
+} else {
+  fail(`${baTo} 是真实目录而非 junction;为保护既有资产不自动覆盖,人工合并后重跑`);
+}
