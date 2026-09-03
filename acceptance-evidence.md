@@ -2748,3 +2748,15 @@ RESIDENT_EXIT=0
 KEEP_EXIT=0
 {"phaseA":{"pid":30240,"port":51806,"aliveAfterChild":true,"keep":true}}
 ```
+
+## 2026-09-03 browser-agent 双机常驻化:最终验收结论
+
+| 项 | 结论 |
+|---|---|
+| S1 本机 selftest | 通过:Chrome 无头,0 可见窗口,前台句柄不变,playwright 路径命中 Documents\claude\vscodium |
+| S2 跨进程重连 | 通过(本机+对端):port 不变、日志 process-reconnect、无 process-start;close 轮询修复后非自有进程也能确认退出 |
+| S3 延迟基线 | 本机 text 1.89 / eval 1.65 / snapshot 1.84 ms,截图 78.8 ms;对端 0.8 / 0.75 / 0.74 ms,截图 59.7 ms(Browser pane 同页两步 ≈45 ms,截图 5s 超时) |
+| S4 pi RPC 装载 | 通过(本机 junction 装载;对端实体目录);对端首次失败根因=备份目录放在 extensions 内被当第二扩展装载,已挪至 data\browser-agent\backup |
+| S5 对端同步 | 六文件 SHA256 一致;三项自检通过;常驻实例 --keep 留存(对端 Edge 端口 51806,本机 Chrome 端口 59946) |
+| S6 提交推送 | commit 3d611b1 → origin/main;tag v0.0.4-rc36 已推送触发 CI |
+| 未验证 | pi-web UI 内真实发一句"打开网页"走 browser 工具(RPC 装载证明与 pi-web 同一 discover 路径;本机 pi-web 当前未运行,30140/30141/8794 均无监听) |
