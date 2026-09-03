@@ -77,3 +77,18 @@ if (!baStat) {
 } else {
   fail(`${baTo} 是真实目录而非 junction;为保护既有资产不自动覆盖,人工合并后重跑`);
 }
+
+// 4) extensions/lop-swarm → 仓库 src/lop-swarm 的 junction(单源;pi 按目录内 index.ts 装载)
+const swFrom = path.join(REPO_SRC, "lop-swarm");
+const swTo = path.join(CLI_EXT, "lop-swarm");
+const swStat = fs.lstatSync(swTo, { throwIfNoEntry: false });
+if (!swStat) {
+  fs.symlinkSync(swFrom, swTo, "junction");
+  console.log(`[sync-cli-home] junction 创建: ${swTo} → ${swFrom}`);
+} else if (swStat.isSymbolicLink() || fs.realpathSync(swTo).toLowerCase() !== swTo.toLowerCase()) {
+  const target = fs.realpathSync(swTo);
+  if (target.toLowerCase() !== fs.realpathSync(swFrom).toLowerCase()) fail(`已有 junction 指向别处: ${swTo} → ${target};人工确认后再处理`);
+  console.log(`[sync-cli-home] junction 已就位: ${swTo} → ${target}`);
+} else {
+  fail(`${swTo} 是真实目录而非 junction;为保护既有资产不自动覆盖,人工合并后重跑`);
+}

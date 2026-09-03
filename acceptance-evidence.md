@@ -2760,3 +2760,93 @@ KEEP_EXIT=0
 | S5 对端同步 | 六文件 SHA256 一致;三项自检通过;常驻实例 --keep 留存(对端 Edge 端口 51806,本机 Chrome 端口 59946) |
 | S6 提交推送 | commit 3d611b1 → origin/main;tag v0.0.4-rc36 已推送触发 CI |
 | 未验证 | pi-web UI 内真实发一句"打开网页"走 browser 工具(RPC 装载证明与 pi-web 同一 discover 路径;本机 pi-web 当前未运行,30140/30141/8794 均无监听) |
+
+## 2026-09-03 lop-swarm:契约式子代理分工(方案,开工冻结)
+
+### ① 现状与根因
+- pi 主链无「子代理结果结构化回收」原语:上游 `examples/extensions/subagent`(未安装)把子代理最后一条 assistant 文本原样回传父模型(每任务 50KB),主链模型再转述;`best-of-n.mjs` 只回收 gate exit + diff 行数,但任务同质、无判据契约、无验证者;`portable-adversary.mjs` 有桥盲评但不接产物。
+- 根因:没有「任务契约(判据必填)→ 认领 → 隔离执行 → 宿主验证 → 独立验证者 → 文件态回收」这条确定性链路。EvoMap 自报 373→217 的转述损耗正是主链重述造成。
+
+### ② 候选路径
+1. 直接安装上游 subagent 示例(1,038 行 TUI 向):回收仍是自由文本,判据与认领缺失,pi-web 无 TUI 组件 → 否。
+2. 扩展 best-of-n.mjs 支持异构任务:它绑定 goal-gate 生命周期,改动面大且语义混淆 → 否。
+3. **选中**:新建 `src/lop-swarm/`(runtime.mjs 纯 Node 可单测 + index.ts 注册 swarm_plan/swarm_run/swarm_status/swarm_apply),抄 best-of-n 的 worktree 隔离与 spawn(node cli.js)方式、抄上游 subagent 的 `--mode json -p --no-session --tools --append-system-prompt` 启动与 message_end 解析;装载沿 browser-agent 的 junction 先例(sync-cli-home.mjs 第 4 段);零新依赖。
+
+### ③ 步骤与硬验收
+| 步 | 硬验收(命令/断言) |
+|---|---|
+| S1 runtime.mjs 单测(无 LLM) | `node src/lop-swarm/selftest.mjs`:缺 verify.cmd 拒收、重复 id 拒收、4 任务 2 槽认领各恰一次且 20 次并发认领零重复、缺 result.json→missing-result、改保护文件→protected-modified、表格不含子代理文本、静态断言 spawn/exec 全带 windowsHide:true |
+| S2 e2e(桥在线) | `node src/lop-swarm/selftest.mjs --e2e`:临时 git 仓 3 任务 2 worker + pi 验证者;全部 done;claims.log 每 id 一次且两 worker 都认领过;verdict.json 3 份;verifier-input 不含 worker 最终文本;主链回收表 < 2KB;记录墙钟与 token |
+| S3 pi 装载 | `node src/lop-swarm/selftest-pi-load.mjs`:RPC get_commands 含 swarm-status,无 extension_error |
+| S4 装载同步 | `node tools/sync-cli-home.mjs`:junction `~/.pi/agent/extensions/lop-swarm` → 仓 src/lop-swarm |
+| S5 对端 | scp 五文件 → `D:\Downloads\pi-protable\data\.pi\agent\extensions\lop-swarm\`;certutil SHA256 与本地一致;`runtime\node.exe --check runtime.mjs`;对端 selftest-pi-load 通过 |
+| S6 提交 | commit + push origin main;账本落盘 |
+
+### 硬门
+准确性(status 只由确定性证据决定:result.json 合规 ∧ 宿主 verify exit 0 ∧ expect 命中 ∧ 无保护文件改动 ∧ 验证者 pass);不回归(不改 lop-chain.ts、best-of-n、browser-agent);静默(子进程 windowsHide,无前台窗口);子代理 transcript 零注入主链。
+
+### 量化指标(基线=首轮实测,落 acceptance-baseline 段)
+主链每任务注入字节;e2e 墙钟;每子代理 token/turn;认领重复数(目标 0);验证者独立性(输入不含生产者文本,目标 100%)。豁免:token 总量与单链比(多代理本就 ≥ 单链)。
+
+### 风险与回滚
+风险:桥并发触发 priority 降档;pi write 工具对 cwd 外绝对路径的限制(备用:worktree 内 `.swarm/` 回退路径);首个 e2e 可能因子代理不按契约写 result.json 而 fail(这正是机制要抓的,不改宽)。回滚:删 junction + 删 `src/lop-swarm/`,不触及其他模块。
+
+### [2026-09-03 18:21:42] lop-swarm S1/S3/S4 + S2 e2e 实录(scratch/lop-swarm-e2e-1.log 摘取)
+```
+PASS U1 缺 verify.cmd 拒收
+PASS U1 重复 id / 非法 id 拒收
+PASS U1 判据文件自动进保护列表
+PASS U2 4 任务 2 槽认领各恰一次,并发 20 次零重复
+PASS U3 缺 result.json → missing-result;坏 JSON → invalid-result;id 不符 → invalid-result
+PASS U3 改保护文件 → protected-modified 判定
+PASS U4 renderTable 不含生产者/验证者对话文本
+PASS U5 runtime.mjs 全部 spawn/exec/execFile 带 windowsHide:true
+lop-swarm run=20260903101837-98f152 isolation=worktree slots=2 wall=129s done=3 failed=0 pending=0
+| id | status | reason | verify | verdict | diff | files | worker | tok(in/out) |
+| add | done | ok | exit 0 | pass | 5 | 1 | w1 | 5147/369 |
+| mul | done | ok | exit 0 | pass | 5 | 1 | w2 | 4838/321 |
+| rev | done | ok | exit 0 | pass | 5 | 1 | w2 | 5236/468 |
+PASS E2E 全部任务 done
+PASS E2E claims.log 每 id 恰一次且两 worker 都认领过
+PASS E2E 三份 verdict.json 且 verifier 输入不含 worker 最终文本
+PASS E2E 主链回收表 < 2KB 且不含 worker 最终文本
+PASS E2E swarm_apply 三补丁应用到主 cwd 且复验通过
+E2E_METRICS {"runId":"20260903101837-98f152","wallMs":129673,"workers":2,"tableBytes":674,"perTask":[{"id":"add","status":"done","reason":"ok","durationMs":65969,"worker":"w1","tokens":{"input":5147,"output":369,"cacheRead":5760,"cacheWrite":0,"cost":0,"turns":5},"verifierTokens":{"input":7531,"output":603,"cacheRead":3072,"cacheWrite":0,"cost":0,"turns":5},"model":"gpt-5.6-sol"},{"id":"mul","status":"done","reason":"ok","durationMs":54940,"worker":"w2","tokens":{"input":4838,"output":321,"cacheRead":6272,"cacheWrite":0,"cost":0,"turns":5},"verifierTokens":{"input":7942,"output":472,"cacheRead":0,"cacheWrite":0,"cost":0,"turns":4},"model":"gpt-5.6-sol"},{"id":"rev","status":"done","reason":"ok","durationMs":74525,"worker":"w2","tokens":{"input":5236,"output":468,"cacheRead":6272,"cacheWrite":0,"cost":0,"turns":5},"verifierTokens":{"input":7249,"output":837,"cacheRead":3968,"cacheWrite":0,"cost":0,"turns":5},"model":"gpt-5.6-sol"}]}
+SUMMARY 13/13 passed; tmp=C:\Users\lop\AppData\Local\Temp\lop-swarm-selftest-BQGsfX (kept)
+e2e_exit=0
+```
+
+### lop-swarm 基线(首轮实测 2026-09-03,gpt-5.6-sol 经 8794 桥,2 worker,pi 验证者)
+| 指标 | 基线 |
+|---|---|
+| e2e 墙钟(3 任务) | 129.7 s |
+| 每任务耗时(worker+验证) | 55.0 / 66.0 / 74.5 s |
+| worker token in/out | 4838-5236 / 321-468,5 turns |
+| 验证者 token in/out | 7249-7942 / 472-837,4-5 turns |
+| 主链回收表字节 | 674 B(3 任务,≈225 B/任务;上游 subagent 上限 50 KB/任务) |
+| 认领重复 | 0(claims.log 3 行,w1 1 次 w2 2 次) |
+| 验证者输入含生产者文本 | 0/3 |
+| swarm_apply 主 cwd 复验 | 3/3 exit 0 |
+
+### [2026-09-03 18:24:40] lop-swarm S5 对端读回(D:\Downloads\pi-protable,runtime\node.exe)
+```
+index.ts            b19e090f246cd64ea38594d7df2c4ebbbe85c83f091fd0fb5ac479af9811d2f0 (本地=对端)
+runtime.mjs         0eba07a09870c61f3f00690c9406412a983d51dd95b40629aa12b70b9a7e4d35 (本地=对端)
+selftest.mjs        c316b4be9a2ada08ae5a9d9cdb1296bb05426d94b4b4f3f4457025d2b47d041a (本地=对端)
+selftest-pi-load.mjs 364605121fa03a1a7a89c3374768a1dc1fd47be6fad5e2d927d00d58d10924ef (本地=对端)
+NODE_CHECK_OK; SUMMARY 8/8 passed; SELFTEST_EXIT=0; PASS pi-load cli=D:\Downloads\pi-protable\app\...\cli.js; PILOAD_EXIT=0
+首次 PILOAD_EXIT=1 根因:自检与子进程未设 PI_CODING_AGENT_DIR/HOME 指向 data\.pi(对端无 ~/.pi),已按 launcher.mjs 同款 env 修正后通过
+```
+
+## 2026-09-03 lop-swarm 契约式子代理分工:验收结论
+
+| 门 | 结论 |
+|---|---|
+| S1 单测 | 8/8 本机 + 8/8 对端(拒收缺判据/重复 id、判据文件自动保护、认领 0 重复、missing/invalid-result、protected-modified、表格零泄漏、windowsHide 全覆盖) |
+| S2 e2e | 13/13:3 任务 3 done、验证者 3/3 pass、墙钟 129.7 s、回收表 674 B、认领 0 重复且两 worker 都认领、验证者输入 0 泄漏、swarm_apply 3/3 主 cwd 复验 exit 0 |
+| S3 RPC 装载 | 本机 PASS、对端 PASS |
+| S4 junction | ~/.pi/agent/extensions/lop-swarm → 仓 src/lop-swarm(sync-cli-home 第 4 段) |
+| S5 对端 | 4 文件 SHA256 一致、node --check OK、单测 8/8、RPC 装载 PASS |
+| S6 提交 | 见本段之后的 ledger 追加(commit/push/tag) |
+| 未验证 | 对端 e2e(对端桥本轮未启);live pi-web 主模型经工具调用 swarm_run 一次(本轮 e2e 为 runtime 直调) |
+| 剩余风险 | 并发子代理打 8794 桥触发 priority 降档;本机只配 gpt-5.6-sol,验证者独立性来自进程/上下文隔离而非跨模型;单机并发上限 8 槽 |
