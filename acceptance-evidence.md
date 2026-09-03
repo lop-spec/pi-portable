@@ -2852,3 +2852,17 @@ NODE_CHECK_OK; SUMMARY 8/8 passed; SELFTEST_EXIT=0; PASS pi-load cli=D:\Download
 | 剩余风险 | 并发子代理打 8794 桥触发 priority 降档;本机只配 gpt-5.6-sol,验证者独立性来自进程/上下文隔离而非跨模型;单机并发上限 8 槽 |
 
 ### [2026-09-03 18:24:48] S6 commit 9cc94db → origin/main;tag v0.0.4-rc37 已推送触发 CI(上一 tag v0.0.4-rc36)
+
+### [2026-09-03 18:30:03] S7 live pi-web 验证(scratch/live-swarm-check.mjs,经 /api/agent/new 让主模型自己调用)
+```
+session=01a066cd-ed55-751a-9391-46eee28638b5 cwd=%TEMP%\lop-swarm-live-cJWtqd wall=164.9s(含主链目标门/预审收尾)
+run=20260903102618-1a82e4 events: run_created/run_start(slots=1,worktree,cli=portable app pi-web 内置)/claimed/task_start/task_end/run_end/apply
+out/sub: result.json 合规(status=done) | verify.txt exit=0 'OK sub' | verdict.json pass(checks 含'Confirmed tests/sub.test.js is unmodified') | status.json done/ok dur=52.2s worker 4892/280 tok 验证者 3942/408 tok
+会话文件 tool 调用: swarm_run ×1, swarm_apply ×1(apply rows: sub applied=true verifyExit=0)
+回收表 'lop-swarm run=… wall=52s done=1' 进入主链 2 处;worker 最终话语 'Implemented `src/sub.js`…' 在会话文件出现 0 次 → 子代理文本零注入
+主模型最终答复未原样贴表(按 lop 协议输出验收清单 3/3),live 脚本 hasTable=false 属答复格式差异,不影响机制判定
+CI #62 v0.0.4-rc37 status=completed conclusion=success
+```
+
+| S7 live pi-web | 通过:未重启即发现扩展;主模型自行调用 swarm_run→swarm_apply;回收表入链、子代理文本 0 泄漏、主 cwd 复验 exit 0 |
+| CI | #62 v0.0.4-rc37 success |
