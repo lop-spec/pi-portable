@@ -25,7 +25,7 @@ function responseCollector() {
 
 test("quota control is compact, cached, keyboard accessible, and opens on pointerdown", () => {
   assert.match(quotaUi, /const ENDPOINT = "\/__pi_account_usage"/u);
-  assert.match(quotaUi, /const BROWSER_REFRESH_MS = 60_000/u);
+  assert.match(quotaUi, /const BROWSER_REFRESH_MS = 45_000/u);
   assert.match(quotaUi, /button\.addEventListener\("pointerdown"/u, "physical presses must render from browser memory immediately");
   assert.match(quotaUi, /dataset\.piAccountUsageOpenLatencyMs/u, "live UI must expose measured open latency");
   assert.match(quotaUi, /aria-haspopup", "dialog/u);

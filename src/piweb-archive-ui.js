@@ -575,7 +575,10 @@
 
   const VERSION = "piweb-account-usage-v1";
   const ENDPOINT = "/__pi_account_usage";
-  const BROWSER_REFRESH_MS = 60_000;
+  // The bridge refreshes upstream data every four minutes. Reading its local
+  // snapshot every 45 seconds keeps the rendered value safely below five
+  // minutes old even with timer jitter; this never calls a model endpoint.
+  const BROWSER_REFRESH_MS = 45_000;
   if (window.__piAccountUsageUiVersion === VERSION) return;
   window.__piAccountUsageUiVersion = VERSION;
 
