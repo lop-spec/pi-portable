@@ -3,6 +3,7 @@
 // 1) ChatInput 接收系统剪贴板中的文件。图片继续走原生图片附件链；普通文件复用
 //    /api/files 上传到会话 cwd，随后在光标处插入 @文件引用。纯文本粘贴仍交给浏览器。
 // 2) 聊天视口离开底部时显示轻量悬浮按钮，点击平滑回到底部，到底后自动隐藏。
+// 3) 输入区增加目标/计划自动追问入口；模型选择器收成图标并移到入口右侧。
 //
 // 用法: node patch-piweb-interactions.mjs [--pkg <包目录>] [--backup <备份目录>] [--check]
 // 约束: 仅 0.8.11；所有锚点先完整校验，任一不符则零写入；幂等可重入。
@@ -14,7 +15,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const MARK = "__pwPasteAndScrollV2";
-export const PATCH_REVISION = "r2";
+export const FOLLOWUP_MARK = "__pwFollowupModeV1";
+export const FOLLOWUP_RELOAD_MARK = "__pwFollowupReloadV1";
+export const PATCH_REVISION = "r4";
 
 /**
  * 将浏览器 Clipboard/DataTransfer 归一化为一次粘贴计划。
@@ -195,6 +198,74 @@ export function buildInteractionRuntime() {
     `}}()`;
 }
 
+function buildFollowupMenu(jsx, streaming, sendMode) {
+  const action = (id, label, detail) =>
+    `(0,${jsx}.jsxs)("button",{type:"button",role:"menuitem","data-lop-followup-action":${JSON.stringify(id)},` +
+    `onClick:()=>{void ${sendMode}(${JSON.stringify(id)})},style:{display:"flex",flexDirection:"column",alignItems:"flex-start",` +
+    `gap:2,minWidth:0,padding:"8px 10px",border:"1px solid var(--border)",borderRadius:6,background:"none",` +
+    `color:"var(--text)",cursor:"pointer",textAlign:"left",transition:"background 0.12s ease-out, border-color 0.12s ease-out"},` +
+    `onMouseEnter:e=>{e.currentTarget.style.background="var(--bg-hover)",e.currentTarget.style.borderColor="color-mix(in srgb, var(--accent) 35%, var(--border))"},` +
+    `onMouseLeave:e=>{e.currentTarget.style.background="none",e.currentTarget.style.borderColor="var(--border)"},children:[` +
+    `(0,${jsx}.jsx)("span",{style:{fontSize:12,fontWeight:600,lineHeight:1.35},children:${JSON.stringify(label)}}),` +
+    `(0,${jsx}.jsx)("span",{style:{fontSize:11,lineHeight:1.35,color:"var(--text-dim)",whiteSpace:"nowrap"},children:${JSON.stringify(detail)}})]})`;
+
+  return `(0,${jsx}.jsxs)("div",{ref:__pwModeRef,style:{position:"relative",flexShrink:0},` +
+    `onKeyDown:e=>{"Escape"===e.key&&__pwModeOpen&&(e.preventDefault(),e.stopPropagation(),__pwSetModeOpen(!1),__pwSetModeError(null))},` +
+    `onBlur:e=>{e.currentTarget.contains(e.relatedTarget)||__pwSetModeOpen(!1)},children:[` +
+    `(0,${jsx}.jsx)("button",{type:"button",disabled:${streaming},title:${streaming}?"模型运行中":"自动追问模式",` +
+    `"aria-label":"自动追问模式","aria-haspopup":"menu","aria-expanded":__pwModeOpen,"data-lop-followup-mode":${JSON.stringify(FOLLOWUP_MARK)},` +
+    `onClick:()=>{${streaming}||(__pwSetModeError(null),__pwSetModeOpen(e=>!e))},style:{display:"flex",alignItems:"center",justifyContent:"center",` +
+    `width:32,height:32,padding:0,border:"none",borderRadius:8,background:__pwModeOpen?"var(--bg-hover)":"none",` +
+    `color:"var(--text-muted)",cursor:${streaming}?"not-allowed":"pointer",opacity:${streaming}?.5:1,transition:"background 0.12s ease-out, color 0.12s ease-out"},` +
+    `onMouseEnter:e=>{${streaming}||(e.currentTarget.style.background="var(--bg-hover)",e.currentTarget.style.color="var(--text)")},` +
+    `onMouseLeave:e=>{e.currentTarget.style.background=__pwModeOpen?"var(--bg-hover)":"none",e.currentTarget.style.color="var(--text-muted)"},` +
+    `children:(0,${jsx}.jsxs)("svg",{width:"15",height:"15",viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.9",` +
+    `strokeLinecap:"round",strokeLinejoin:"round","aria-hidden":"true",children:[` +
+    `(0,${jsx}.jsx)("line",{x1:"12",y1:"5",x2:"12",y2:"19"}),(0,${jsx}.jsx)("line",{x1:"5",y1:"12",x2:"19",y2:"12"})]})}),` +
+    `__pwModeOpen&&(0,${jsx}.jsxs)("div",{role:"menu","aria-label":"自动追问模式",style:{position:"absolute",left:0,bottom:"calc(100% + 6px)",` +
+    `zIndex:510,width:248,maxWidth:"calc(100vw - 24px)",padding:8,border:"1px solid var(--border)",borderRadius:8,background:"var(--bg)",` +
+    `boxShadow:"0 -4px 16px rgba(0,0,0,0.10)"},children:[` +
+    `(0,${jsx}.jsx)("div",{style:{padding:"2px 2px 6px",fontSize:11,fontWeight:600,color:"var(--text-muted)"},children:"目标"}),` +
+    `(0,${jsx}.jsxs)("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4},children:[` +
+    action("thorough", "彻底", "不够彻底") + `,` + action("target", "达标", "未达标") + `,` +
+    action("root-cause", "根因", "非根因") + `,` + action("root-fix", "根治", "未根治") + `]}),` +
+    `(0,${jsx}.jsx)("div",{style:{padding:"10px 2px 6px",fontSize:11,fontWeight:600,color:"var(--text-muted)"},children:"计划"}),` +
+    action("plan", "校准并执行", "确认方案后自动执行") + `,` +
+    `(0,${jsx}.jsx)("div",{style:{height:1,margin:"8px 0",background:"var(--border)"}}),` +
+    `(0,${jsx}.jsx)("button",{type:"button",role:"menuitem","data-lop-followup-action":"off",onClick:()=>{void ${sendMode}("off")},` +
+    `style:{width:"100%",padding:"7px 8px",border:"none",borderRadius:6,background:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:12,textAlign:"left"},` +
+    `onMouseEnter:e=>{e.currentTarget.style.background="var(--bg-hover)",e.currentTarget.style.color="var(--text)"},` +
+    `onMouseLeave:e=>{e.currentTarget.style.background="none",e.currentTarget.style.color="var(--text-muted)"},children:"停止自动追问"}),` +
+    `__pwModeError&&(0,${jsx}.jsx)("div",{role:"alert",style:{marginTop:6,padding:"6px 8px",borderRadius:6,background:"rgba(239,68,68,0.07)",` +
+    `color:"#ef4444",fontSize:11,lineHeight:1.4},children:__pwModeError})]})]})`;
+}
+
+function buildModeSend(slashCommands, loadSlashCommands, builtinCommand, audioUnlock) {
+  return `__pwModeSend=async pwAction=>{__pwSetModeError(null);try{let pwCommands=Array.isArray(${slashCommands})?${slashCommands}:[],` +
+    `pwReloadMarker=${JSON.stringify(FOLLOWUP_RELOAD_MARK)};` +
+    `pwCommands.some(e=>"lop-followup"===e?.name&&"extension"===e?.source)||(pwCommands="function"==typeof ${loadSlashCommands}?await ${loadSlashCommands}():[]);` +
+    `if(!pwCommands.some(e=>"lop-followup"===e?.name&&"extension"===e?.source)&&"function"==typeof ${builtinCommand}){` +
+    `let pwReload=await ${builtinCommand}("/reload");if(pwReload?.error)throw Error(pwReload.error);` +
+    `pwCommands="function"==typeof ${loadSlashCommands}?await ${loadSlashCommands}():[]}` +
+    `if(!pwCommands.some(e=>"lop-followup"===e?.name&&"extension"===e?.source))throw Error("自动追问扩展未加载");` +
+    `${audioUnlock}?.();if("function"!=typeof ${builtinCommand})throw Error("命令通道不可用");` +
+    `let pwResult=await ${builtinCommand}(\`/lop-followup-ui \${pwAction}\`);` +
+    `if(!pwResult?.handled)throw Error("自动追问命令未处理");if(pwResult.error)throw Error(pwResult.error);` +
+    `__pwSetModeOpen(!1)}catch(pwError){console.error("[lop-followup-ui] command failed:",pwError),` +
+    `__pwSetModeError(pwError instanceof Error?pwError.message:String(pwError))}}`;
+}
+
+const CHAT_INPUT_HEAD = /let ([\w$]+)=\(0,([\w$]+)\.forwardRef\)\(function\(\{onSend:([\w$]+),[\s\S]{0,250}?isStreaming:([\w$]+),[\s\S]{0,800}?slashCommands:([\w$]+),slashCommandsLoading:[\w$]+,onLoadSlashCommands:([\w$]+),onBuiltinCommand:([\w$]+),[\s\S]{0,180}?onAudioUnlock:([\w$]+),[\s\S]{0,120}?\},[\w$]+\)\{let /g;
+const CHAT_INPUT_HOOK_BOUNDARY = /([\w$]+\.current=[\w$]+,[\w$]+\.current=[\w$]+),\(0,([\w$]+)\.useImperativeHandle\)/g;
+const CHAT_MODEL_RENDER = /\(([\w$]+)\.length>0\|\|([\w$]+)\|\|([\w$]+)\)&&([\w$]+)&&\(0,([\w$]+)\.jsx\)\(([\w$]+),\{options:\1,value:\2,onChange:\4,disabled:([\w$]+),busy:([\w$]+),isAutoSelection:([\w$]+)\}\)/g;
+const MODEL_TOOLBAR_STYLE = /:\{display:"flex",alignItems:"center",justifyContent:([\w$]+)\?"flex-start":void 0,gap:6,width:\1\?"100%":void 0,maxWidth:\1\?"100%":220,height:32,padding:\1\?"8px 10px":"8px 12px",overflow:"hidden",border:"none",borderRadius:9,background:([\w$]+)\?"var\(--bg-hover\)":"none",color:"var\(--text-muted\)",cursor:([\w$]+)\?"not-allowed":"pointer",fontSize:12,opacity:\3\?\.5:1,transition:"background 0\.12s, color 0\.12s"\}/g;
+const MODEL_ROOT_STYLE = /style:\{position:"relative",width:"field"===([\w$]+)\|\|([\w$]+)\?"100%":void 0,minWidth:0,flex:"toolbar"===\1&&\2\?"1 1 auto":void 0\}/g;
+const MODEL_BUTTON_ACCESSIBILITY = /"aria-label":([\w$]+),"aria-haspopup":"listbox","aria-expanded":([\w$]+),"aria-busy":([\w$]+)\|\|void 0,disabled:([\w$]+),title:\3\?"Switching model":\4\?([\w$]+):([\w$]+)\.length>0\|\|([\w$]+)\?"Change model":"No available models"/g;
+const MODEL_NAME_SPAN = /\(0,([\w$]+)\.jsx\)\("span",\{style:\{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"\},children:([\w$]+)\}\),"field"===([\w$]+)&&/g;
+const BUILTIN_COMMAND_DEFAULT = /default:return\{handled:!1\}/g;
+const EXTENSION_STATUS_SETTER = /void 0!==([\w$]+)\.state\.extensionStatuses&&([\w$]+)\(\1\.state\.extensionStatuses\?\?\[\]\)/g;
+const MODE_SEND_BLOCK = /__pwModeSend=async pwAction=>\{[\s\S]{0,1600}?\}\},\(0,([\w$]+)\.useImperativeHandle\)/g;
+
 const PASTE_HANDLER = /([\w$]+)=\(0,([\w$]+)\.useCallback\)\(([\w$]+)=>\{let ([\w$]+)=Array\.from\(\3\.clipboardData\?\.items\?\?\[\]\)\.filter\(([\w$]+)=>\5\.type\.startsWith\("image\/"\)\);\4\.length&&\(\3\.preventDefault\(\),([\w$]+)\(\4\.map\(([\w$]+)=>\7\.getAsFile\(\)\)\.filter\(([\w$]+)=>null!==\8\)\)\)\},\[\6\]\)/g;
 const INSERT_METHOD = /insertText\(([\w$]+)\)\{let ([\w$]+)=([\w$]+)\.current;if\(!\2\)return void ([\w$]+)\([\w$]+=>[\s\S]{0,900}?([\w$]+)\.current=([\w$]+),\4\(\6\),([\w$]+)\(null\),requestAnimationFrame/g;
 const CWD_FETCH = /fetch\(`\/api\/skills\?cwd=\$\{encodeURIComponent\(([\w$]+)\)\}`\)/g;
@@ -211,8 +282,141 @@ function requireOne(src, regex, label) {
   return matches[0];
 }
 
+export function applyFollowupModeUi(src, label = "bundle") {
+  if (src.includes(FOLLOWUP_MARK)) {
+    if (src.includes(FOLLOWUP_RELOAD_MARK)) return { out: src, applied: false, idents: null };
+    const head = requireOne(src, CHAT_INPUT_HEAD, `${label}: ChatInput 参数`);
+    const oldSend = requireOne(src, MODE_SEND_BLOCK, `${label}: 自动追问旧命令发现逻辑`);
+    if (oldSend[1] !== head[2]) throw new Error(`${label}: 自动追问迁移 React 标识符不一致，拒绝写入`);
+    const modeSend = buildModeSend(head[5], head[6], head[7], head[8]);
+    const out = src.slice(0, oldSend.index) + modeSend + `,(0,${oldSend[1]}.useImperativeHandle)` + src.slice(oldSend.index + oldSend[0].length);
+    if (!out.includes(FOLLOWUP_RELOAD_MARK)) throw new Error(`${label}: 自动追问迁移后标记校验失败，拒绝写入`);
+    return { out, applied: true, idents: { migratedCommandDiscovery: true, react: head[2] } };
+  }
+
+  const head = requireOne(src, CHAT_INPUT_HEAD, `${label}: ChatInput 参数`);
+  const hookBoundary = requireOne(src, CHAT_INPUT_HOOK_BOUNDARY, `${label}: ChatInput hooks`);
+  const modelRender = requireOne(src, CHAT_MODEL_RENDER, `${label}: 模型选择器调用`);
+  const toolbarStyle = requireOne(src, MODEL_TOOLBAR_STYLE, `${label}: 模型工具栏样式`);
+  const rootStyle = requireOne(src, MODEL_ROOT_STYLE, `${label}: 模型选择器根样式`);
+  const accessibility = requireOne(src, MODEL_BUTTON_ACCESSIBILITY, `${label}: 模型按钮无障碍属性`);
+  const nameSpan = requireOne(src, MODEL_NAME_SPAN, `${label}: 模型名称`);
+  const commandDefault = requireOne(src, BUILTIN_COMMAND_DEFAULT, `${label}: 内置命令 switch`);
+  const statusSetter = requireOne(src, EXTENSION_STATUS_SETTER, `${label}: 扩展状态 setter`);
+
+  const react = head[2];
+  const streaming = head[4];
+  const slashCommands = head[5];
+  const loadSlashCommands = head[6];
+  const builtinCommand = head[7];
+  const audioUnlock = head[8];
+  const jsx = modelRender[5];
+  if (hookBoundary[2] !== react || modelRender[7] !== streaming) {
+    throw new Error(`${label}: ChatInput 标识符交叉校验失败，拒绝写入`);
+  }
+  if (toolbarStyle[1] !== rootStyle[2]) {
+    throw new Error(`${label}: ModelSelector 移动端标识符不一致，拒绝写入`);
+  }
+  if (accessibility[5] !== nameSpan[2] || rootStyle[1] !== nameSpan[3] || nameSpan[1] !== jsx) {
+    throw new Error(`${label}: ModelSelector 名称/variant 标识符不一致，拒绝写入`);
+  }
+
+  const commandWindow = src.slice(Math.max(0, commandDefault.index - 4000), commandDefault.index);
+  const commandContextMatches = [...commandWindow.matchAll(
+    /let\[,([\w$]+),([\w$]+)=""\]=([\w$]+),([\w$]+)=\2\.trim\(\),([\w$]+)=[\w$]+\.current\?\?await ([\w$]+)\(\),([\w$]+)=[\w$]+=>[\s\S]{0,350}?;try\{switch\(\1\)\{/g,
+  )];
+  if (commandContextMatches.length !== 1) {
+    throw new Error(`${label}: 内置命令上下文命中 ${commandContextMatches.length} 次(期望1)，拒绝写入`);
+  }
+  const commandContext = commandContextMatches[0];
+  const commandName = commandContext[1];
+  const commandArgs = commandContext[4];
+  const commandSession = commandContext[5];
+  const commandComplete = commandContext[7];
+  const reloadMatches = [...commandWindow.matchAll(
+    /case"reload":if\(!([\w$]+)\)return ([\w$]+)\(\{handled:!0,error:"No active session to reload"\}\);return await ([\w$]+)\(\1,\{type:"reload"\}\)/g,
+  )];
+  if (reloadMatches.length !== 1) {
+    throw new Error(`${label}: sendAgentCommand 标识符命中 ${reloadMatches.length} 次(期望1)，拒绝写入`);
+  }
+  const sendAgentCommand = reloadMatches[0][3];
+  if (reloadMatches[0][1] !== commandSession || reloadMatches[0][2] !== commandComplete) {
+    throw new Error(`${label}: 内置命令 session/complete 标识符不一致，拒绝写入`);
+  }
+  const setExtensionStatuses = statusSetter[2];
+
+  const modeSend = buildModeSend(slashCommands, loadSlashCommands, builtinCommand, audioUnlock);
+
+  const toolbarReplacement =
+    `:{display:"flex",alignItems:"center",justifyContent:"center",gap:0,width:32,maxWidth:32,height:32,padding:0,` +
+    `overflow:"hidden",border:"none",borderRadius:8,background:${toolbarStyle[2]}?"var(--bg-hover)":"none",` +
+    `color:"var(--text-muted)",cursor:${toolbarStyle[3]}?"not-allowed":"pointer",fontSize:12,opacity:${toolbarStyle[3]}?.5:1,` +
+    `transition:"background 0.12s, color 0.12s"}`;
+  const rootReplacement =
+    `style:{position:"relative",width:"field"===${rootStyle[1]}?"100%":void 0,minWidth:0,flex:void 0}`;
+  const accessibilityReplacement =
+    `"aria-label":${accessibility[1]}??\`当前模型：\${${accessibility[5]}}\`,"aria-haspopup":"listbox",` +
+    `"aria-expanded":${accessibility[2]},"aria-busy":${accessibility[3]}||void 0,disabled:${accessibility[4]},` +
+    `title:${accessibility[3]}?"Switching model":${accessibility[4]}?${accessibility[5]}:` +
+    `${accessibility[6]}.length>0||${accessibility[7]}?\`Change model: \${${accessibility[5]}}\`:"No available models"`;
+  const nameSpanReplacement =
+    `"field"===${nameSpan[3]}&&(0,${nameSpan[1]}.jsx)("span",{style:{flex:1,minWidth:0,overflow:"hidden",` +
+    `textOverflow:"ellipsis",whiteSpace:"nowrap"},children:${nameSpan[2]}}),"field"===${nameSpan[3]}&&`;
+  const modeCommandCase =
+    `case"lop-followup-ui":{if(!${commandSession})return ${commandComplete}({handled:!0,error:"自动追问会话不可用"});` +
+    `if(!["thorough","target","root-cause","root-fix","plan","off"].includes(${commandArgs}))return ${commandComplete}({handled:!0,error:"自动追问模式无效"});` +
+    `await ${sendAgentCommand}(${commandSession},{type:"prompt",message:\`/lop-followup \${${commandArgs}}\`});` +
+    `let __pwModeState=await ${sendAgentCommand}(${commandSession},{type:"get_state"});` +
+    `void 0!==__pwModeState.extensionStatuses&&${setExtensionStatuses}(__pwModeState.extensionStatuses??[]);` +
+    `return ${commandComplete}({handled:!0,message:"off"===${commandArgs}?"自动追问已停止":"自动追问模式已选择"})}`;
+
+  const menu = buildFollowupMenu(jsx, streaming, "__pwModeSend");
+  const edits = [
+    {
+      start: head.index + head[0].length,
+      end: head.index + head[0].length,
+      text: "__pwModeOpen,__pwSetModeOpen,__pwModeError,__pwSetModeError,__pwModeRef,__pwModeSend,",
+      label: "mode-bindings",
+    },
+    {
+      start: hookBoundary.index,
+      end: hookBoundary.index + hookBoundary[0].length,
+      text: `[__pwModeOpen,__pwSetModeOpen]=(0,${react}.useState)(!1),` +
+        `[__pwModeError,__pwSetModeError]=(0,${react}.useState)(null),__pwModeRef=(0,${react}.useRef)(null),` +
+        `${hookBoundary[1]},${modeSend},(0,${react}.useImperativeHandle)`,
+      label: "mode-hooks",
+    },
+    { start: modelRender.index, end: modelRender.index, text: `${menu},`, label: "mode-menu" },
+    { start: toolbarStyle.index, end: toolbarStyle.index + toolbarStyle[0].length, text: toolbarReplacement, label: "model-toolbar" },
+    { start: rootStyle.index, end: rootStyle.index + rootStyle[0].length, text: rootReplacement, label: "model-root" },
+    { start: accessibility.index, end: accessibility.index + accessibility[0].length, text: accessibilityReplacement, label: "model-accessibility" },
+    { start: nameSpan.index, end: nameSpan.index + nameSpan[0].length, text: nameSpanReplacement, label: "model-name" },
+    { start: commandDefault.index, end: commandDefault.index, text: modeCommandCase, label: "mode-command" },
+  ].sort((a, b) => b.start - a.start);
+
+  for (let index = 1; index < edits.length; index += 1) {
+    if (edits[index - 1].start < edits[index].end) {
+      throw new Error(`${label}: 自动追问补丁区间重叠 ${edits[index - 1].label}/${edits[index].label}，拒绝写入`);
+    }
+  }
+  let out = src;
+  for (const edit of edits) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
+  if (!out.includes(FOLLOWUP_MARK) || !out.includes(FOLLOWUP_RELOAD_MARK) || !out.includes('case"lop-followup-ui"') || !out.includes('"data-lop-followup-action":"plan"')) {
+    throw new Error(`${label}: 自动追问补丁后标记校验失败，拒绝写入`);
+  }
+
+  return {
+    out,
+    applied: true,
+    idents: { react, jsx, streaming, slashCommands, loadSlashCommands, builtinCommand, commandName, commandSession, sendAgentCommand, setExtensionStatuses },
+  };
+}
+
 export function applyPiWebInteractions(src, label = "bundle") {
-  if (src.includes(MARK)) return { out: src, applied: false, idents: null };
+  if (src.includes(MARK)) {
+    const followup = applyFollowupModeUi(src, label);
+    return { out: followup.out, applied: followup.applied, idents: followup.idents ? { followup: followup.idents } : null };
+  }
 
   // 先收齐全部锚点，任何失败都发生在构造 edits 前，保证调用方零写入。
   const paste = requireOne(src, PASTE_HANDLER, `${label}: 文件粘贴 handler`);
@@ -325,14 +529,19 @@ export function applyPiWebInteractions(src, label = "bundle") {
   }
   let out = src;
   for (const edit of edits) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
-  if (!out.includes(MARK) || !out.includes('"data-pw-scroll-bottom":"true"')) {
+  const followup = applyFollowupModeUi(out, label);
+  out = followup.out;
+  if (!out.includes(MARK) || !out.includes(FOLLOWUP_MARK) || !out.includes(FOLLOWUP_RELOAD_MARK) || !out.includes('"data-pw-scroll-bottom":"true"')) {
     throw new Error(`${label}: 补丁后标记校验失败，拒绝写入`);
   }
 
   return {
     out,
     applied: true,
-    idents: { react, addImages, cwd, textareaRef, setValue, valueRef, setAtQuery, scrollRef, messages, streamState },
+    idents: {
+      react, addImages, cwd, textareaRef, setValue, valueRef, setAtQuery, scrollRef, messages, streamState,
+      followup: followup.idents,
+    },
   };
 }
 
@@ -381,6 +590,9 @@ function main() {
     .update(PATCH_REVISION)
     .update(buildInteractionRuntime())
     .update(isAwayFromBottom.toString())
+    .update(buildFollowupMenu.toString())
+    .update(buildModeSend.toString())
+    .update(applyFollowupModeUi.toString())
     .update(applyPiWebInteractions.toString())
     .digest("hex");
   const nextHash = ("pwi" + fingerprint).slice(0, currentHash.length);
@@ -389,7 +601,7 @@ function main() {
   if (!fs.existsSync(currentChunk)) die("当前 page chunk 不存在: " + currentChunk);
   const source = fs.readFileSync(currentChunk, "utf8");
 
-  if (source.includes(MARK)) {
+  if (source.includes(MARK) && source.includes(FOLLOWUP_MARK) && source.includes(FOLLOWUP_RELOAD_MARK)) {
     console.log(JSON.stringify({ status: "already-patched", pkg: PKG, chunk: path.basename(currentChunk) }));
     process.exit(0);
   }
@@ -432,6 +644,7 @@ function main() {
     idents: patched.idents,
     draftPatchDetected: source.includes("__pwDraftPersistV1"),
     foldPatchDetected: source.includes('"process-group-lead-"'),
+    followupModeAdded: !source.includes(FOLLOWUP_MARK),
     refEdits: referenceEdits.map((edit) => ({ file: path.relative(PKG, edit.file), count: edit.count })),
     backup: BACKUP,
   };

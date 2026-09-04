@@ -5,13 +5,22 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
+  FOLLOWUP_MARK,
+  FOLLOWUP_RELOAD_MARK,
   MARK,
+  applyFollowupModeUi,
   applyPiWebInteractions,
   formatAtMentions,
   getClipboardPastePlan,
   isAwayFromBottom,
   uploadClipboardFiles,
 } from "../tools/patch-piweb-interactions.mjs";
+import lopFollowupExtension, {
+  FOLLOWUP_PROFILES,
+  FOLLOWUP_STATE_TYPE,
+  assistantText,
+  finalStandaloneLine,
+} from "../src/extensions/lop-followup.ts";
 
 const scriptPath = path.resolve(new URL("../tools/patch-piweb-interactions.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 
@@ -39,7 +48,65 @@ function fixtureBundle() {
     "function chat(){let td=(0,i.useCallback)(()=>{e2(e=>Math.max(e,2*B.length))},[B.length]),tc=eL&&0===B.length&&!_.isStreaming&&!e0,tu=!!_.streamingMessage?.content.length,tp=e?.cwd??o??void 0,tg=(0,i.useRef)(null),tf=(0,i.useRef)(null);",
     ";(0,i.useLayoutEffect)(()=>{let e=tf.current;if(!q||!e$)return;work()},[q]);",
     "return(0,r.jsxs)(r.Fragment,{children:[(0,r.jsxs)(\"div\",{className:\"relative flex min-w-0 flex-1 overflow-hidden\",children:[(0,r.jsx)(\"div\",{ref:eP,className:\"min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]\",children:messages}),W?null:(0,r.jsx)(nR,{messages:B,streamingMessage:_.streamingMessage,scrollContainer:eP,messageRefs:ta,onRevealHistory:td})]}),input]})}",
+    "function t6({options:e,value:t,onChange:n,onClear:o,emptyLabel:s,selectedLabel:l,disabled:a=!1,busy:d=!1,isAutoSelection:c=!1,ariaLabel:u,variant:h=\"toolbar\",placement:p=\"up\"}){let C=t2(),R=!1,N=a||d,$=e,D=l??(t?t.modelId:s??\"Select model\");let B=\"field\"===h?{}:{display:\"flex\",alignItems:\"center\",justifyContent:C?\"flex-start\":void 0,gap:6,width:C?\"100%\":void 0,maxWidth:C?\"100%\":220,height:32,padding:C?\"8px 10px\":\"8px 12px\",overflow:\"hidden\",border:\"none\",borderRadius:9,background:R?\"var(--bg-hover)\":\"none\",color:\"var(--text-muted)\",cursor:N?\"not-allowed\":\"pointer\",fontSize:12,opacity:N?.5:1,transition:\"background 0.12s, color 0.12s\"};return(0,r.jsxs)(\"div\",{style:{position:\"relative\",width:\"field\"===h||C?\"100%\":void 0,minWidth:0,flex:\"toolbar\"===h&&C?\"1 1 auto\":void 0},children:[(0,r.jsxs)(\"button\",{\"aria-label\":u,\"aria-haspopup\":\"listbox\",\"aria-expanded\":R,\"aria-busy\":d||void 0,disabled:N,title:d?\"Switching model\":N?D:$.length>0||o?\"Change model\":\"No available models\",children:[(0,r.jsx)(\"svg\",{}),(0,r.jsx)(\"span\",{style:{flex:1,minWidth:0,overflow:\"hidden\",textOverflow:\"ellipsis\",whiteSpace:\"nowrap\"},children:D}),\"field\"===h&&(0,r.jsx)(\"svg\",{})]})]})}",
+    "let nb=(0,i.forwardRef)(function({onSend:e,onAbort:t,onSteer:n,onFollowUp:o,isStreaming:s,model:l,isAutoModelSelection:a,modelNames:d,modelList:c,modelError:u,modelScopeWarnings:h,onModelChange:p,modelSwitching:g,onCompact:f,onAbortCompaction:m,isCompacting:x,compactError:v,compactResult:b,toolPreset:k,onToolPresetChange:w,thinkingLevel:j,onThinkingLevelChange:S,availableThinkingLevels:C,thinkingLevelMap:M,retryInfo:R,queuedMessages:I,inputHistory:W=[],onRecallQueue:E,slashCommands:P,slashCommandsLoading:N,onLoadSlashCommands:$,onBuiltinCommand:z,soundEnabled:F,onSoundToggle:A,onAudioUnlock:D,onPromptWithStreamingBehavior:B,draftKey:O,cwd:H},U){let _,q,{t:Y}=fake(),Z=!1,X=\"\",es=[],eX={current:X},eQ={current:es},ty=[];eX.current=X,eQ.current=es,(0,i.useImperativeHandle)(U,()=>({}));return(0,r.jsxs)(\"div\",{children:[(ty.length>0||l||u)&&p&&(0,r.jsx)(t6,{options:ty,value:l,onChange:p,disabled:s,busy:g,isAutoSelection:a})]})})",
+    "function fakeHook(){let e={state:{extensionStatuses:[]}};void 0!==e.state.extensionStatuses&&eq(e.state.extensionStatuses??[]);let t9=(0,i.useCallback)(async e=>{if(!e.startsWith(\"/\"))return{handled:!1};let t=e.match(/^\\/([^\\s]+)(?:\\s+([\\s\\S]*))?$/);if(!t)return{handled:!1};let[,n,r=\"\"]=t,i=r.trim(),o=e0.current??await tW(),s=e=>(e.handled&&noop(),e);try{switch(n){case\"reload\":if(!o)return s({handled:!0,error:\"No active session to reload\"});return await nB(o,{type:\"reload\"}),s({handled:!0});case\"clone\":return s({handled:!0});default:return{handled:!1}}}catch(e){return s({handled:!0,error:String(e)})}},[])}",
   ].join("");
+}
+
+function createFakeFollowupRuntime({ initialEntries = [], sendError = null } = {}) {
+  const handlers = new Map();
+  const commands = new Map();
+  const entries = initialEntries.map((entry) => structuredClone(entry));
+  const statuses = new Map();
+  const notifications = [];
+  const sent = [];
+  let idle = true;
+  const pi = {
+    registerCommand(name, definition) { commands.set(name, definition); },
+    on(name, handler) {
+      const list = handlers.get(name) ?? [];
+      list.push(handler);
+      handlers.set(name, list);
+    },
+    appendEntry(customType, data) {
+      entries.push({ type: "custom", customType, data: structuredClone(data) });
+    },
+    sendUserMessage(message) {
+      if (sendError) throw sendError;
+      sent.push(message);
+    },
+  };
+  const ctx = {
+    sessionManager: { getEntries: () => entries },
+    isIdle: () => idle,
+    ui: {
+      setStatus(key, text) {
+        if (text === undefined) statuses.delete(key);
+        else statuses.set(key, text);
+      },
+      notify(message, type = "info") { notifications.push({ message, type }); },
+    },
+  };
+  lopFollowupExtension(pi);
+  return {
+    commands,
+    entries,
+    handlers,
+    notifications,
+    sent,
+    statuses,
+    ctx,
+    setIdle(value) { idle = value; },
+    async fire(name, event = {}) {
+      const results = [];
+      for (const handler of handlers.get(name) ?? []) results.push(await handler(event, ctx));
+      return results;
+    },
+    state() {
+      return [...entries].reverse().find((entry) => entry.customType === FOLLOWUP_STATE_TYPE)?.data;
+    },
+  };
 }
 
 test("pure text remains a native browser paste", () => {
@@ -133,11 +200,13 @@ test("scroll-bottom visibility uses the same eight-pixel tail tolerance", () => 
   assert.equal(isAwayFromBottom(100, 100, 200), false);
 });
 
-test("bundle patch installs both behaviors atomically and is idempotent", () => {
+test("bundle patch installs paste, scroll, follow-up menu, and compact model controls atomically", () => {
   const source = fixtureBundle();
   const patched = applyPiWebInteractions(source, "fixture");
   assert.equal(patched.applied, true);
   assert.match(patched.out, new RegExp(MARK));
+  assert.match(patched.out, new RegExp(FOLLOWUP_MARK));
+  assert.match(patched.out, new RegExp(FOLLOWUP_RELOAD_MARK));
   assert.match(patched.out, /pwPayload\.shouldPreventDefault/);
   assert.match(patched.out, /if\(!pwPayload\.shouldPreventDefault\)return/);
   assert.match(patched.out, /\/api\/files\//);
@@ -146,11 +215,32 @@ test("bundle patch installs both behaviors atomically and is idempotent", () => 
   assert.match(patched.out, /e\.addEventListener\("scroll"/);
   assert.match(patched.out, /\[tc,B\.length,eP,pwScrollCheck\]/, "listener must attach after an initially loading session receives messages");
   assert.match(patched.out, /pwScrollAway\(e\.scrollTop,e\.clientHeight,e\.scrollHeight\)/);
+  assert.match(patched.out, /"data-lop-followup-action":"root-fix"/);
+  assert.match(patched.out, /"data-lop-followup-action":"plan"/);
+  assert.match(patched.out, /case"lop-followup-ui"/);
+  assert.match(patched.out, /message:`\/lop-followup \$\{i\}`/);
+  assert.match(patched.out, /await z\("\/reload"\)/, "an already-running session must self-reload once when the extension is newly installed");
+  assert.match(patched.out, /justifyContent:"center",gap:0,width:32,maxWidth:32/);
+  assert.match(patched.out, /title:d\?"Switching model":N\?D:\$\.length>0\|\|o\?`Change model: \$\{D\}`/);
+  assert.match(patched.out, /"field"===h&&\(0,r\.jsx\)\("span"/, "toolbar model name must be hidden while field variants keep it");
   assert.doesNotMatch(patched.out, /clipboardData\?\.items\?\?\[\]\)\.filter\(e=>e\.type\.startsWith\("image\/"\)\)/);
 
   const again = applyPiWebInteractions(patched.out, "fixture-patched");
   assert.equal(again.applied, false);
   assert.equal(again.out, patched.out);
+});
+
+test("a bundle carrying the previous interaction marker receives only the new follow-up UI", () => {
+  const previous = fixtureBundle().replace("function composer(){", `function composer(){let ${MARK}=1;`);
+  const patched = applyPiWebInteractions(previous, "previous-v2");
+  assert.equal(patched.applied, true);
+  assert.match(patched.out, new RegExp(FOLLOWUP_MARK));
+  assert.match(patched.out, new RegExp(FOLLOWUP_RELOAD_MARK));
+  assert.match(patched.out, /case"lop-followup-ui"/);
+  assert.doesNotMatch(patched.out, /pwPayload\.shouldPreventDefault/, "base interactions must not be applied twice");
+
+  const direct = applyFollowupModeUi(patched.out, "previous-v2-patched");
+  assert.equal(direct.applied, false);
 });
 
 test("an anchor mismatch aborts before producing a partial bundle", () => {
@@ -159,6 +249,82 @@ test("an anchor mismatch aborts before producing a partial bundle", () => {
     () => applyPiWebInteractions(source.replace("onRevealHistory:td", "onRevealHistory:missing"), "broken"),
     /交叉校验失败|锚点命中/,
   );
+});
+
+test("terminal detection accepts only the final standalone assistant line", () => {
+  assert.equal(
+    assistantText({ role: "assistant", content: [{ type: "thinking", thinking: "x" }, { type: "text", text: "完成\n已确认根治" }] }),
+    "完成\n已确认根治",
+  );
+  assert.equal(finalStandaloneLine("完成\r\n\r\n已确认根治\r\n"), "已确认根治");
+  assert.notEqual(finalStandaloneLine("完成\n已确认根治。"), FOLLOWUP_PROFILES["root-fix"].terminalLine);
+  assert.equal(finalStandaloneLine("```text\n已确认根治\n"), null, "a marker inside an open code fence must not terminate");
+  assert.equal(assistantText({ role: "user", content: "已确认根治" }), null, "user text must never terminate");
+});
+
+test("extension uses only ordinary input/lifecycle APIs and sends one follow-up per settled assistant", async () => {
+  const runtime = createFakeFollowupRuntime();
+  assert.deepEqual(
+    [...runtime.handlers.keys()].sort(),
+    ["agent_settled", "input", "message_end", "session_shutdown", "session_start"],
+    "the extension must not hook context, system prompts, tools, or provider requests",
+  );
+  assert.deepEqual([...runtime.commands.keys()], ["lop-followup"]);
+
+  await runtime.fire("session_start", { reason: "startup" });
+  await runtime.commands.get("lop-followup").handler("root-fix", runtime.ctx);
+  await runtime.fire("input", { source: "rpc", text: "修复这个问题" });
+  await runtime.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "已处理第一层问题" }], stopReason: "stop" } });
+  await runtime.fire("agent_settled");
+  assert.deepEqual(runtime.sent, [FOLLOWUP_PROFILES["root-fix"].prompt]);
+  assert.equal(runtime.state().sent, 1);
+
+  await runtime.fire("agent_settled");
+  assert.equal(runtime.sent.length, 1, "duplicate settled events for the same assistant must not send twice");
+
+  await runtime.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "修复完成\n已确认根治" }], stopReason: "stop" } });
+  await runtime.fire("agent_settled");
+  assert.equal(runtime.sent.length, 1);
+  assert.equal(runtime.state().phase, "off");
+  assert.equal(runtime.statuses.has("lop-followup"), false);
+});
+
+test("plan mode sends the execution handoff once and disarms before that turn", async () => {
+  const runtime = createFakeFollowupRuntime();
+  await runtime.fire("session_start", { reason: "startup" });
+  await runtime.commands.get("lop-followup").handler("plan", runtime.ctx);
+  await runtime.fire("input", { source: "rpc", text: "先给计划" });
+  await runtime.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "计划如下\n方案已确认" }], stopReason: "stop" } });
+  await runtime.fire("agent_settled");
+
+  assert.deepEqual(runtime.sent, [FOLLOWUP_PROFILES.plan.handoff]);
+  assert.equal(runtime.state().phase, "off");
+  await runtime.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "执行完毕" }], stopReason: "stop" } });
+  await runtime.fire("agent_settled");
+  assert.equal(runtime.sent.length, 1, "the execution response must not restart plan follow-ups");
+});
+
+test("manual takeover and the eight-turn ceiling pause visibly instead of silently stopping", async () => {
+  const manual = createFakeFollowupRuntime();
+  await manual.fire("session_start", { reason: "startup" });
+  await manual.commands.get("lop-followup").handler("thorough", manual.ctx);
+  await manual.fire("input", { source: "rpc", text: "初始任务" });
+  await manual.fire("input", { source: "rpc", text: "我来补充" });
+  assert.equal(manual.state().phase, "paused");
+  assert.match(manual.statuses.get("lop-followup"), /已暂停/);
+  assert.equal(manual.sent.length, 0);
+
+  const limited = createFakeFollowupRuntime();
+  await limited.fire("session_start", { reason: "startup" });
+  await limited.commands.get("lop-followup").handler("target", limited.ctx);
+  await limited.fire("input", { source: "rpc", text: "目标任务" });
+  for (let turn = 0; turn < 9; turn += 1) {
+    await limited.fire("message_end", { message: { role: "assistant", content: `仍在处理 ${turn}`, stopReason: "stop" } });
+    await limited.fire("agent_settled");
+  }
+  assert.equal(limited.sent.length, 8);
+  assert.equal(limited.state().phase, "paused");
+  assert.equal(limited.state().reason, "automatic-limit");
 });
 
 test("CLI check is read-only, apply rotates the chunk URL, and rerun is idempotent", async (t) => {

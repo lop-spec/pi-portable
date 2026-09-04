@@ -117,6 +117,33 @@ function configurePortableBash() {
   return settings.shellPath;
 }
 
+function syncManagedFollowupExtension() {
+  const source = path.join(HOME, "src", "extensions", "lop-followup.ts");
+  const extensionDir = path.join(DATA, ".pi", "agent", "extensions");
+  const target = path.join(extensionDir, "lop-followup.ts");
+  if (!fs.existsSync(source)) return { status: "source-missing", source, target };
+
+  const wanted = fs.readFileSync(source, "utf8");
+  const current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
+  if (current === wanted) return { status: "already-current", source, target };
+
+  fs.mkdirSync(extensionDir, { recursive: true });
+  let backup = null;
+  if (current) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const historyDir = path.join(extensionDir, "_历史版本");
+    fs.mkdirSync(historyDir, { recursive: true });
+    backup = path.join(historyDir, `lop-followup.${stamp}.ts`);
+    fs.copyFileSync(target, backup);
+  }
+
+  const tmp = `${target}.portable.tmp`;
+  fs.writeFileSync(tmp, wanted, "utf8");
+  fs.renameSync(tmp, target);
+  if (fs.readFileSync(target, "utf8") !== wanted) throw new Error(`自动追问扩展读回不一致:${target}`);
+  return { status: current ? "updated" : "installed", source, target, backup };
+}
+
 function portAlive(port, timeout = 1200) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
@@ -349,6 +376,12 @@ async function main() {
     const shellPath = configurePortableBash();
     if (shellPath) log(`Bash 已配置:${shellPath}`);
   } catch (e) { log(`Bash 配置失败:${e.message}`); }
+
+  try {
+    const extension = syncManagedFollowupExtension();
+    if (extension.status === "source-missing") log(`自动追问扩展源缺失,未安装:${extension.source}`);
+    else log(`自动追问扩展:${extension.status} (${extension.target})`);
+  } catch (e) { log(`自动追问扩展同步失败:${e.message}`); }
 
   // 3 出口自适应
   const egress = await detectEgress(DATA);

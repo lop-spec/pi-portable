@@ -25,5 +25,8 @@ assert.match(source, /function portableizeModelAuth\(\)/, "便携启动时必须
 assert.match(source, /process\.env\.PI_PORTABLE_DATA,'auth\.json'/, "模型鉴权必须读取便携 data/auth.json");
 assert.match(source, /function configurePortableBash\(\)/, "启动器必须配置非标准安装位置的 Git Bash");
 assert.match(source, /"Programs", "Git", "bin", "bash\.exe"/, "启动器必须识别 Git for Windows 当前用户安装路径");
+assert.match(source, /function syncManagedFollowupExtension\(\)/, "启动器必须同步用户主动开启的自动追问扩展");
+assert.match(source, /自动追问扩展源缺失,未安装/u, "扩展同步失败必须留下无条件启动日志");
+assert.equal(fs.existsSync(path.join(root, "src", "extensions", "lop-followup.ts")), true, "发行源码层必须包含默认关闭的自动追问扩展");
 
-console.log("PASS launcher portable-node/auth/bash contract");
+console.log("PASS launcher portable-node/auth/bash/followup-extension contract");
