@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "piweb-session-archive-v4";
+  const VERSION = "piweb-session-archive-v6";
   const VIEW_KEY = "piweb-session-archive-view";
   if (window.__piSessionArchiveUiVersion === VERSION) return;
   window.__piSessionArchiveUiVersion = VERSION;
@@ -190,6 +190,15 @@
     )) || null;
   }
 
+  function nativeNewSessionButton() {
+    return [...document.querySelectorAll("button")].find((button) => {
+      if (button.dataset.piSessionArchiveControl) return false;
+      const title = String(button.getAttribute("title") || "");
+      const label = String(button.textContent || "").trim();
+      return /new session/iu.test(title) || /新建会话|新增工作階段/u.test(title) || ["New", "新建", "新增"].includes(label);
+    }) || null;
+  }
+
   function ensureStyle() {
     if (document.querySelector("style[data-pi-session-archive-style]")) return;
     const style = document.createElement("style");
@@ -197,7 +206,7 @@
     style.textContent = [
       "[data-pi-session-archive-action]{color:var(--text-muted)!important}",
       "[data-pi-session-archive-action]:hover{color:var(--accent)!important;border-color:rgba(37,99,235,.35)!important;background:var(--bg-selected)!important}",
-      "[data-pi-session-archive-pending]{opacity:0!important;transform:translateX(-6px)!important;pointer-events:none!important;transition:opacity 120ms ease,transform 120ms ease!important}",
+      "[data-pi-session-archive-pending]{pointer-events:none!important;overflow:hidden!important}",
       "[data-pi-session-archive-hidden]{display:none!important}",
       "[data-pi-session-archive-control]:focus-visible,[data-pi-session-archive-action]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}",
     ].join("");
@@ -263,9 +272,14 @@
     const markup = icon("archive") + suffix;
     if (control.innerHTML !== markup) control.innerHTML = markup;
     const refreshRect = refresh.getBoundingClientRect();
+    const createRect = nativeNewSessionButton()?.getBoundingClientRect();
     const controlWidth = control.getBoundingClientRect().width || 32;
+    const betweenGap = createRect ? refreshRect.left - createRect.right - 16 : 0;
+    const left = createRect && betweenGap >= controlWidth
+      ? createRect.right + 8
+      : createRect ? createRect.left - controlWidth - 8 : refreshRect.left - controlWidth - 8;
     host.style.top = `${Math.max(0, refreshRect.top)}px`;
-    host.style.left = `${Math.max(4, refreshRect.left - controlWidth - 8)}px`;
+    host.style.left = `${Math.max(4, left)}px`;
   }
 
   function decorateActions() {
@@ -296,6 +310,7 @@
     if (!pending) return;
     clearTimeout(pending.hideTimer);
     clearTimeout(pending.cleanupTimer);
+    pending.animation?.cancel();
     state.optimisticActions.delete(pending);
     if (pending.button?.isConnected) delete pending.button.dataset.piSessionArchiveBusy;
     if (!pending.row?.isConnected) return;
@@ -324,20 +339,22 @@
       hideTimer: 0,
       timeout: 0,
       cleanupTimer: 0,
+      animation: null,
     };
     state.optimisticActions.add(pending);
     row.dataset.piSessionArchivePending = "true";
     row.setAttribute("aria-busy", "true");
     row.style.pointerEvents = "none";
-    row.style.transition = "opacity 120ms ease, transform 120ms ease";
-    requestAnimationFrame(() => {
-      row.style.opacity = "0";
-      row.style.transform = "translateX(-6px)";
-    });
+    const computed = getComputedStyle(row);
+    const rowHeight = row.getBoundingClientRect().height || 54;
+    pending.animation = row.animate([
+      { opacity: computed.opacity || "1", transform: computed.transform === "none" ? "translateX(0)" : computed.transform, height: `${rowHeight}px` },
+      { opacity: "0", transform: "translateX(-6px)", height: "0px" },
+    ], { duration: 180, easing: "cubic-bezier(.4, 0, .2, 1)", fill: "forwards" });
     pending.hideTimer = setTimeout(() => {
       row.dataset.piSessionArchiveHidden = "true";
       row.style.display = "none";
-    }, 130);
+    }, 190);
     pending.cleanupTimer = setTimeout(() => restoreOptimisticAction(pending), 30000);
     pending.timeout = setTimeout(() => {
       if (pending.started) return;
@@ -351,6 +368,39 @@
     return pending;
   }
 
+  function sessionIdFromRow(row) {
+    const fiberKey = row ? Object.keys(row).find((key) => key.startsWith("__reactFiber$")) : "";
+    let fiber = fiberKey ? row[fiberKey] : null;
+    for (let depth = 0; fiber && depth < 12; depth += 1, fiber = fiber.return) {
+      const session = fiber.memoizedProps?.session || fiber.pendingProps?.session;
+      if (session?.id) return String(session.id);
+    }
+    return "";
+  }
+
+  async function performDirectAction(pending, sessionId) {
+    pending.started = true;
+    clearTimeout(pending.timeout);
+    state.pendingActions = state.pendingActions.filter((item) => item !== pending);
+    const action = state.view === "archived" ? "restore" : "archive";
+    try {
+      const response = await nativeFetch(`/api/sessions/${encodeURIComponent(sessionId)}/${action}`, { method: "POST" });
+      if (!response.ok) {
+        let detail = "";
+        try { detail = String((await response.json())?.error || ""); } catch {}
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+      state.archivedCount = Math.max(0, state.archivedCount + (action === "archive" ? 1 : -1));
+      scheduleDecorate();
+      setTimeout(() => nativeRefreshButton()?.click(), 220);
+    } catch (error) {
+      const message = `${words().requestFailed}：${String(error?.message || error || "network error")}`;
+      console.error("[pi-web archive]", message);
+      restoreOptimisticAction(pending);
+      showError(message);
+    }
+  }
+
   function immediateActionClick(event) {
     if (forwardedActionEvents.has(event)) return;
     if (event.type === "pointerdown" && event.button !== 0) return;
@@ -361,7 +411,12 @@
     event.stopImmediatePropagation();
     if (button.dataset.piSessionArchiveBusy) return;
     button.dataset.piSessionArchiveBusy = "true";
-    beginOptimisticAction(button);
+    const pending = beginOptimisticAction(button);
+    const sessionId = sessionIdFromRow(pending?.row);
+    if (pending && sessionId) {
+      void performDirectAction(pending, sessionId);
+      return;
+    }
     const forwarded = new MouseEvent("click", {
       bubbles: true,
       cancelable: true,

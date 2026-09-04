@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 export const RUN_SUPERVISOR_VERSION = "run-supervisor-v2-fast-error";
 export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
-export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v4";
+export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v6";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
@@ -1024,6 +1024,7 @@ export class RunSupervisor {
     }
     this.sessionCatalogue = body.sessions;
     this.sessionCatalogueAt = this.now();
+    if (Array.isArray(body.runningSessionIds)) this.runningIds = new Set(body.runningSessionIds.map(String));
     const partition = this.archiveStore.partition(body.sessions);
     const archivedGroupCount = new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size;
     const view = parsedUrl.searchParams.get("archiveView") === "archived" ? "archived" : "active";
@@ -1117,7 +1118,7 @@ export class RunSupervisor {
         ageMs: this.sessionCatalogueAt ? Math.max(0, this.now() - this.sessionCatalogueAt) : null,
         count: catalogue.length,
       });
-      const running = await this.fetchRunning();
+      const running = await this.runningSessionsForArchive();
       if (!target) {
         this.log("session-archive-failed", { action, sessionId, status: 404, error: "Session not found" });
         this.jsonResponse(response, 404, { error: "Session not found" });
@@ -1239,6 +1240,24 @@ export class RunSupervisor {
     if (!response.ok) throw new Error(`running HTTP ${response.status}`);
     const body = await response.json();
     return new Set(Array.isArray(body?.runningSessionIds) ? body.runningSessionIds.map(String) : []);
+  }
+
+  async runningSessionsForArchive(maxWaitMs = 120) {
+    const cached = new Set(this.runningIds);
+    let timer;
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), maxWaitMs); });
+    const probe = this.fetchRunning().then((value) => ({ value }), (error) => ({ error }));
+    const result = await Promise.race([probe, timeout]);
+    clearTimeout(timer);
+    if (result?.value instanceof Set) {
+      this.runningIds = result.value;
+      return result.value;
+    }
+    this.log("session-archive-running-cache", {
+      reason: result?.timeout ? "probe-timeout" : normalizeError(result?.error?.message || result?.error || "probe-failed"),
+      count: cached.size,
+    });
+    return cached;
   }
 
   async fetchRuntimeSessionInfos(sessionIds) {
