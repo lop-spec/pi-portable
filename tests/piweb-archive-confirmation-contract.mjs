@@ -23,6 +23,8 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /nativeFetch\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{action\}`/u);
   assert.match(source, /forwardedActionEvents\.add\(forwarded\)/u, "the guarded native fallback must remain deduplicated");
   assert.doesNotMatch(source, /button\.innerHTML/u, "decorating a React-owned action must not replace its children and break reconciliation");
+  assert.match(source, /\[data-pi-session-archive-action\]>svg\{opacity:0!important\}/u, "the native trash glyph must be hidden without mutating React children");
+  assert.match(source, /data-pi-session-archive-mode='restore'/u, "archive and restore need distinct semantic glyphs");
   assert.doesNotMatch(source, /refresh\.parentElement\.insertBefore/u, "the archive-view control must not become a React-managed sibling");
   assert.doesNotMatch(source, /element\.textContent\s*=/u, "archive decoration must not replace React-owned text nodes");
   assert.match(source, /document\.documentElement\.appendChild\(host\)/u);
