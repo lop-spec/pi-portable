@@ -530,9 +530,9 @@ node:internal/modules/run_main:107
     triggerUncaughtException(
     ^
 
-AssertionError [ERR_ASSERTION]: chromium exit=null; 9:ERROR:chrome\browser\component_updater\soda_component_installer.cc:96] On demand update of the SODA component failed with error: 5
-[7568:12944:0902/202022.436:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
-[7568:12944:0902/202024.404:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
+AssertionError [ERR_ASSERTION]: chromium exit=null; 9:ERROR:chrome\browser\component_updater\soda_component_installer.cc:96] On demand update of the SODA component failed with error: 5
+[7568:12944:0902/202022.436:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
+[7568:12944:0902/202024.404:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
 
 
 null !== 0
@@ -1828,11 +1828,11 @@ node:internal/modules/run_main:107
     triggerUncaughtException(
     ^
 
-AssertionError [ERR_ASSERTION]: chromium exit=null signal=SIGTERM error=spawnSync C:/Users/lop/AppData/Local/ms-playwright/chromium-1234/chrome-win64/chrome.exe ETIMEDOUT stderr=rk_service_instance_impl.cc:618] Network service crashed or was terminated, restarting service.
-[6104:12644:0902/211133.898:ERROR:chrome\browser\component_updater\optimization_guide_on_device_model_installer.cc:666] Failed to update on-device model component with error 5
-[6104:12644:0902/211134.871:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
-[6104:12644:0902/211135.824:ERROR:chrome\browser\component_updater\soda_component_installer.cc:96] On demand update of the SODA component failed with error: 5
-[6104:12644:0902/211136.776:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
+AssertionError [ERR_ASSERTION]: chromium exit=null signal=SIGTERM error=spawnSync C:/Users/lop/AppData/Local/ms-playwright/chromium-1234/chrome-win64/chrome.exe ETIMEDOUT stderr=rk_service_instance_impl.cc:618] Network service crashed or was terminated, restarting service.
+[6104:12644:0902/211133.898:ERROR:chrome\browser\component_updater\optimization_guide_on_device_model_installer.cc:666] Failed to update on-device model component with error 5
+[6104:12644:0902/211134.871:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
+[6104:12644:0902/211135.824:ERROR:chrome\browser\component_updater\soda_component_installer.cc:96] On demand update of the SODA component failed with error: 5
+[6104:12644:0902/211136.776:ERROR:chrome\browser\component_updater\soda_language_pack_component_installer.cc:84] On demand update of the SODA language component failed with error: 5
 
 
 null !== 0
@@ -2866,3 +2866,97 @@ CI #62 v0.0.4-rc37 status=completed conclusion=success
 
 | S7 live pi-web | 通过:未重启即发现扩展;主模型自行调用 swarm_run→swarm_apply;回收表入链、子代理文本 0 泄漏、主 cwd 复验 exit 0 |
 | CI | #62 v0.0.4-rc37 success |
+
+### [2026-09-04 18:05] 任务时长优化四改：pi-web 关 compact-guard / 桥 5xx 退避重试 / 监督器快恢复 / 停 S6 预审 — 方案
+
+**① 现状与根因**（证据：24h 运行面日志实测，采集脚本 `tools/latency-baseline.mjs`，数据面 `AppData\Local\pi-web\portable\data`）
+
+| 现象 | 实测基线（24h） | 代码落点 |
+|---|---|---|
+| 桥把上游 503 原样透传给 pi | POST 503 = 21 / 496（4.2%），GET 503 = 25；`pi_portable_adversary` 自身 10/52 次 503 | `src/bridge/codex-overload-retry.mjs:174` `isSseResponse()` 只认 `statusCode===200`，非 200 走 `bypassed:true` 直通，重试预算完全不覆盖 HTTP 状态码 |
+| 会话被 5xx 打断后监督器长时间不恢复 | `recovery-held` 120 次，原因 100% `file-activity`；样本 `fileQuietMs=68322`（68 秒）仍被 hold | `src/run-supervisor.mjs:26` `FILE_QUIET_MS = 10min` 是统一判活窗口，`assistant.stopReason==="error"` 这种确定死亡也要等满 10 分钟 |
+| compact-guard 冻结复用几乎不生效 | `COMPACT_GUARD freeze#` 13 次 vs `frozen#` 1 次；单次裁掉 `tok≈177355→67105`（11 万 token 的工具结果） | `src/lop-chain.ts:1202` context 钩子；每 run 扩展实例重建 → `frozenKeepFrom` 不跨 run 保持 → v23 的"只在重冻结轮 miss"退化成"几乎每次都 miss"，且裁掉的工具结果要重读 |
+| S6 对抗预审吃推理额度 | `originator=pi_portable_adversary` 52 次 / `reasTok` 110,134 / 累计流时长 37.5 分钟；单次样本 `streamMs=714828`（11.9 分钟）；同期 `lop-adversary` requestedTier=priority → upstreamTier=default（已降档） | `src/lop-chain.ts:1660` `startBackgroundReview` 每个执行型 prompt 起 3 路真桥调用 |
+
+根因一句话：**桥在 5xx 上不重试 → 会话报错 → 监督器按 10 分钟窗口判死 → 恢复轮重跑**，这条链是任务墙钟的主要放大器；S6 与 compact-guard 分别在额度和缓存两侧加税。
+
+**② 候选路径**（按 零维护 → 低成本 → 性能 → 轻量 排序）
+
+- 桥 5xx：(a) 在既有 `requestWithOverloadRetry` 内扩展状态码重试，复用同一退避/预算/模型 fallback ← **选中**，零新增组件；(b) 在 proxy 外层包一层重试中间件 → 与账号池 failover 语义重叠，两套重试预算易打架。
+- 监督器：(a) 按失败信号分级判活窗口，`stopReason==="error"` 走 90 秒、其余保持 10 分钟 ← **选中**，防风暴硬闸（同失败 3 次 / 总恢复 20 次熔断）一字不改；(b) 全局把 `FILE_QUIET_MS` 降到 90 秒 → 会让 orphan/tool-unsettled 类判定回到 2026-09-01 的恢复风暴（1 条用户消息放大成 170 轮），否决。
+- compact-guard：(a) 加显式开关 + pi-web 侧默认关（`PI_PORTABLE_DATA` 判定 + launcher webEnv 显式注入）← **选中**，CLI 行为零变化、不需重启 launcher；(b) 直接删代码 → 不可回滚，否决。
+- S6：(a) `startBackgroundReview` 默认关闭，`PI_ADVERSARY_ENABLE=1` 才起审，保留旧 `PI_ADVERSARY_DISABLE=1` 兼容 ← **选中**；(b) 只在 webEnv 注入 disable → CLI 仍在烧同一份 priority 额度，与用户给的理由不符，否决。
+
+**③ 步骤与硬验收**：见下方【验收清单】，每项一条可执行判据。
+
+**④ 风险与回滚点**
+
+- 关 compact-guard 后长会话上下文会重新无界膨胀（原注释实录：45.1 万 token、TTFB 2–3×）。这是用户明确要的取舍；pi 原生 `session_compact` 阈值压缩仍在（run 结束/新 prompt 前检查）。回滚 = `LOP_COMPACT_GUARD=1`。
+- 桥 5xx 重试只覆盖 POST `/responses` 主路径且只在**首个有效事件之前**（上游未产出内容 → 重放安全）；429/401 仍归账号池层，不重复重试。回滚 = `CODEX_STATUS_RETRY=0`。
+- 监督器快窗口只对 `assistant.stopReason==="error"` 生效（pi 自己写下的确定死亡标记，不存在"其实还活着"的假阴性）。回滚 = `PI_RUN_SUPERVISOR_FAST_QUIET_MS=600000`。
+- S6 关闭后 S7/S8 的消费路径本就 fail-open（`consumeBackgroundReview` 返回 skip）。回滚 = `PI_ADVERSARY_ENABLE=1`。
+- 新增维护点：无（全部走既有 env 开关 + 既有 junction 单源 + 既有 launcher 守护自动重启）。
+
+### [2026-09-04 18:20] 任务时长优化四改 — 执行与验收证据
+
+**改动落点**
+
+| 项 | 文件 | 语义 |
+|---|---|---|
+| A compact-guard | `src/lop-chain.ts`(v24) + `src/launcher.mjs` | 新增 `LOP_COMPACT_GUARD`;未设时按运行面判定(便携=关、CLI=开),launcher webEnv 显式钉 `"0"`;关闭态每 runner 记一行日志 + 一条 metric,不静默 |
+| B 桥 5xx | `src/bridge/codex-overload-retry.mjs` + `codex-responses-proxy.mjs` | 新增 `RETRYABLE_UPSTREAM_STATUS={500,502,503,504,529}`,与 SSE 过载共用重试预算/退避/模型阶梯;429、401、桥自造合成响应(`lopSynthetic`)不重试;`CODEX_STATUS_RETRY=0` 可关 |
+| C 监督器 | `src/run-supervisor.mjs`(v2-fast-error) | 新增 `isFastFailureSnapshot`;`assistant.stopReason==="error"` 走 90 秒判活窗口与 90 秒恢复间隔,其余仍 10 分钟;熔断(同失败 3 次/总恢复 20 次/稳定窗 10 分钟)一字未动 |
+| D S6 预审 | `src/chain/portable-adversary.mjs` | `startBackgroundReview` 默认关闭,`PI_ADVERSARY_ENABLE=1` 才起审;旧 `PI_ADVERSARY_DISABLE=1` 兼容保留;跳过原因照旧落 `phase.s6Start` |
+
+**测试**（`node tests/<name>.mjs`,全部 exit=0）
+
+```
+codex-overload-retry          18/18  含新增 6 项:503 退避后提交健康流(delays=[10,20]ms)、5xx 耗尽透传、
+                                     429/合成响应不重试、statusRetry:false 回到透传
+bridge-5xx-retry-e2e(新增)     ALL PASS  真起桥实例打桩上游:upstreamCalls=3 retries=2 delays=22/44ms
+                                     模型阶梯 sol→terra→luna、metrics 2 条 retryKind=http-status、日志留痕
+run-supervisor                18/18  含新增 2 项:快通道只认 assistant/error;runtime 场景 2 分钟静默下
+                                     error 派发 1 次、toolUse 派发 0 次
+lop-chain-contract            PASS
+adversarial-mechanisms        ALL PASS(母本=仓源一致)
+prefix-freeze-contract        ALL PASS  freezeRounds=[12] stable=28 rate=100%(显式 LOP_COMPACT_GUARD=1 守机制)
+windows-launcher/hard-restart/account-pool/bridge-response-replay  全 PASS
+```
+
+**live 运行面**（本机 `AppData\Local\pi-web\portable`,src 是指向本仓的 junction)
+
+```
+桥 :8794 /health   overloadRetry.statusRetry=true statusRetryCodes=[500,502,503,504,529]
+桥启动日志         上游 5xx 退避重试：状态码 500/502/503/504/529 与过载共用同一重试预算
+监督器             version=run-supervisor-v2-fast-error(supervisor-start 事件)
+pi-web 一轮问答     sessionId=01a06be3 wall=9.4s answer="ok"
+  compact-guard    COMPACT_GUARD disabled(portable-default) + metric compactGuard:false;本轮 freeze=0
+  S6               chain-metrics s6Start=["skip"];proxy-metrics 本轮 originator 只有 pi_bridge_test,
+                   无 pi_portable_adversary
+生效方式           junction 单源改仓即改 live;sync-cli-home 同步 CLI 母本;桥/监督器/pi-web 由 launcher
+                   守护自动重启(未整体重启 launcher)
+```
+
+**基线 → 现状**（基线取本机 24h 实测,采集器 `tools/latency-baseline.mjs`)
+
+| 指标 | 改前 24h | 改后即时 | 判据 |
+|---|---|---|---|
+| POST 503 透传给 pi | 21 / 496(4.2%) | 桥内退避重试 3 次 + 模型阶梯,e2e 实证 503→503→200 | 达标 |
+| 恢复等待(确定错误) | 600 s | 90 s(runtime 用例:2 分钟静默即派发) | 达标 |
+| S6 起审 | 52 次 / 110,134 推理 token / 37.5 min 流 | 0(s6Start=skip) | 达标 |
+| compact-guard 冻结 | 13 次 freeze(仅 1 次 frozen 复用) | 0(pi-web 关闭) | 达标 |
+
+**对端 DESKTOP-3EGB4LB(100.98.35.74)**：6 文件 scp 同步,改前已备份 `*.bak-20260904-181556-pre-latency4`;
+读回 SHA256 前 12 位与本机逐一致(EB4756FCF39F/67E757012AA2/62018D694F19/5BDB44C122E7/B7F9C45B4C64/564DA4C6C93F);
+桥 `statusRetry=True codes=500/502/503/504/529`、监督器 `run-supervisor-v2-fast-error`;
+桥/监督器/pi-web 已由对端 launcher 守护重启(重启前 running 会话为空)。
+
+**未验证 / 待观察**：用户给的"任务时长降 30-40%"是跨多轮的统计量,本轮无法即时证实;
+可证伪的复核方式 = 24 小时后重跑 `node tools/latency-baseline.mjs 24`,预期
+`bridge.post["503"]` 仍会出现但不再伴随会话中断、`byOriginator.pi_portable_adversary` 归零、
+`chainCounts.compactFreeze` 归零、`supervisorEvents.recovery-held` 中 file-activity 大幅下降。
+
+**剩余风险**：长会话上下文回到无界膨胀(依赖 pi 原生 session_compact 兜底);5xx 重试会把一次
+失败请求的墙钟拉长最多 ~1.2+2.4+4.8 s(退避和),换取不中断;快恢复窗口只覆盖 stopReason=error,
+其他中断形态仍等 10 分钟。回滚:`LOP_COMPACT_GUARD=1` / `CODEX_STATUS_RETRY=0` /
+`PI_RUN_SUPERVISOR_FAST_QUIET_MS=600000` / `PI_ADVERSARY_ENABLE=1`,四项互相独立。

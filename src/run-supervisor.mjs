@@ -7,7 +7,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const RUN_SUPERVISOR_VERSION = "run-supervisor-v1";
+export const RUN_SUPERVISOR_VERSION = "run-supervisor-v2-fast-error";
 export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v4";
@@ -26,6 +26,19 @@ const TOTAL_RECOVERY_LIMIT = 20;
 export const FILE_QUIET_MS = 10 * 60 * 1000;
 // 同一 run 两次恢复注入的硬下限;真实崩溃恢复慢 10 分钟可接受,风暴不可接受。
 export const MIN_RECOVERY_INTERVAL_MS = 10 * 60 * 1000;
+// 分级判活(2026-09-04):上面两个 10 分钟窗口是为 orphan / 未闭合工具这类"可能其实还活着"的
+// 模糊信号设的。而 assistant.stopReason==="error" 是 pi 自己在会话文件里写下的确定死亡标记
+// (上游 5xx、连接错误都走这条),不存在判活假阴性,再等满 10 分钟纯属把一次 503 放大成一整轮
+// 任务时长(24h 实测 recovery-held 120 次全因 file-activity)。故只对确定错误走 90 秒窗口;
+// 防风暴的真正硬闸是同失败 3 次 / 总恢复 20 次熔断,本次一字未动。
+export const FILE_QUIET_FAST_MS = Math.max(
+  1000,
+  Number(process.env.PI_RUN_SUPERVISOR_FAST_QUIET_MS || 90 * 1000),
+);
+export const MIN_RECOVERY_INTERVAL_FAST_MS = Math.max(
+  1000,
+  Number(process.env.PI_RUN_SUPERVISOR_FAST_MIN_INTERVAL_MS || 90 * 1000),
+);
 // 恢复后须稳定运行这么久才清同失败计数——否则判活翻抖时"进展"会永久绕过熔断
 // (实录:totalRecoveries=14 而 sameFailureCount=0)。
 export const FAILURE_STREAK_STABLE_MS = 10 * 60 * 1000;
@@ -267,6 +280,13 @@ export function decideRunAction({ snapshot, running, fileActive = false }) {
   // 判死需要多信号一致:会话文件仍在追加 = 运行中,running 注册表的假阴性不得触发恢复。
   if (decision.action === "recover" && fileActive) return { action: "wait", reason: "file-activity" };
   return decision;
+}
+
+// 确定死亡信号:pi 已把 assistant 轮标成 error(上游 5xx / 连接失败 / provider 报错都落这里),
+// 会话不可能"其实还在跑"。aborted 多为人为中止,不进快通道。
+export function isFastFailureSnapshot(snapshot) {
+  const last = snapshot?.lastMessage;
+  return Boolean(last && last.role === "assistant" && last.stopReason === "error");
 }
 
 // 同一 run 的恢复注入硬限流;返回非空字符串 = 本 tick 不得派发的原因。
@@ -1504,7 +1524,10 @@ export class RunSupervisor {
     this.stopEventStream(sessionId);
     // 会话 jsonl 仍在追加 = 活(每轮/每工具步都会追加);running 注册表假阴性时以文件活性为准。
     const fileMtime = this.knownFileStats.get(sessionId) || 0;
-    const fileActive = fileMtime > 0 && this.now() - fileMtime < FILE_QUIET_MS;
+    // 确定错误走 90 秒窗口,模糊信号仍走 10 分钟(见 FILE_QUIET_FAST_MS 注释)。
+    const fastFailure = isFastFailureSnapshot(snapshot);
+    const quietMs = fastFailure ? Math.min(FILE_QUIET_FAST_MS, FILE_QUIET_MS) : FILE_QUIET_MS;
+    const fileActive = fileMtime > 0 && this.now() - fileMtime < quietMs;
     const decision = decideRunAction({ snapshot, running: false, fileActive });
     if (decision.reason === "file-activity") {
       // 留痕但不刷屏:每个 leaf 只记一次(失败路径必留痕——被压下的恢复也是路径)。
@@ -1512,7 +1535,7 @@ export class RunSupervisor {
       record.notRunningSince = 0;
       if (record.lastHoldKey !== holdKey) {
         record.lastHoldKey = holdKey;
-        this.log("recovery-held", { sessionId, runId: record.runId, leafId: snapshot.leafId, reason: "file-activity", fileQuietMs: this.now() - fileMtime });
+        this.log("recovery-held", { sessionId, runId: record.runId, leafId: snapshot.leafId, reason: "file-activity", fileQuietMs: this.now() - fileMtime, quietWindowMs: quietMs, fast: fastFailure });
       }
       this.save();
       return;
@@ -1548,13 +1571,15 @@ export class RunSupervisor {
     if (this.now() - record.notRunningSince < this.graceMs) return;
     const nextAttempt = Number(record.totalRecoveries || 0) + 1;
     if (this.now() - record.notRunningSince < recoveryDelayMs(nextAttempt)) return;
-    const hold = recoveryHoldReason(record, this.now());
+    const hold = recoveryHoldReason(record, this.now(), {
+      minIntervalMs: fastFailure ? MIN_RECOVERY_INTERVAL_FAST_MS : MIN_RECOVERY_INTERVAL_MS,
+    });
     if (hold) {
       const holdKey = `${snapshot.leafId}:${hold}`;
       if (record.lastHoldKey !== holdKey) {
         record.lastHoldKey = holdKey;
         this.save();
-        this.log("recovery-held", { sessionId, runId: record.runId, leafId: snapshot.leafId, reason: hold });
+        this.log("recovery-held", { sessionId, runId: record.runId, leafId: snapshot.leafId, reason: hold, fast: fastFailure });
       }
       return;
     }

@@ -26,7 +26,7 @@ fs.mkdirSync(PORTABLE_DATA, { recursive: true });
 
 import { compressUpstreamBody, rewriteCodexRequestBody } from "./codex-cache-policy.mjs";
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
-import { createModelFallbackPlan, requestWithOverloadRetry } from "./codex-overload-retry.mjs";
+import { createModelFallbackPlan, requestWithOverloadRetry, RETRYABLE_UPSTREAM_STATUS } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
@@ -52,6 +52,8 @@ const OVERLOAD_MAX_RETRIES = Math.trunc(numberEnv("CODEX_OVERLOAD_MAX_RETRIES", 
 const OVERLOAD_BASE_DELAY_MS = numberEnv("CODEX_OVERLOAD_BASE_DELAY_MS", 1200);
 const OVERLOAD_MAX_DELAY_MS = numberEnv("CODEX_OVERLOAD_MAX_DELAY_MS", 8000);
 const OVERLOAD_PREFIX_MAX_BYTES = Math.max(1024, numberEnv("CODEX_OVERLOAD_PREFIX_MAX_BYTES", 256 * 1024));
+// 上游 5xx(500/502/503/504/529)在首字节被采信前退避重试;=0 关闭,退回原样透传。
+const STATUS_RETRY_ENABLED = String(process.env.CODEX_STATUS_RETRY ?? "1") !== "0";
 const OVERLOAD_PRIMARY_MODEL = process.env.CODEX_OVERLOAD_PRIMARY_MODEL || "gpt-5.6-sol";
 const OVERLOAD_FALLBACK_MODELS = (process.env.CODEX_OVERLOAD_FALLBACK_MODELS ?? "gpt-5.6-terra,gpt-5.6-luna,gpt-reserve")
   .split(",").map((model) => model.trim()).filter(Boolean);
@@ -299,20 +301,25 @@ function syntheticResponse(statusCode, payloadObj) {
   const replay = Readable.from([payload]);
   replay.statusCode = statusCode;
   replay.headers = { "content-type": "application/json", "content-length": String(payload.length) };
+  // 桥自造的终态,不是上游故障:状态码重试层据此跳过,避免对本地判定空转重试。
+  replay.lopSynthetic = true;
   return replay;
 }
 
-function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, error, exhausted, nextModel = "" }) {
+function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, error, exhausted, nextModel = "", kind = "sse-overload" }) {
   const meta = response?.lopMeta || {};
   const egress = meta.egress || currentEgress();
+  const sse = kind === "sse-overload";
   fs.appendFile(METRICS_FILE, JSON.stringify({
     ts: new Date().toISOString(),
     egressKey: egress.key || "",
     egressPort: egress.port || 0,
     originator: String(req.headers.originator || ""),
     status: response?.statusCode || 200,
-    sseStatus: 529,
-    errorKind: String(error?.code || "server_is_overloaded").slice(0, 60),
+    // sseStatus 保持"200 流内过载"的老语义;HTTP 状态码类另立 statusRetry,不改既有消费口径。
+    ...(sse ? { sseStatus: 529 } : { statusRetry: true, upstreamStatus: Number(response?.statusCode || 0) }),
+    retryKind: kind,
+    errorKind: String(error?.code || (sse ? "server_is_overloaded" : "http_error")).slice(0, 60),
     overloadAttempt: attempt,
     overloadMaxRetries: maxRetries,
     overloadDelayMs: delayMs,
@@ -428,10 +435,14 @@ async function handleResponses(req, res) {
       baseDelayMs: OVERLOAD_BASE_DELAY_MS,
       maxDelayMs: OVERLOAD_MAX_DELAY_MS,
       maxPrefixBytes: OVERLOAD_PREFIX_MAX_BYTES,
+      statusRetry: STATUS_RETRY_ENABLED,
       shouldAbort: () => clientClosed,
-      onRetry: ({ retryNumber, maxRetries, delayMs, error, response }) => {
+      onRetry: ({ retryNumber, maxRetries, delayMs, error, response, kind }) => {
         const nextModel = modelPlan.payloadForAttempt(retryNumber).model;
-        log(`上游容量过载：code=${error.code} model=${response.lopMeta?.upstreamModel || "?"} next=${nextModel || "same"} bridgeRetry=${retryNumber}/${maxRetries} delay=${delayMs}ms`);
+        const what = kind === "http-status"
+          ? `上游 5xx：status=${response.statusCode}`
+          : `上游容量过载：code=${error.code}`;
+        log(`${what} model=${response.lopMeta?.upstreamModel || "?"} next=${nextModel || "same"} bridgeRetry=${retryNumber}/${maxRetries} delay=${delayMs}ms`);
         recordSseOverload(req, response, {
           attempt: retryNumber,
           maxRetries,
@@ -439,15 +450,18 @@ async function handleResponses(req, res) {
           error,
           exhausted: false,
           nextModel,
+          kind,
         });
       },
-      onExhausted: ({ attempts, overloadRetries, error, response }) => {
-        log(`上游容量过载重试耗尽：model=${response.lopMeta?.upstreamModel || "?"} attempts=${attempts} retries=${overloadRetries}，原样透传最终 SSE`);
+      onExhausted: ({ attempts, overloadRetries, error, response, statusRetry: viaStatus }) => {
+        const what = viaStatus ? `上游 5xx 重试耗尽：status=${response.statusCode}` : "上游容量过载重试耗尽：";
+        log(`${what} model=${response.lopMeta?.upstreamModel || "?"} attempts=${attempts} retries=${overloadRetries}，原样透传最终响应`);
         recordSseOverload(req, response, {
           attempt: attempts,
           maxRetries: overloadRetries,
           error,
           exhausted: true,
+          kind: viaStatus ? "http-status" : "sse-overload",
         });
       },
     });
@@ -574,6 +588,8 @@ const server = http.createServer(async (req, res) => {
         maxPrefixBytes: OVERLOAD_PREFIX_MAX_BYTES,
         primaryModel: OVERLOAD_PRIMARY_MODEL,
         fallbackModels: OVERLOAD_FALLBACK_MODELS,
+        statusRetry: STATUS_RETRY_ENABLED,
+        statusRetryCodes: [...RETRYABLE_UPSTREAM_STATUS],
       },
       egress: currentEgress(),
       metricsFile: METRICS_FILE,
@@ -652,6 +668,9 @@ server.listen(PORT, HOST, () => {
   log(`推理强度：透传会话请求值（桥不改写）`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
   log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);
+  log(STATUS_RETRY_ENABLED
+    ? `上游 5xx 退避重试：状态码 ${[...RETRYABLE_UPSTREAM_STATUS].join("/")} 与过载共用同一重试预算(429/401 归账号池层)`
+    : "上游 5xx 退避重试：已由 CODEX_STATUS_RETRY=0 关闭，5xx 原样透传");
   const bootEgress = currentEgress();
   const poolLabel = accountPool
     ? `账号池 ${ACCOUNT_HOMES}（${accountPool.members().map((m) => m.id).join(",") || "空"}；429/401 冷却→切号→重发）`

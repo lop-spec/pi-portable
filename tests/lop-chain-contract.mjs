@@ -242,8 +242,8 @@ const fakePi = {
 };
 lopChainExtension(fakePi);
 assert.equal(commands.has("lop-chain-reload"), true);
-assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s9-native-rules-failopen-v23");
-assert.match(commands.get("lop-chain-reload").description, /s9-native-rules-failopen-v23/u);
+assert.equal(LOP_CHAIN_RUNTIME_VERSION, "s10-stage-strip-v25");
+assert.match(commands.get("lop-chain-reload").description, /s10-stage-strip-v25/u);
 await handlers.get("agent_start")[0]({}, {});
 await handlers.get("agent_end")[0]({
   messages: [{
@@ -924,7 +924,7 @@ assert.equal(clEntries.filter((entry) => entry.customType === "lop-checklist-goa
 assert.equal(clEntries.filter((entry) => entry.customType === "lop-run-control").at(-1).data.action, "cancel");
 
 const source = fs.readFileSync(sourcePath, "utf8");
-assert.equal(runtimeVersionFromSource(source), "s9-native-rules-failopen-v23");
+assert.equal(runtimeVersionFromSource(source), "s10-stage-strip-v25");
 // 写入侧 v3:记忆标记状态差门与工具锚点落账
 assert.match(source, /MEMORY_GATE BLOCK reason=/u);
 assert.match(source, /MEMORY_GATE FAIL_OPEN/u);
@@ -932,7 +932,7 @@ assert.match(source, /memory_tool_anchors: \{ files: turnToolFiles, commands: tu
 // 写入侧 v3.1:侧车记忆标记从 tool_call 捕获,门判定与落账都带 memoryMarker
 assert.match(source, /memoryMarkerFromToolUse\?\.\(toolName, input\)/u);
 assert.match(source, /memoryMarker: turnMemoryMarker, stopHookActive: false/u);
-assert.match(source, /expansionTerms: expanded\.historyTerms\.slice\(0, 8\)/u);
+// 2026-09-04:S3 历史注入已删除,原 expansionTerms 断言随之移除(该字段只服务 resolveHistory)。
 assert.equal(runtimeVersionFromSource("export const OTHER = 'none'"), "");
 // S8:空正文/无目标恢复轮跳过落账但留痕;恢复轮落账键必须是目标合同原文而非调度脚手架;
 // recordStop 主动 skip(synthetic-prompt 等)留痕跳过,硬失败只留给真正写入被拒;
@@ -944,7 +944,7 @@ assert.match(source, /saved\?\.skipped \|\| saved\?\.disabled/u);
 assert.match(source, /isExecutionRequest\(prompt\) && !prompt\.startsWith\(RUN_SUPERVISOR_RECOVERY_PREFIX\)/u);
 assert.match(source, /deliverAs:\s*"followUp",\s*triggerTurn:\s*true/u);
 assert.match(source, /COMPLETION_GUARD retry=1\/1/u);
-assert.match(source, /context-dependent-prompt/u);
+// 2026-09-04:context-dependent-prompt 是 S3 历史注入的放行分支,S3 已删,断言随之移除。
 assert.match(source, /GOAL_GATE SET/u);
 assert.match(source, /CHECKLIST_GOAL CONTINUE/u);
 assert.match(source, /CHECKLIST_REDIRECT/u);

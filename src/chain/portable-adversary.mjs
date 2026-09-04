@@ -252,10 +252,13 @@ export function startBackgroundReview(ev) {
   const prompt = String(ev?.prompt || "");
   const key = String(ev?.session_id || "");
   const cwd = String(ev?.cwd || "");
-  // 合同测试/离线运行的显式关闭开关。2026-09-02 实录:lop-chain-contract 用 9 条真实 prompt
-  // 驱动 before_agent_start,每条起 3 路真桥调用 → 一次测试 27 个上游请求,烧掉稀缺的
-  // priority 额度。跳过原因经 phase.s6Start 落 chain-metrics,不静默。
+  // 2026-09-04 起默认停审:S6 三路盲聚合 24h 实测 52 次起审 / 110,134 推理 token /
+  // 累计 37.5 分钟上游流(单次样本 streamMs=714828),与真实会话抢同一份 priority 额度
+  // (同期 requestedTier=priority → upstreamTier=default 已降档)。需要时用 PI_ADVERSARY_ENABLE=1
+  // 显式开启;旧的 PI_ADVERSARY_DISABLE=1(合同测试用,防 9 条 prompt 打出 27 个上游请求)继续有效。
+  // 跳过原因经 phase.s6Start 落 chain-metrics,不静默。
   if (process.env.PI_ADVERSARY_DISABLE === "1") return { status: "skip", reason: "disabled:PI_ADVERSARY_DISABLE" };
+  if (process.env.PI_ADVERSARY_ENABLE !== "1") return { status: "skip", reason: "disabled:default-2026-09-04(set PI_ADVERSARY_ENABLE=1)" };
   if (!key) return { status: "skip", reason: "事件里没有 session_id" };
   if (prompt.replace(/\s/g, "").length < MIN_CHARS) return { status: "skip", reason: "请求未达到后台预审门槛" };
   const job = {

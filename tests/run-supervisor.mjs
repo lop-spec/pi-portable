@@ -15,10 +15,14 @@ import {
   buildTransientRecoveryPrompt,
   decideRunAction,
   failureFingerprint,
+  isFastFailureSnapshot,
   noteFailure,
   recoveryDelayMs,
   recoveryHoldReason,
   shouldClearFailureStreak,
+  FILE_QUIET_MS,
+  FILE_QUIET_FAST_MS,
+  MIN_RECOVERY_INTERVAL_FAST_MS,
 } from "../src/run-supervisor.mjs";
 
 const header = (id = "01a05769-3ff4-779a-b9c6-f5364d206206") => ({
@@ -163,6 +167,31 @@ test("storm guards: file activity vetoes recovery, min-interval holds, streak su
   assert.equal(shouldClearFailureStreak(streak, now + 9 * 60 * 1000), true);
   assert.equal(shouldClearFailureStreak({ sameFailureCount: 0 }, now), false);
   assert.equal(shouldClearFailureStreak({ sameFailureCount: 1 }, now), true);
+});
+
+// 2026-09-04:一次上游 503 曾要等满 10 分钟判活窗口才恢复。确定死亡信号走快窗口,模糊信号不动。
+test("fast lane: only assistant/error shortens the quiet and min-interval windows", () => {
+  const base = { sessionId: "s", rootUserEntryId: "u1", leafId: "t1", cancelled: false, blocked: false, goalState: null };
+  assert.equal(isFastFailureSnapshot({ ...base, lastMessage: { role: "assistant", stopReason: "error", errorMessage: "upstream 503" } }), true);
+  // 模糊信号一律留在 10 分钟窗口:未闭合工具、人为中止、孤儿用户轮。
+  assert.equal(isFastFailureSnapshot({ ...base, lastMessage: { role: "assistant", stopReason: "toolUse" } }), false);
+  assert.equal(isFastFailureSnapshot({ ...base, lastMessage: { role: "assistant", stopReason: "aborted" } }), false);
+  assert.equal(isFastFailureSnapshot({ ...base, lastMessage: { role: "user" } }), false);
+  assert.equal(isFastFailureSnapshot(null), false);
+
+  assert.ok(FILE_QUIET_FAST_MS <= 2 * 60 * 1000, "快窗口必须落在 1-2 分钟内");
+  assert.ok(FILE_QUIET_FAST_MS < FILE_QUIET_MS);
+
+  // 快间隔下 5 分钟前的上一次恢复不再压制;默认间隔仍压制(见上一个用例)。
+  const now = Date.parse("2026-09-01T12:10:00.000Z");
+  assert.equal(recoveryHoldReason({ lastRecoveryAt: "2026-09-01T12:05:00.000Z" }, now, { minIntervalMs: MIN_RECOVERY_INTERVAL_FAST_MS }), "");
+  assert.equal(recoveryHoldReason({ lastRecoveryAt: "2026-09-01T12:09:30.000Z" }, now, { minIntervalMs: MIN_RECOVERY_INTERVAL_FAST_MS }), "min-recovery-interval");
+
+  // 硬门:快通道不得放宽熔断。同一失败第 3 次仍必须 blocked。
+  let record = { totalRecoveries: 0 };
+  for (let i = 0; i < 3; i += 1) record = noteFailure(record, "error:upstream 503");
+  assert.equal(record.status, "blocked");
+  assert.equal(record.blockReason, "same-failure-limit");
 });
 
 test("recovery prompt continues from the leaf and never embeds or replays tool arguments", () => {
@@ -350,6 +379,65 @@ test("runtime dispatches one persisted recovery per leaf within the recovery tar
   assert.equal(posts.length, 1, "same leaf must not dispatch twice");
 });
 
+// 快通道的运行时行为:上游 5xx 打死的 run 在 2 分钟静默后就该恢复(旧口径要等满 10 分钟),
+// 而未闭合工具调用这类模糊信号在同样的 2 分钟里必须继续 wait。
+test("fast lane runtime: a 5xx-killed run recovers after 2 minutes while an unsettled tool call still waits", async () => {
+  const run = async (stopReason, suffix) => {
+    const id = `01a05769-3ff4-779a-b9c6-f5364d2062${suffix}`;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-fastlane-test-"));
+    const sessions = path.join(root, ".pi", "agent", "sessions", "--C--work--");
+    fs.mkdirSync(sessions, { recursive: true });
+    const file = path.join(sessions, `2026-08-31T10-00-00-000Z_${id}.jsonl`);
+    writeRows(file, [
+      header(id),
+      message("u1", null, "user", { text: "实施并验证", timestamp: "2026-08-31T10:00:01.000Z" }),
+      message("a1", "u1", "assistant", {
+        message: { stopReason, errorMessage: stopReason === "error" ? "upstream 503" : "" },
+        content: stopReason === "toolUse"
+          ? [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } }]
+          : [{ type: "text", text: "" }],
+        timestamp: "2026-08-31T10:00:02.000Z",
+      }),
+    ]);
+    let now = Date.parse("2026-08-31T10:10:00.000Z");
+    let running = true;
+    const posts = [];
+    const fetchImpl = async (url, options = {}) => {
+      if (String(url).endsWith("/api/agent/running")) {
+        return new Response(JSON.stringify({ runningSessionIds: running ? [id] : [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (options.method === "POST" && String(url).includes(`/api/agent/${id}`)) {
+        posts.push(JSON.parse(options.body));
+        return new Response(JSON.stringify({ data: null }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const supervisor = new RunSupervisor({
+      dataRoot: root, sessionRoot: path.join(root, ".pi", "agent", "sessions"),
+      webPort: 39993, healthPort: 39994, graceMs: 1500, now: () => now, fetchImpl,
+    });
+    supervisor.ensureEventStream = () => {};
+    // 静默 2 分钟:短于旧的 10 分钟窗口,长于新的 90 秒快窗口。
+    const agedSec = (now - 2 * 60 * 1000) / 1000;
+    fs.utimesSync(file, agedSec, agedSec);
+    supervisor.discover(true);
+    await supervisor.tick(); // runner 在册:先建立持久 run 记录
+    running = false;
+    await supervisor.tick(); // 记下 notRunningSince
+    now += 4000;             // 越过 graceMs 与首次恢复退避
+    await supervisor.tick();
+    fs.rmSync(root, { recursive: true, force: true });
+    return posts;
+  };
+
+  const killedByUpstream = await run("error", "11");
+  assert.equal(killedByUpstream.length, 1, "stopReason=error 是确定死亡,2 分钟即可恢复");
+  assert.match(killedByUpstream[0].message, /^\[lop-run-supervisor recovery\]/u);
+
+  const unsettledTool = await run("toolUse", "12");
+  assert.equal(unsettledTool.length, 0, "未闭合工具调用仍受 10 分钟判活窗口保护,不得提前重投");
+});
+
 test("live smoke prepends the selected portable node so provider apiKey shell commands resolve", () => {
   const source = fs.readFileSync(new URL("../tools/run-supervisor-live-smoke.mjs", import.meta.url), "utf8");
   assert.match(source, /PATH:\s*\[path\.dirname\(nodeExe\)/u);
@@ -357,7 +445,7 @@ test("live smoke prepends the selected portable node so provider apiKey shell co
 });
 
 test("runtime version and recovery markers are explicit", () => {
-  assert.equal(RUN_SUPERVISOR_VERSION, "run-supervisor-v1");
+  assert.equal(RUN_SUPERVISOR_VERSION, "run-supervisor-v2-fast-error");
   assert.equal(RECOVERY_PREFIX, "[lop-run-supervisor recovery]");
 });
 

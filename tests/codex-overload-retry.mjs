@@ -211,9 +211,9 @@ test("headerless SSE from the live Codex endpoint still enters the gate", async 
   assert.equal(result.error.code, "server_is_overloaded");
 });
 
-test("non-SSE and non-200 responses bypass the gate", async () => {
+test("non-SSE and non-retryable statuses bypass the gate", async () => {
   let calls = 0;
-  const response = responseFrom(["plain"], { contentType: "application/json", statusCode: 503 });
+  const response = responseFrom(["plain"], { contentType: "application/json", statusCode: 400 });
   const result = await requestWithOverloadRetry(async () => {
     calls += 1;
     return response;
@@ -222,4 +222,83 @@ test("non-SSE and non-200 responses bypass the gate", async () => {
   assert.equal(result.attempts, 1);
   assert.equal(result.prefixChunks.length, 0);
   assert.equal(result.bypassed, true);
+});
+
+// 2026-09-04:上游 503 曾原样透传给 pi(24h POST 503 = 21/496),一次 503 放大成一整轮任务。
+test("upstream 503 backs off and commits the first healthy stream", async () => {
+  const delays = [];
+  let calls = 0;
+  const result = await requestWithOverloadRetry(
+    async () => {
+      calls += 1;
+      if (calls <= 2) return responseFrom(["overloaded"], { contentType: "application/json", statusCode: 503 });
+      return responseFrom([CREATED + OUTPUT + COMPLETED]);
+    },
+    {
+      maxRetries: 3,
+      baseDelayMs: 10,
+      random: () => 0.5,
+      sleep: async (ms) => { delays.push(ms); },
+    },
+  );
+  assert.equal(calls, 3);
+  assert.equal(result.overloadRetries, 2);
+  assert.equal(result.exhausted, false);
+  assert.equal(result.response.statusCode, 200);
+  assert.deepEqual(delays, [10, 20]); // 指数退避,jitter 固定 1.0
+});
+
+test("upstream 5xx retry shares the overload budget and finally passes the response through", async () => {
+  let calls = 0;
+  const seen = [];
+  const result = await requestWithOverloadRetry(
+    async () => {
+      calls += 1;
+      return responseFrom(["down"], { contentType: "application/json", statusCode: 502 });
+    },
+    {
+      maxRetries: 2,
+      baseDelayMs: 5,
+      random: () => 0.5,
+      sleep: async () => {},
+      onRetry: (event) => seen.push(event.kind),
+    },
+  );
+  assert.equal(calls, 3);
+  assert.equal(result.exhausted, true);
+  assert.equal(result.statusRetry, true);
+  assert.equal(result.upstreamStatus, 502);
+  assert.equal(result.response.statusCode, 502);
+  assert.deepEqual(seen, ["http-status", "http-status"]);
+});
+
+test("429 and bridge-synthetic terminals are left to the account pool layer", async () => {
+  let rateLimited = 0;
+  const rateLimitResult = await requestWithOverloadRetry(async () => {
+    rateLimited += 1;
+    return responseFrom(["rate"], { contentType: "application/json", statusCode: 429 });
+  }, { sleep: async () => {} });
+  assert.equal(rateLimited, 1);
+  assert.equal(rateLimitResult.bypassed, true);
+
+  let synthetic = 0;
+  const syntheticResult = await requestWithOverloadRetry(async () => {
+    synthetic += 1;
+    const response = responseFrom(["synthetic"], { contentType: "application/json", statusCode: 503 });
+    response.lopSynthetic = true;
+    return response;
+  }, { sleep: async () => {} });
+  assert.equal(synthetic, 1);
+  assert.equal(syntheticResult.bypassed, true);
+});
+
+test("statusRetry:false restores the passthrough behaviour", async () => {
+  let calls = 0;
+  const result = await requestWithOverloadRetry(async () => {
+    calls += 1;
+    return responseFrom(["down"], { contentType: "application/json", statusCode: 503 });
+  }, { statusRetry: false, sleep: async () => {} });
+  assert.equal(calls, 1);
+  assert.equal(result.bypassed, true);
+  assert.equal(result.exhausted, false);
 });

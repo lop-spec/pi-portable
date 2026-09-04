@@ -411,6 +411,10 @@ async function main() {
     PI_CODING_AGENT_DIR: path.join(DATA, ".pi", "agent"),
     HOME: DATA, USERPROFILE: DATA, // pi 配置落在数据根(解密出的 pi/ 目录)
     PORT: String(PORTS.webInternal), NO_PROXY: "localhost,127.0.0.1",
+    // 上下文水位门在 pi-web 上冻结复用几乎不生效(24h freeze 13 / frozen 1),裁剪收益被
+    // 缓存 miss + 工具结果重读吃掉。lop-chain 侧已按便携运行面默认关,这里显式钉住口径;
+    // 需要回滚只改这一处为 "1"(CLI 不受影响)。
+    LOP_COMPACT_GUARD: "0",
     ...bashPreludeEnv,
   };
   const webLog = path.join(DATA, "pi-web.log");

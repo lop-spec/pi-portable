@@ -16,6 +16,9 @@ process.env.LOP_MEMORY_DISABLE_PI_DISCOVERY = "1";
 process.env.PI_CHAIN_SKIP_STARTUP_SCAN = "1";
 process.env.PI_CHAIN_METRICS = path.join(contractData, "metrics.jsonl");
 process.env.PI_CHAIN_LOG = path.join(contractData, "chain.log");
+// 2026-09-04 起 compact-guard 在便携运行面(PI_PORTABLE_DATA)默认关闭,机制本身未删;
+// 本合同专测冻结/前缀性质,显式开启以继续守住该机制,不受运行面默认值影响。
+process.env.LOP_COMPACT_GUARD = "1";
 process.on("exit", () => fs.rmSync(contractData, { recursive: true, force: true }));
 
 const policy = await import(pathToFileURL(path.join(root, "src", "lop-chain.ts")).href + `?freeze=${Date.now()}`);

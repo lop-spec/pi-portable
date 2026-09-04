@@ -174,6 +174,18 @@ function isSseResponse(response) {
   return response?.statusCode === 200 && (!contentType || contentType.includes("text/event-stream"));
 }
 
+// 上游容量类 HTTP 失败。2026-09-04 实测:24h 内 POST 503 = 21/496(4.2%),桥当年只在
+// 200 SSE 内认过载事件,503 原样透传 → pi 会话直接报错 → 监督器按判活窗口等待后重跑,
+// 一次 503 放大成一整轮任务时长。429/401 归账号池 failover 层(身份问题,换号不是退避),
+// 这里只收纯容量/网关类 5xx,且只在首个响应字节被采信之前——上游未产出任何内容,重放安全。
+export const RETRYABLE_UPSTREAM_STATUS = Object.freeze(new Set([500, 502, 503, 504, 529]));
+
+export function isRetryableUpstreamStatus(response) {
+  // 桥自造的合成响应(账号池锁定等)不是上游故障,重试只会空转。
+  if (!response || response.lopSynthetic) return false;
+  return RETRYABLE_UPSTREAM_STATUS.has(Number(response.statusCode || 0));
+}
+
 function retryDelay(retryNumber, { baseDelayMs, maxDelayMs, random }) {
   const exponential = Math.min(maxDelayMs, baseDelayMs * (2 ** (retryNumber - 1)));
   const jitter = 0.8 + Math.max(0, Math.min(1, Number(random()))) * 0.4;
@@ -196,6 +208,15 @@ export async function requestWithOverloadRetry(makeRequest, options = {}) {
   const onRetry = typeof options.onRetry === "function" ? options.onRetry : () => {};
   const onExhausted = typeof options.onExhausted === "function" ? options.onExhausted : () => {};
   const shouldAbort = typeof options.shouldAbort === "function" ? options.shouldAbort : () => false;
+  const statusRetry = options.statusRetry !== false;
+
+  // 终态响应丢弃:让 keep-alive socket 可复用,同时吞掉后续 error 防止击穿。
+  const discard = (response) => {
+    try {
+      response?.once?.("error", () => {});
+      response?.resume?.();
+    } catch { /* 已销毁的流按已丢弃处理 */ }
+  };
 
   let attempts = 0;
   let overloadRetries = 0;
@@ -203,6 +224,25 @@ export async function requestWithOverloadRetry(makeRequest, options = {}) {
     if (shouldAbort()) throw Object.assign(new Error("client closed"), { code: "CLIENT_CLOSED" });
     const response = await makeRequest(attempts);
     attempts += 1;
+    if (statusRetry && isRetryableUpstreamStatus(response)) {
+      const status = Number(response.statusCode || 0);
+      const error = { code: `http_${status}`, status, message: `upstream ${status}` };
+      if (overloadRetries >= maxRetries) {
+        const result = {
+          response, prefixChunks: [], attempts, overloadRetries,
+          exhausted: true, bypassed: true, statusRetry: true, upstreamStatus: status, error,
+        };
+        onExhausted(result);
+        return result;
+      }
+      const retryNumber = overloadRetries + 1;
+      const delayMs = retryDelay(retryNumber, { baseDelayMs, maxDelayMs, random });
+      onRetry({ retryNumber, maxRetries, delayMs, attempts, error, response, kind: "http-status" });
+      discard(response);
+      overloadRetries += 1;
+      await sleep(delayMs);
+      continue;
+    }
     if (!isSseResponse(response)) {
       return { response, prefixChunks: [], attempts, overloadRetries, exhausted: false, bypassed: true };
     }
@@ -236,10 +276,9 @@ export async function requestWithOverloadRetry(makeRequest, options = {}) {
 
     const retryNumber = overloadRetries + 1;
     const delayMs = retryDelay(retryNumber, { baseDelayMs, maxDelayMs, random });
-    onRetry({ retryNumber, maxRetries, delayMs, attempts, error: gate.error, response });
+    onRetry({ retryNumber, maxRetries, delayMs, attempts, error: gate.error, response, kind: "sse-overload" });
     // Drain the tiny terminal failure so a keep-alive socket can be reused.
-    response.once("error", () => {});
-    response.resume();
+    discard(response);
     overloadRetries += 1;
     await sleep(delayMs);
   }

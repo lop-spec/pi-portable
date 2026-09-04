@@ -9,7 +9,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_CHAIN_RUNTIME_VERSION = "s9-native-rules-failopen-v23";
+export const LOP_CHAIN_RUNTIME_VERSION = "s10-stage-strip-v25";
 const MODULE_FILE = fileURLToPath(import.meta.url);
 
 // [portable] 全部路径由 PI_PORTABLE_HOME(包内)与 PI_PORTABLE_DATA(数据根)派生。
@@ -29,9 +29,7 @@ const AUTO_GATE_MJS = path.join(CHAIN_DIR, "auto-gate.mjs");
 const BEST_OF_N_MJS = path.join(CHAIN_DIR, "best-of-n.mjs");
 // 目标门换向器:同路无进展时强制换方向而不是停跑(证据轮/禁忌换路/耗尽落账本)。
 const REDIRECTOR_MJS = path.join(CHAIN_DIR, "goal-redirector.mjs");
-const FAST_PATH_MJS = path.join(CHAIN_DIR, "deterministic-fast-path.mjs");
-const REGISTRY_MJS = path.join(CHAIN_DIR, "rule-registry.mjs");
-const CORPUS = path.join(DATA, "rules.jsonl");
+// 2026-09-04:S3/S4/S5 已删除,原 FAST_PATH_MJS / REGISTRY_MJS / CORPUS 三个常量随之无消费者,一并移除。
 const ENTITIES = path.join(DATA, "anchors.jsonl");
 const METRICS = process.env.PI_CHAIN_METRICS || path.join(DATA, "chain-metrics.jsonl");
 const LOG = process.env.PI_CHAIN_LOG || path.join(DATA, "lop-chain.log");
@@ -1111,31 +1109,9 @@ export default function (pi: ExtensionAPI) {
   if (scanFresh) log(`S3 STARTUP_SCAN skip-fresh age=${Math.round(scanFreshAge / 1000)}s`);
   // 首轮超时放行后 memoryReady 可能在无等待者时 reject,吞掉防 unhandledRejection
   // (真实错误已由 STARTUP_SCAN_FAIL 日志承载)。
-  const memoryReady = process.env.PI_CHAIN_SKIP_STARTUP_SCAN === "1" || scanFresh
-    ? Promise.resolve({ physicalSources: 0, changedSources: 0, canonicalized: 0 })
-    : (async () => {
-    // 修正1(2026-08-31):scanHistory 内含大段同步 sqlite/解析,进程内跑会饿死事件循环
-    // (实测 2s 等待上限的 race 定时器打不进,首轮 s3 仍被压满整个扫描时长)。
-    // 改 detached+windowsHide 子进程,首轮零阻塞;并发由 scan.lock 互斥,新鲜度由
-    // status.json 跳扫收敛;扫描结果不再回填首轮(s3ScanSources 记 0)。
-    try {
-      const { spawn } = await import("node:child_process");
-      const runner = path.join(CHAIN_DIR, "scan-runner.mjs");
-      if (!fs.existsSync(runner)) {
-        log(`S3 STARTUP_SCAN_FAIL runner missing: ${runner}`);
-        return { physicalSources: 0, changedSources: 0, canonicalized: 0 };
-      }
-      const child = spawn(process.execPath, [runner], {
-        detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env },
-      });
-      child.unref();
-      log(`S3 STARTUP_SCAN spawned pid=${child.pid}`);
-      return { physicalSources: 0, changedSources: 0, canonicalized: 0, spawned: true };
-    } catch (error) {
-      log(`S3 STARTUP_SCAN_FAIL ${String(error).slice(0, 200)}`);
-      return { physicalSources: 0, changedSources: 0, canonicalized: 0 };
-    }
-  })();
+  // 2026-09-04:S3 历史注入已删除,启动扫描的唯一消费者消失,不再 spawn 扫描子进程
+  // (实测 09-01 单日 224 次 spawn;S3 命中率 9% 且 history-used 记录为 0)。
+  const memoryReady = Promise.resolve({ physicalSources: 0, changedSources: 0, canonicalized: 0 });
   memoryReady.catch(() => {});
   // S6 打回轮标记:等价 Claude 侧 stop_hook_active,防预审递归打回。
   let advRedelivery = false;
@@ -1208,6 +1184,16 @@ export default function (pi: ExtensionAPI) {
     ).length;
     if (removed || sanitized) log(`CONTEXT removed=${removed} sanitizedSummary=${sanitized}`);
     try {
+      // 关闭态也必须留痕(降级路径不得静默),但每个 runner 只记一行,不按轮刷屏。
+      if (!COMPACT_GUARD_ENABLED) {
+        if (!compactGuardOffLogged) {
+          compactGuardOffLogged = true;
+          const why = process.env.LOP_COMPACT_GUARD ? "env:LOP_COMPACT_GUARD=0" : "portable-default";
+          log(`COMPACT_GUARD disabled(${why}) 上下文水位裁剪不生效,依赖 pi 原生阈值压缩`);
+          metric({ sessionId, compactGuard: false, compactGuardReason: why });
+        }
+        return { messages };
+      }
       const tokens = ctx?.getContextUsage?.()?.tokens;
       const overLine = typeof tokens === "number" && tokens > COMPACT_TRIGGER_TOKENS;
       // v23:冻结后复用边界,直到上下文比上次冻结再涨 TRIM_KEEP_RECENT_TOKENS 才重冻结。此前 overLine 每轮重冻结,
@@ -1288,10 +1274,23 @@ export default function (pi: ExtensionAPI) {
   // 稳态载荷≈保留额+对话文本(与触发线无关),触发线只决定进入省钱模式的早晚——
   // 取 12 万可让短会话零打扰、长会话尽早收敛到 ~6-10万 稳态;保留 5 万护住工作集
   // (再压每轮省 <0.2s,一次重读付 ~5s,风险不对称)。
-  const COMPACT_TRIGGER_TOKENS = Number(process.env.LOP_COMPACT_TRIGGER_TOKENS || 120000);
+  // 2026-09-04:pi-web(便携运行面)默认关闭本水位门。24h 实测 freeze#=13 / frozen#=1——
+  // 扩展实例每 run 重建,frozenKeepFrom 不跨 run 保持,v23 的"只在重冻结轮 miss"退化成
+  // 几乎每次触发都是缓存 miss;而单次裁掉约 11 万 token 工具结果(tok≈177355→67105),
+  // 模型重读一次约 5s。关掉后仍有 pi 原生阈值压缩(run 结束/新 prompt 前 _checkCompaction)兜底。
+  // 显式 env 优先:LOP_COMPACT_GUARD=1 强开、=0 强关;未设时按运行面判定(便携=关,CLI=开)。
+  const COMPACT_GUARD_ENABLED = process.env.LOP_COMPACT_GUARD
+    ? process.env.LOP_COMPACT_GUARD !== "0"
+    : !process.env.PI_PORTABLE_DATA;
+  // 2026-09-04:触发线 12万→25万。12万档实测代价大于收益——越线后"中间未改动却重读同一
+  // 文件"占 read 的 41%(未越线会话仅 12%,越线前 10%),8 天 645 次冷重读;而每轮省下的
+  // TTFB 在上游缓存命中 93.7% 时不足 1s。25万保留原始动机(单轮工具循环冲到 45.1 万 tok)
+  // 的失控兜底,同时让日常会话完全不触发。回退:改回 120000 或设 LOP_COMPACT_TRIGGER_TOKENS。
+  const COMPACT_TRIGGER_TOKENS = Number(process.env.LOP_COMPACT_TRIGGER_TOKENS || 250000);
   const TRIM_KEEP_RECENT_TOKENS = Number(process.env.LOP_TRIM_KEEP_TOKENS || 50000);
   const TRIM_MIN_CHARS = 600;
   const TRIM_MARK = "[lop-compact-guard 已裁剪";
+  let compactGuardOffLogged = false;
   // 冻结边界:null=未触发。触发后 keepFrom 定格,投影逐字节稳定(前缀缓存友好);
   // 真实用量再次越线才重冻——缓存 miss 只发生在(重)冻结轮,不再每轮滑动。
   let frozenKeepFrom: number | null = null;
@@ -1490,190 +1489,9 @@ export default function (pi: ExtensionAPI) {
     phase.s2RuleTerms = expanded.ruleTerms;
     phase.s2PersonalizedTerms = expanded.personalizedTerms;
 
-    // S3 历史硬门:先原问题,miss 后仍按原意评分,只用3×扩写扩大候选。
-    const t3 = performance.now();
-    try {
-      // S3 出关键路径:首条 prompt 对扫描最多等 2s,超时即放行(查询用现有索引,
-      // 新鲜度由后台扫描补齐;扫描自身完成/失败仍由 STARTUP_SCAN 日志记录)。
-      const scan: any = await Promise.race([
-        memoryReady.catch((error) => ({ scanFailed: String(error).slice(0, 120) })),
-        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }),
-          Number(process.env.LOP_SCAN_FIRST_WAIT_MS || 2000))),
-      ]);
-      if (scan?.timedOut) log("S3 SCAN_WAIT timeout=2s 放行(后台继续)");
-      phase.s3ScanSources = Number(scan?.physicalSources || 0);
-      phase.s3ScanChanged = Number(scan?.changedSources || 0);
-      if (isContextDependentHistoryPrompt(prompt)) {
-        phase.s3Pass = true;
-        phase.s3Hit = false;
-        phase.s3Mode = "-";
-        phase.s3Reason = "context-dependent-prompt";
-        phase.s3ViaExpansion = false;
-        phase.s3Token = "";
-      } else {
-        const mem: any = await import(pathToFileURL(MEMORY_MJS).href);
-        const opts = { sessionId, turnId: "", refresh: false, maxFullChars: 2000 };
-        const base = await mem.resolveHistory(prompt, opts);
-        let resolved = base;
-        let viaExpansion = false;
-        if (!base?.hit && expanded.forHistory !== prompt) {
-          const expandedResult = await mem.resolveHistory(prompt, {
-            ...opts,
-            candidateQuery: expanded.forHistory,
-            associationTerms: expanded.historyTerms.join(" "),
-            // 写入侧 v3:resolver 只认 expansionTerms/expansionAllTerms 扩池,此前扩写二次检索是空操作。
-            expansionTerms: expanded.historyTerms.slice(0, 8),
-            expansionAllTerms: expanded.historyTerms,
-          });
-          if (expandedResult?.hit) { resolved = expandedResult; viaExpansion = true; }
-          phase.s3ExpandedReason = expandedResult?.reason || "-";
-        }
-        const relevant = !resolved?.hit || (
-          String(resolved.summary20 || "").length > 0 &&
-          [...String(resolved.summary20 || "")].length <= 20 &&
-          String(resolved.full || "").trim().length > 0 &&
-          (resolved.mode === "exact" || Number(resolved.relevance || 0) >= 0.82)
-        );
-        if (!relevant) throw new Error(`history relevance gate failed: ${JSON.stringify(resolved).slice(0, 500)}`);
-        lastResolved = resolved?.hit ? resolved : null;
-        phase.s3Pass = relevant;
-        phase.s3Hit = Boolean(resolved?.hit);
-        phase.s3Mode = resolved?.mode || "-";
-        phase.s3Reason = resolved?.reason || "-";
-        phase.s3EventId = resolved?.eventId || "";
-        phase.s3Relevance = Number(resolved?.relevance || 0);
-        phase.s3ViaExpansion = viaExpansion;
-        phase.s3CandidateDelta = viaExpansion ? 1 : 0;
-        phase.s3Token = resolved?.usageToken || "";
-        const context = mem.renderResolvedHistory(resolved);
-        if (context) contexts.push(context);
-      }
-    } catch (error) {
-      phase.s3Pass = false;
-      phase.s3Error = String(error).slice(0, 220);
-      phase.s3Ms = +(performance.now() - t3).toFixed(1);
-      lastPhase = phase;
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S3", failOpen: true });
-      log(`S3 FAIL_OPEN ${phase.s3Error}`);
-      lastResolved = null;
-    }
-    phase.s3Ms = +(performance.now() - t3).toFixed(1);
 
-    // S4 规则硬门:运行命中集合必须与逐条直接搜索全语料的 oracle 完全相等。
-    const t4 = performance.now();
-    try {
-      if (!fs.existsSync(CORPUS)) {
-        phase.s4Pass = true;
-        phase.s4Reason = "corpus-absent";
-        phase.s4Live = [];
-        phase.s4Oracle = [];
-        phase.s4FromExpansion = [];
-      } else {
-        const reg: any = await import(pathToFileURL(REGISTRY_MJS).href);
-        const registry = reg.loadRuleRegistry(CORPUS);
-        const routed = auditRuleRouting(reg, registry.rules, prompt, expanded.forRules);
-        phase.s4Pass = routed.pass;
-        phase.s4Live = routed.actualIds;
-        phase.s4Oracle = routed.oracleIds;
-        phase.s4FromExpansion = routed.fromExpansion.map((hit: any) => String(hit.rule.id));
-        phase.s4ActualCount = routed.actualIds.length;
-        phase.s4OracleCount = routed.oracleIds.length;
-        if (!routed.pass) {
-          throw new Error(`rule set mismatch actual=${routed.actualIds.join(",")} oracle=${routed.oracleIds.join(",")}`);
-        }
-        if (routed.all.length) {
-          contexts.push([
-            `<rules-resolved source="rules-corpus" host="pi" actual="${routed.actualIds.length}" oracle="${routed.oracleIds.length}">`,
-            "以下是本轮确定性命中的完整规则集合;它们是规则而非历史数据。只读取命中项明确指向的Rule/Skill,禁止扩展为全量规则加载。",
-            ...routed.all.map((hit: any) => `- [${hit.rule.id}] ${String(hit.rule.text || hit.rule.summary || "").slice(0, 500)}`),
-            "</rules-resolved>",
-          ].join("\n"));
-        }
-      }
-    } catch (error) {
-      phase.s4Pass = false;
-      phase.s4Error = String(error).slice(0, 220);
-      phase.s4Ms = +(performance.now() - t4).toFixed(1);
-      lastPhase = phase;
-      metric({ sessionId, prompt: prompt.slice(0, 160), ...phase, hardGate: "S4", failOpen: true });
-      log(`S4 FAIL_OPEN ${phase.s4Error}`);
-    }
-    phase.s4Ms = +(performance.now() - t4).toFixed(1);
 
-    // S5 高频最小动作快路:仅识别 cwd 内路径、direct argv/stat/唯一字面替换；
-    // 执行前仍过 S7 的同一 pretool 判定，结果作为当前证据注入，避免确定动作多跑模型轮次。
-    const t5 = performance.now();
-    try {
-      const fast: any = await import(pathToFileURL(FAST_PATH_MJS).href);
-      const plan = fast.planDeterministicFastPath(prompt, process.cwd());
-      if (plan) {
-        let hits: any[] = [];
-        if (plan.toolName) {
-          const pre: any = await import(pathToFileURL(PRETOOL_MJS).href);
-          const checked = pre.checkPreTool({
-            session_id: sessionId,
-            tool_name: plan.toolName,
-            tool_input: plan.toolInput,
-          });
-          hits = Array.isArray(checked) ? checked : checked?.hits || [];
-        }
-        if (!hits.length) {
-          const result = fast.executeDeterministicFastPath(plan, {
-            cwd: process.cwd(), env: process.env, timeoutMs: 30000,
-          });
-          if (result?.executed) {
-            if (result.countsAsTool !== false) {
-              runHadTool = true;
-              toolDurationMs += Number(result.durationMs || 0);
-            }
-            phase.s5Executed = true;
-            phase.s5Kind = result.kind;
-            phase.s5Ok = Boolean(result.ok);
-            phase.s5Status = result.status ?? null;
-            phase.s5Bytes = result.bytes ?? null;
-            if (result.finalDraft) {
-              deterministicDraftActive = true;
-              phase.s5OutputTokenCap = 256;
-            }
-            const evidence = fast.renderDeterministicEvidence(result, {
-              usageToken: lastResolved?.usageToken || "",
-            });
-            if (evidence) contexts.push(evidence);
-          }
-        } else {
-          phase.s5Executed = false;
-          phase.s5Reason = `pretool:${hits.map((hit: any) => hit.id || hit.rule || "blocked").join(",")}`;
-        }
-      } else {
-        phase.s5Executed = false;
-        phase.s5Reason = "no-plan";
-      }
-    } catch (error) {
-      phase.s5Executed = false;
-      phase.s5Reason = String(error).slice(0, 180);
-      log(`S5 FALLBACK ${phase.s5Reason}`);
-    }
-    phase.s5Ms = +(performance.now() - t5).toFixed(1);
 
-    // v23:history-disposition 指令已由 renderResolvedHistory 随历史卡一并注入,此处不再重复注入。
-
-    // S6 后台对抗预审起审(v2 三路正交盲聚合):agent_end 消费,外部能力 fail-open。
-    const t6 = performance.now();
-    try {
-      const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
-      const started = adv.startBackgroundReview({ session_id: sessionId, prompt, cwd: taskCwd });
-      phase.s6Start = started?.status || "-";
-      if (phase.s5Executed === true && phase.s5Ok === true &&
-          typeof adv.acknowledgeBackgroundReview === "function") {
-        adv.acknowledgeBackgroundReview({
-          session_id: sessionId,
-          reason: "deterministic-current-evidence",
-        });
-        advDeliveredTurn = true;
-        phase.s6Acknowledged = true;
-      }
-    } catch (e) { log(`S6 FAIL_OPEN ${String(e).slice(0, 120)}`); }
-    phase.s6Ms = +(performance.now() - t6).toFixed(1);
 
     // auto-gate 起审:执行型任务且无显式【目标门】时,后台生成只读验收命令(双红纪律),
     // agent_end 消费安装。显式门永远优先;问答/上下文短语不生成;fail-open。
@@ -1692,7 +1510,7 @@ export default function (pi: ExtensionAPI) {
 
     phase.preModelMs = +(performance.now() - turnStartedAt).toFixed(1);
     lastPhase = phase;
-    log(`INJECT s2=${phase.s2Ms}ms(${phase.s2Ratio}x) s3=${phase.s3Ms}ms(hit=${phase.s3Hit},exp=${phase.s3ViaExpansion},reason=${phase.s3Reason}) s4=${phase.s4Ms}ms(actual=${phase.s4ActualCount || 0},oracle=${phase.s4OracleCount || 0},exp=${(phase.s4FromExpansion as string[])?.length || 0}) s5=${phase.s5Ms}ms(${phase.s5Kind || phase.s5Reason}) bytes=${Buffer.byteLength(contexts.join("\n\n"))}`);
+    log(`INJECT s2=${phase.s2Ms}ms(${phase.s2Ratio}x) bytes=${Buffer.byteLength(contexts.join("\n\n"))}`);
     if (!contexts.length) return;
     return {
       message: { customType: "lop-chain", content: contexts.join("\n\n"), display: false },
@@ -1738,20 +1556,6 @@ export default function (pi: ExtensionAPI) {
         log(`FOREGROUND_DEADLINE APPLY tool=${toolName} timeout=${foreground.timeoutSeconds}s wallClock=${foreground.wallClockWait}`);
         metric({ sessionId, hardGate: "foreground-deadline-applied", tool: toolName, timeout: foreground.timeoutSeconds });
       }
-    }
-    if (!advRedelivery && !advDeliveredTurn) {
-      try {
-        const adv: any = await import(pathToFileURL(ADVERSARY_MJS).href);
-        const claimed = adv.claimBackgroundReview({ session_id: sessionId });
-        if (claimed?.status === "ready" && claimed.context) {
-          advDeliveredTurn = true;
-          pi.sendMessage(
-            { customType: "lop-adversary", content: claimed.context, display: false },
-            { deliverAs: "steer", triggerTurn: false },
-          );
-          log("S6 DELIVERED pretool");
-        }
-      } catch (e) { log(`S6 CLAIM FAIL_OPEN ${String(e).slice(0, 120)}`); }
     }
     try {
       const pre: any = await import(pathToFileURL(PRETOOL_MJS).href);
