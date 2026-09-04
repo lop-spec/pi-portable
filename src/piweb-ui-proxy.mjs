@@ -6,6 +6,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { appendLineRotating } from "./log-rotate.mjs";
 
 export const PIWEB_UI_PROXY_VERSION = "piweb-ui-proxy-v1";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v9";
@@ -232,10 +233,8 @@ export class PiWebUiProxy {
 
   log(event, detail = {}) {
     const row = { ts: iso(this.now()), version: PIWEB_UI_PROXY_VERSION, event, ...detail };
-    try {
-      fs.mkdirSync(path.dirname(this.logFile), { recursive: true });
-      fs.appendFileSync(this.logFile, JSON.stringify(row) + "\n");
-    } catch {}
+    const written = appendLineRotating(this.logFile, JSON.stringify(row));
+    if (!written.ok) console.error(`[piweb-ui-proxy-log] ${written.error}`);
     return row;
   }
 

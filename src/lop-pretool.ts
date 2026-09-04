@@ -17,7 +17,21 @@ const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(RULE_DATA, "rules-pr
 const LOG = process.env.PI_CHAIN_LOG || path.join(RUNTIME_DATA, "lop-chain.log");
 
 function log(line: string) {
-  try { fs.appendFileSync(LOG, `[${new Date().toISOString()}] ${line}\n`, "utf8"); } catch { /* 日志不可写不得影响执行 */ }
+  try {
+    const rendered = `[${new Date().toISOString()}] ${line}\n`;
+    let bytes = 0;
+    try { bytes = fs.statSync(LOG).size; } catch {}
+    if (bytes > 10 * 1024 * 1024) {
+      fs.rmSync(`${LOG}.3`, { force: true });
+      if (fs.existsSync(`${LOG}.2`)) fs.renameSync(`${LOG}.2`, `${LOG}.3`);
+      if (fs.existsSync(`${LOG}.1`)) fs.renameSync(`${LOG}.1`, `${LOG}.2`);
+      fs.renameSync(LOG, `${LOG}.1`);
+    }
+    fs.mkdirSync(path.dirname(LOG), { recursive: true });
+    fs.appendFileSync(LOG, rendered, "utf8");
+  } catch (error) {
+    console.error(`[lop-pretool-log] ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export default function (pi: ExtensionAPI) {

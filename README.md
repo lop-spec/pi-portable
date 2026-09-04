@@ -76,6 +76,7 @@ launcher 只应用以下补丁：
 - 归档只写 `.pi/agent/session-archive.json`。
 - UI proxy 不保存 prompt 请求副本，也没有 run/goal/recovery 状态库。
 - bridge 只记录状态码、延迟、模型、账号标签、出口和重试次数。
+- launcher、UI proxy、bridge 和 metrics 日志按 20 MB × 5 代自动轮转；pretool 日志按 10 MB × 3 代轮转，不需要人工清理。
 - 凭据始终留在运行机数据根，公开仓库和 Release 不包含 `auth.json`、token 或加密资产段。
 
 ## 启动与发布

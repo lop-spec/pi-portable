@@ -29,6 +29,7 @@ import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-
 import { createModelFallbackPlan, requestWithOverloadRetry, RETRYABLE_UPSTREAM_STATUS } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
 import { createAccountUsageMonitor, readAccountUsageIdentity } from "./account-usage.mjs";
+import { appendLineRotating } from "../log-rotate.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
 const HOST = "127.0.0.1";
@@ -66,7 +67,13 @@ const METRICS_FILE = path.join(PORTABLE_DATA, "proxy-metrics.jsonl");
 function log(...args) {
   const line = `[${new Date().toLocaleString("zh-CN", { hour12: false })}] ${args.join(" ")}`;
   console.log(line);
-  try { fs.appendFileSync(LOG_FILE, line + "\n", "utf8"); } catch {}
+  const written = appendLineRotating(LOG_FILE, line);
+  if (!written.ok) console.error(`[bridge-log] ${written.error}`);
+}
+
+function recordMetric(value) {
+  const written = appendLineRotating(METRICS_FILE, JSON.stringify(value));
+  if (!written.ok) log(`metrics 写入失败：${written.error}`);
 }
 
 // 进程级兜底：单条流的意外异常不许击穿整个桥（无状态转发器，活着永远比死了强；
@@ -384,7 +391,7 @@ function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, er
   const meta = response?.lopMeta || {};
   const egress = meta.egress || currentEgress();
   const sse = kind === "sse-overload";
-  fs.appendFile(METRICS_FILE, JSON.stringify({
+  recordMetric({
     ts: new Date().toISOString(),
     egressKey: egress.key || "",
     egressPort: egress.port || 0,
@@ -402,7 +409,7 @@ function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, er
     attemptedModel: String(meta.upstreamModel || ""),
     nextModel: String(nextModel || ""),
     ttfbMs: Math.round(meta.ttfbMs || 0),
-  }) + "\n", () => {});
+  });
 }
 
 // 请求策略:一次解压/解析,只做 GPT-5.6 的稳定 prompt_cache_key(+可选显式断点)。
@@ -557,14 +564,14 @@ async function handleResponses(req, res) {
     log(`上游连接失败：${String(e.message).slice(0, 120)}`);
     // 失败也记账：guard 靠它识别「连接风暴型劣化」（成功流的 tok/s 看不见这种故障）。
     const egress = currentEgress();
-    fs.appendFile(METRICS_FILE, JSON.stringify({
+    recordMetric({
       ts: new Date().toISOString(),
       egressKey: egress.key,
       egressPort: egress.port,
       originator: String(req.headers.originator || ""),
       status: 502,
       errorKind: String(e?.code || e?.message || "unknown").slice(0, 60),
-    }) + "\n", () => {});
+    });
     res.writeHead(502, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ error: { message: "上游连接失败" } }));
   }
@@ -642,7 +649,7 @@ async function handleResponses(req, res) {
       if (record.requestedTier && record.upstreamTier && record.requestedTier !== record.upstreamTier) {
         log(`tier 回显不一致：请求 ${record.requestedTier} → 上游回显 ${record.upstreamTier}（是否实际降级以 tok/s 为准）originator=${record.originator || "-"}`);
       }
-      fs.appendFile(METRICS_FILE, JSON.stringify(record) + "\n", () => {});
+      recordMetric(record);
     } catch { /* 观测永不阻断转发 */ }
   };
   for (const chunk of selected.prefixChunks) writeChunk(chunk);

@@ -10,7 +10,17 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 
-const PORT = Number(process.env.BRIDGE_E2E_PORT || 18894);
+async function reservePort() {
+  const server = http.createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+const PORT = process.env.BRIDGE_E2E_PORT ? Number(process.env.BRIDGE_E2E_PORT) : await reservePort();
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-5xx-e2e-"));
 const emptyHomes = path.join(root, "homes-absent");
 

@@ -10,6 +10,7 @@ import readline from "node:readline";
 import { detectEgress } from "./egress-autodetect.mjs";
 import { openAssets } from "./assets-crypto.mjs";
 import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
+import { appendLineRotating } from "./log-rotate.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -43,7 +44,8 @@ let shuttingDown = false;
 const log = (m) => {
   const line = `[${new Date().toLocaleTimeString("zh-CN", { hour12: false })}] ${m}`;
   console.log(line);
-  try { fs.appendFileSync(path.join(DATA, "launcher.log"), line + "\n"); } catch {}
+  const written = appendLineRotating(path.join(DATA, "launcher.log"), line);
+  if (!written.ok) console.error(`[launcher-log] ${written.error}`);
 };
 
 function withPortableNode(env, nodeExe) {
