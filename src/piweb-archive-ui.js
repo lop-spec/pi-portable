@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "piweb-session-archive-v8";
+  const VERSION = "piweb-session-archive-v9";
   const VIEW_KEY = "piweb-session-archive-view";
   if (window.__piSessionArchiveUiVersion === VERSION) return;
   window.__piSessionArchiveUiVersion = VERSION;
@@ -209,6 +209,7 @@
       "[data-pi-session-archive-action]::before{content:'';position:absolute;width:14px;height:14px;background:currentColor;-webkit-mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E');mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E')}",
       "[data-pi-session-archive-action][data-pi-session-archive-mode='restore']::before{-webkit-mask-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 12a9 9 0 1 0 3-6.7%22/%3E%3Cpath d=%22M3 4v6h6%22/%3E%3C/svg%3E');mask-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 12a9 9 0 1 0 3-6.7%22/%3E%3Cpath d=%22M3 4v6h6%22/%3E%3C/svg%3E')}",
       "[data-pi-session-archive-action]:hover{color:var(--accent)!important;border-color:rgba(37,99,235,.35)!important;background:var(--bg-selected)!important}",
+      "[data-pi-session-archive-handoff='true']{background:var(--bg-selected)!important;border-left-color:var(--accent)!important}",
       "[data-pi-session-archive-pending]{pointer-events:none!important;overflow:hidden!important}",
       "[data-pi-session-archive-hidden]{display:none!important}",
       "[data-pi-session-archive-control]:focus-visible,[data-pi-session-archive-action]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}",
@@ -313,9 +314,11 @@
     if (!pending) return;
     clearTimeout(pending.hideTimer);
     clearTimeout(pending.cleanupTimer);
+    clearTimeout(pending.handoffTimer);
     pending.animation?.cancel();
     state.optimisticActions.delete(pending);
     if (pending.button?.isConnected) delete pending.button.dataset.piSessionArchiveBusy;
+    if (pending.nextRow?.isConnected) delete pending.nextRow.dataset.piSessionArchiveHandoff;
     if (!pending.row?.isConnected) return;
     delete pending.row.dataset.piSessionArchivePending;
     delete pending.row.dataset.piSessionArchiveHidden;
@@ -345,6 +348,7 @@
       animation: null,
       wasSelected: row.style.background.includes("--bg-selected") || row.style.borderLeftColor.includes("--accent"),
       nextRow: row.nextElementSibling || row.previousElementSibling || null,
+      handedOff: false,
     };
     state.optimisticActions.add(pending);
     row.dataset.piSessionArchivePending = "true";
@@ -383,6 +387,41 @@
     return "";
   }
 
+  function handOffSelectedConversation(pending) {
+    const nextRow = pending?.nextRow;
+    if (!pending?.wasSelected || !nextRow?.isConnected) return;
+    nextRow.dataset.piSessionArchiveHandoff = "true";
+    pending.handedOff = true;
+    pending.originHref = location.href;
+    pending.nextSessionId = sessionIdFromRow(nextRow);
+    if (pending.nextSessionId) {
+      const nextUrl = new URL(location.href);
+      nextUrl.searchParams.set("session", pending.nextSessionId);
+      history.replaceState(history.state, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+    } else {
+      console.error("[pi-web archive] adjacent session id unavailable for immediate route handoff");
+    }
+    pending.visualHandoffLatencyMs = performance.now() - pending.pointerStartedAt;
+    document.documentElement.dataset.piSessionArchiveHandoffLatencyMs = pending.visualHandoffLatencyMs.toFixed(2);
+    pending.handoffTimer = setTimeout(() => {
+      if (nextRow.isConnected) nextRow.click();
+    }, 190);
+    const startedAt = performance.now();
+    const settle = () => {
+      if (!nextRow.isConnected) return;
+      if (nextRow.style.background.includes("--bg-selected") || performance.now() - startedAt >= 5000) {
+        delete nextRow.dataset.piSessionArchiveHandoff;
+        return;
+      }
+      requestAnimationFrame(settle);
+    };
+    requestAnimationFrame(settle);
+  }
+
+  function scheduleHandoffRefresh() {
+    setTimeout(() => nativeRefreshButton()?.click(), 1400);
+  }
+
   async function performDirectAction(pending, sessionId) {
     pending.started = true;
     clearTimeout(pending.timeout);
@@ -396,13 +435,15 @@
         throw new Error(detail || `HTTP ${response.status}`);
       }
       state.archivedCount = Math.max(0, state.archivedCount + (action === "archive" ? 1 : -1));
-      if (action === "archive" && pending.wasSelected && pending.nextRow?.isConnected) pending.nextRow.click();
       scheduleDecorate();
-      setTimeout(() => nativeRefreshButton()?.click(), 220);
+      if (pending.handedOff) scheduleHandoffRefresh();
+      else setTimeout(() => nativeRefreshButton()?.click(), 220);
     } catch (error) {
       const message = `${words().requestFailed}：${String(error?.message || error || "network error")}`;
       console.error("[pi-web archive]", message);
       restoreOptimisticAction(pending);
+      if (pending.handedOff && pending.originHref) history.replaceState(history.state, "", pending.originHref);
+      if (pending.handedOff && pending.row?.isConnected) queueMicrotask(() => pending.row?.click());
       showError(message);
     }
   }
@@ -413,13 +454,16 @@
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const button = target?.closest("button[data-pi-session-archive-action]");
     if (!button || button.disabled) return;
+    const pointerStartedAt = performance.now();
     event.preventDefault();
     event.stopImmediatePropagation();
     if (button.dataset.piSessionArchiveBusy) return;
     button.dataset.piSessionArchiveBusy = "true";
     const pending = beginOptimisticAction(button);
+    if (pending) pending.pointerStartedAt = pointerStartedAt;
     const sessionId = sessionIdFromRow(pending?.row);
     if (pending && sessionId) {
+      if (state.view === "active") handOffSelectedConversation(pending);
       void performDirectAction(pending, sessionId);
       return;
     }

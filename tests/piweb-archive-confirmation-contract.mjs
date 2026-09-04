@@ -10,6 +10,7 @@ const source = fs.readFileSync(path.join(root, "src", "piweb-archive-ui.js"), "u
 const supervisorSource = fs.readFileSync(path.join(root, "src", "run-supervisor.mjs"), "utf8");
 
 test("archive action is a one-click operation with no confirmation state", () => {
+  const immediateSource = source.slice(source.indexOf("function immediateActionClick"), source.indexOf("function enableImmediateActions"));
   assert.match(source, /function enableImmediateActions\(\)/u);
   assert.match(source, /closest\("button\[data-pi-session-archive-action\]"\)/u);
   assert.match(source, /event\.preventDefault\(\)/u);
@@ -19,7 +20,13 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /document\.addEventListener\("click", immediateActionClick, true\)/u, "keyboard activation must remain supported");
   assert.match(source, /function sessionIdFromRow\(row\)/u);
   assert.match(source, /performDirectAction\(pending, sessionId\)/u, "the normal path must not wait for the native delete callback and its page navigation");
-  assert.match(source, /pending\.wasSelected.*pending\.nextRow\?\.isConnected.*pending\.nextRow\.click\(\)/u, "archiving the selected row must hand off to an adjacent conversation instead of leaving stale content");
+  assert.match(source, /function handOffSelectedConversation\(pending\)[\s\S]*nextRow\.click\(\)/u, "archiving the selected row must hand off to an adjacent conversation instead of leaving stale content");
+  assert.ok(immediateSource.indexOf("handOffSelectedConversation(pending)") < immediateSource.indexOf("void performDirectAction"), "selected-session handoff must happen before waiting for the archive request");
+  assert.match(source, /data-pi-session-archive-handoff='true'/u, "the adjacent row must show the new selection in the same frame as the pointer press");
+  assert.match(source, /history\.replaceState\(history\.state, "", `\$\{nextUrl\.pathname\}/u, "the adjacent route must update immediately without waiting for Next.js navigation");
+  assert.match(source, /if \(pending\.handedOff\) scheduleHandoffRefresh\(\)/u, "list refresh must wait until the selected-session transition has settled");
+  assert.match(source, /adjacent session id unavailable for immediate route handoff/u, "a missing adjacent route id must never fail silently");
+  assert.match(source, /pending\.handedOff.*queueMicrotask\(\(\) => pending\.row\?\.click\(\)\)/u, "a rejected optimistic archive must return to the original selected conversation");
   assert.match(source, /nativeFetch\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{action\}`/u);
   assert.match(source, /forwardedActionEvents\.add\(forwarded\)/u, "the guarded native fallback must remain deduplicated");
   assert.doesNotMatch(source, /button\.innerHTML/u, "decorating a React-owned action must not replace its children and break reconciliation");
