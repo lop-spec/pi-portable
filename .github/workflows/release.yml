@@ -93,7 +93,15 @@ jobs:
           Write-Host "native GUI launcher $($launcher.Length) bytes; subsystem=$subsystem"
           Copy-Item -LiteralPath $launcher.FullName -Destination windows-silent-exec-host.exe
           (Get-FileHash windows-silent-exec-host.exe -Algorithm SHA256).Hash | Set-Content windows-silent-exec-host.exe.sha256
-          & tests/native-launcher-smoke.ps1 -Launcher $launcher.FullName -Node (Resolve-Path stage/runtime/node.exe)
+
+      - name: Verify native launcher supervision
+        shell: pwsh
+        run: |
+          & tests/native-launcher-smoke.ps1 -Launcher (Resolve-Path stage/pi-portable-launcher.exe) -Node (Resolve-Path stage/runtime/node.exe)
+
+      - name: Verify standalone silent exec host
+        shell: pwsh
+        run: |
           & tests/silent-exec-host-smoke.ps1 -Launcher (Resolve-Path windows-silent-exec-host.exe) -Node (Resolve-Path stage/runtime/node.exe)
 
       - name: Stage app layer (pi-web + pi)
