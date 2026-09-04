@@ -43,7 +43,7 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 // (协议文本移入 pi AGENTS.md 管理块,桥部署不再作废会话前缀)、response memo 精确重放、
 // history 快路 reasoning 改写、tier 兜底——三样从未在真实流量里起作用,却是本周两起静默
 // 缺陷(强制 max、注入失效)的温床。
-const POLICY_VERSION = "gpt56-slim-v8.1.0";
+const POLICY_VERSION = "gpt56-slim-v8.0.0";
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -168,8 +168,7 @@ function agentFor(proxyPort) {
   return agent;
 }
 
-function upstreamOnce(body, headers, allowRetry = true, onAttempt = () => {}) {
-  onAttempt();
+function upstreamOnce(body, headers, allowRetry = true) {
   return new Promise((resolve, reject) => {
     const started = performance.now();
     const egress = currentEgress();
@@ -199,7 +198,7 @@ function upstreamOnce(body, headers, allowRetry = true, onAttempt = () => {}) {
     req.on("error", (error) => {
       if (allowRetry && !responded && RETRYABLE.has(String(error?.code || ""))) {
         log(`首包前连接错误（${error.code}，reused=${req.reusedSocket ? "yes" : "no"}），换新连接重试一次`);
-        setTimeout(() => resolve(upstreamOnce(body, headers, false, onAttempt)), 500);
+        setTimeout(() => resolve(upstreamOnce(body, headers, false)), 500);
         return;
       }
       reject(error);
@@ -482,9 +481,6 @@ async function handleResponses(req, res) {
     if (activeUpRes && !activeUpRes.readableEnded) activeUpRes.destroy();
   });
   let selected;
-  let totalIdentityAttempts = 0;
-  let totalNetworkAttempts = 0;
-  const accountsTried = [];
   try {
     selected = await requestWithOverloadRetry(async (attempt) => {
       const candidate = upstreamPayloadForAttempt(attempt);
@@ -493,14 +489,12 @@ async function handleResponses(req, res) {
       const outcome = await sendWithAccountFailover({
         pool: accountPool,
         headers: candidate.headers,
-        send: (headers) => upstreamOnce(candidate.body, headers, true, () => { totalNetworkAttempts += 1; }),
+        send: (headers) => upstreamOnce(candidate.body, headers),
         applyIdentity: withIdentity,
         drain: drainBody,
         decode: decodeBodyText,
         log,
       });
-      totalIdentityAttempts += Number(outcome.attempts || 0);
-      for (const id of outcome.accountsTried || []) accountsTried.push(String(id));
       activeUpRes = outcome.pinnedUnavailable
         ? syntheticResponse(429, { error: { type: "rate_limit_error", message: `已锁定账号 ${outcome.pinnedUnavailable.id} 且其当前不可用（${outcome.pinnedUnavailable.reason || "冷却中"}）。等待冷却结束、手动切号或恢复自动轮转。` } })
         : outcome.drained ? bufferedResponse(outcome.response, outcome.drained) : outcome.response;
@@ -508,10 +502,6 @@ async function handleResponses(req, res) {
       activeUpRes.lopMeta.requestedModel = modelPlan.primaryModel;
       activeUpRes.lopMeta.upstreamModel = candidate.model;
       activeUpRes.lopMeta.modelFallback = candidate.fallback;
-      activeUpRes.lopMeta.upstreamAccount = String(outcome.account?.id || (accountPool ? "unavailable" : "downstream"));
-      activeUpRes.lopMeta.upstreamAttempts = totalNetworkAttempts;
-      activeUpRes.lopMeta.identityAttempts = totalIdentityAttempts;
-      activeUpRes.lopMeta.accountsTried = [...accountsTried];
       activeUpRes.lopMeta.requestedTier = String(rewritten.meta.effectiveTier || "");
       return activeUpRes;
     }, {
@@ -571,8 +561,6 @@ async function handleResponses(req, res) {
   const upRes = selected.response;
   activeUpRes = upRes;
   const finalMeta = upRes.lopMeta || {};
-  finalMeta.modelAttempts = Number(selected.attempts || 0);
-  finalMeta.overloadRetries = Number(selected.overloadRetries || 0);
   const usedModelFallback = Boolean(finalMeta.requestedModel && finalMeta.upstreamModel && finalMeta.requestedModel !== finalMeta.upstreamModel);
   const out = { ...upRes.headers };
   delete out["content-encoding"];
@@ -580,10 +568,6 @@ async function handleResponses(req, res) {
   delete out["transfer-encoding"];
   if (finalMeta.requestedModel) out["x-lop-requested-model"] = finalMeta.requestedModel;
   if (finalMeta.upstreamModel) out["x-lop-upstream-model"] = finalMeta.upstreamModel;
-  if (finalMeta.upstreamAccount) out["x-lop-upstream-account"] = finalMeta.upstreamAccount;
-  if (finalMeta.egress?.key) out["x-lop-egress-key"] = String(finalMeta.egress.key);
-  if (finalMeta.egress?.port) out["x-lop-egress-port"] = String(finalMeta.egress.port);
-  out["x-lop-upstream-attempts"] = String(finalMeta.upstreamAttempts || finalMeta.modelAttempts || 1);
   if (usedModelFallback) out["x-lop-model-fallback"] = "overload";
   res.writeHead(upRes.statusCode, out);
   // 客户端半途断开（pi 中止/页面刷新）：吞掉 error 防击穿，并停止继续拉上游流。
@@ -626,16 +610,11 @@ async function handleResponses(req, res) {
         tokPerSec,
         requestedModel: meta.requestedModel || "",
         upstreamModel: meta.upstreamModel || "",
-        upstreamAccount: meta.upstreamAccount || "",
-        upstreamAttempts: Number(meta.upstreamAttempts || meta.modelAttempts || 1),
-        identityAttempts: Number(meta.identityAttempts || 1),
-        modelAttempts: Number(meta.modelAttempts || 1),
-        overloadRetries: Number(meta.overloadRetries || 0),
         modelFallback: Boolean(meta.modelFallback),
         requestedTier: meta.requestedTier || "",
         upstreamTier: usage.serviceTier || "",
       };
-      log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} account=${record.upstreamAccount || "?"} attempts=${record.upstreamAttempts} egress=${record.egressKey || "?"}:${record.egressPort} tier=${record.requestedTier || "-"}→${record.upstreamTier || "?"} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
+      log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} egress=${record.egressKey || "?"}:${record.egressPort} tier=${record.requestedTier || "-"}→${record.upstreamTier || "?"} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
       // priority 额度是否被授予只能从吞吐判(2026-09-02 实测:同分钟 A/B priority 47-57 vs default 27
       // tok/s;但 46-49 tok/s 的快请求回显也是 "default",回显不可作降级证据)。回显不一致仍
       // 无条件留痕,措辞只陈述事实,不断言降级。
@@ -676,7 +655,6 @@ const server = http.createServer(async (req, res) => {
       upstreamProxy: `${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}`,
       upstreamAgent: { maxSockets: 16, maxFreeSockets: 8 },
       upstreamGzip: UPSTREAM_GZIP,
-      retryOwner: "bridge",
       overloadRetry: {
         maxRetries: OVERLOAD_MAX_RETRIES,
         baseDelayMs: OVERLOAD_BASE_DELAY_MS,
