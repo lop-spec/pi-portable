@@ -573,8 +573,9 @@
 (() => {
   "use strict";
 
-  const VERSION = "piweb-account-usage-v1";
+  const VERSION = "piweb-account-usage-v2";
   const ENDPOINT = "/__pi_account_usage";
+  const SELECT_ENDPOINT = "/__pi_account_select";
   // The bridge refreshes upstream data every four minutes. Reading its local
   // snapshot every 45 seconds keeps the rendered value safely below five
   // minutes old even with timer jitter; this never calls a model endpoint.
@@ -587,6 +588,9 @@
     error: "",
     loading: false,
     open: false,
+    switchingId: "",
+    switchFailedId: "",
+    switchError: "",
     lastFetchAt: 0,
     suppressClick: false,
     renderedLocale: "",
@@ -606,8 +610,13 @@
       used: "Used",
       resets: "Reset credits",
       resetAt: "Resets",
+      resetCountShort: "Credits",
       current: "Current",
       cached: "Cached",
+      switchAccount: "Switch",
+      switchingAccount: "Switching…",
+      retrySwitch: "Retry",
+      switchFailed: "Switch failed",
       loading: "Loading usage…",
       empty: "No rotating accounts found",
       unavailable: "Usage is temporarily unavailable",
@@ -627,8 +636,13 @@
       used: "已用",
       resets: "重置次数",
       resetAt: "重置时间",
+      resetCountShort: "次数",
       current: "当前",
       cached: "缓存",
+      switchAccount: "切换",
+      switchingAccount: "切换中…",
+      retrySwitch: "重试",
+      switchFailed: "切换失败",
       loading: "正在读取额度…",
       empty: "未发现轮转账号",
       unavailable: "额度暂不可用",
@@ -648,8 +662,13 @@
       used: "已用",
       resets: "重置次數",
       resetAt: "重置時間",
+      resetCountShort: "次數",
       current: "目前",
       cached: "快取",
+      switchAccount: "切換",
+      switchingAccount: "切換中…",
+      retrySwitch: "重試",
+      switchFailed: "切換失敗",
       loading: "正在讀取額度…",
       empty: "未發現輪轉帳號",
       unavailable: "額度暫時無法使用",
@@ -782,6 +801,8 @@
     const text = words();
     const row = document.createElement("div");
     row.className = "pi-account-usage-row";
+    row.dataset.accountId = String(account.id || "");
+    row.dataset.active = String(Boolean(account.active));
     if (account.stale || account.error) row.dataset.stale = "true";
 
     const top = document.createElement("div");
@@ -793,9 +814,7 @@
     dot.dataset.state = account.error && account.remainingPercent == null ? "error" : account.active ? "active" : "idle";
     identity.appendChild(dot);
     const email = String(account.email || account.id || "—");
-    appendText(identity, "pi-account-usage-email", email, email);
-    if (account.active) appendText(identity, "pi-account-usage-badge", text.current);
-    else if (account.stale || account.error) appendText(identity, "pi-account-usage-badge", text.cached);
+    appendText(identity, "pi-account-usage-email", email, account.error ? `${email} · ${account.error}` : email);
     top.appendChild(identity);
 
     const remaining = document.createElement("div");
@@ -803,6 +822,19 @@
     appendText(remaining, "pi-account-usage-remaining-label", text.remaining);
     appendText(remaining, "pi-account-usage-remaining-value", account.remainingPercent == null ? "—" : `${account.remainingPercent}%`);
     top.appendChild(remaining);
+
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "pi-account-usage-switch";
+    const isSwitching = state.switchingId === account.id;
+    const didFail = state.switchFailedId === account.id;
+    action.dataset.state = account.active ? "current" : didFail ? "failed" : "idle";
+    action.textContent = account.active ? text.current : isSwitching ? text.switchingAccount : didFail ? text.retrySwitch : text.switchAccount;
+    action.title = account.active ? `${email} · ${text.current}` : `${text.switchAccount} ${email}`;
+    action.setAttribute("aria-label", action.title);
+    action.disabled = Boolean(account.active || state.switchingId);
+    action.addEventListener("click", () => { void switchAccount(String(account.id || "")); });
+    top.appendChild(action);
     row.appendChild(top);
 
     if (account.remainingPercent != null) {
@@ -822,26 +854,51 @@
 
     const meta = document.createElement("div");
     meta.className = "pi-account-usage-meta";
-    if (account.usedPercent == null) {
-      appendText(meta, "", text.unavailable);
-      appendText(meta, "", text.retrying);
-    } else {
-      appendText(meta, "", `${text.used} ${account.usedPercent}%`);
-      appendText(meta, "", `${text.resets} ${account.resetCredits ?? "—"}`);
-    }
-    row.appendChild(meta);
-
-    const reset = document.createElement("div");
-    reset.className = "pi-account-usage-reset";
+    appendText(meta, "", account.usedPercent == null ? text.unavailable : `${text.used} ${account.usedPercent}%`);
+    appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
+    const reset = appendText(meta, "", account.resetAt ? exactReset(account.resetAt) : `${text.resetAt} —`);
     if (account.resetAt) {
       const full = new Date(account.resetAt).toLocaleString(locale(), { hour12: false });
-      reset.textContent = `${text.resetAt} ${exactReset(account.resetAt)} · ${relativeReset(account.resetAt)}`;
-      reset.title = full;
-    } else {
-      reset.textContent = `${text.resetAt} —`;
+      reset.title = `${text.resetAt} ${full} · ${relativeReset(account.resetAt)}`;
     }
-    row.appendChild(reset);
+    row.appendChild(meta);
     return row;
+  }
+
+  async function switchAccount(id) {
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id) || state.switchingId) return;
+    const startedAt = performance.now();
+    state.switchingId = id;
+    state.switchFailedId = "";
+    state.switchError = "";
+    render();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    try {
+      const response = await fetch(SELECT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok !== true) throw new Error(result.error || `HTTP ${response.status}`);
+      if (Array.isArray(result.accounts)) state.data = { ...(state.data || {}), enabled: true, accounts: result.accounts };
+      else if (Array.isArray(state.data?.accounts)) {
+        state.data = { ...state.data, accounts: state.data.accounts.map((account) => ({ ...account, active: account.id === id })) };
+      }
+      state.switchingId = "";
+      document.documentElement.dataset.piAccountSwitchLatencyMs = (performance.now() - startedAt).toFixed(2);
+    } catch (error) {
+      state.switchingId = "";
+      state.switchFailedId = id;
+      state.switchError = String(error?.message || error || "request failed").slice(0, 120);
+      console.error("[pi-web account usage] account switch failed:", state.switchError);
+    } finally {
+      clearTimeout(timeout);
+      render();
+    }
   }
 
   function render() {
@@ -864,10 +921,13 @@
     const ages = accounts.map((account) => Number(account.ageMs)).filter(Number.isFinite);
     const oldestAge = ages.length ? Math.max(...ages) : 0;
     const minutes = Math.max(0, Math.floor(oldestAge / 60_000));
-    state.freshness.textContent = state.loading
-      ? text.updating
-      : minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes);
-    state.freshness.dataset.stale = String(Boolean(state.error || accounts.some((account) => account.stale)));
+    state.freshness.textContent = state.switchingId
+      ? text.switchingAccount
+      : state.switchError ? text.switchFailed
+        : state.loading ? text.updating
+          : minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes);
+    state.freshness.title = state.switchError || "";
+    state.freshness.dataset.stale = String(Boolean(state.switchError || state.error || accounts.some((account) => account.stale)));
     state.button.dataset.state = state.error && !state.data ? "error" : accounts.some((account) => account.remainingPercent != null && account.remainingPercent <= 20) ? "low" : "ready";
     positionUi();
   }
@@ -921,34 +981,41 @@
       #pi-account-usage-button::after{position:absolute;top:5px;right:5px;width:4px;height:4px;border-radius:50%;background:transparent;content:''}
       #pi-account-usage-button[data-state='low']::after{background:#d97706}
       #pi-account-usage-button[data-state='error']::after{background:#dc2626}
-      #pi-account-usage-panel{position:fixed;z-index:2147482499;width:352px;max-width:calc(100vw - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);box-shadow:0 8px 22px rgba(0,0,0,.13);opacity:0;transform:translateY(5px) scale(.99);transform-origin:bottom right;pointer-events:none;visibility:hidden;transition:opacity 150ms ease-out,transform 150ms ease-out,visibility 0s linear 150ms;font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
+      #pi-account-usage-panel{position:fixed;z-index:2147482499;width:280px;max-width:calc(100vw - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px rgba(0,0,0,.12);opacity:0;transform:translateY(4px) scale(.99);transform-origin:bottom right;pointer-events:none;visibility:hidden;transition:opacity 150ms ease-out,transform 150ms ease-out,visibility 0s linear 150ms;font:13px/1.35 'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',system-ui,sans-serif}
       #pi-account-usage-panel[data-open='true']{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;visibility:visible;transition-delay:0s}
-      .pi-account-usage-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;height:36px;padding:0 10px;border-bottom:1px solid var(--border);background:var(--bg)}
-      .pi-account-usage-title{font-size:14px;font-weight:650;color:var(--text)}
-      .pi-account-usage-freshness{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+      .pi-account-usage-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;height:29px;padding:0 7px;border-bottom:1px solid var(--border);background:var(--bg)}
+      .pi-account-usage-title{font-size:13px;font-weight:650;color:var(--text)}
+      .pi-account-usage-freshness{overflow:hidden;color:var(--text-dim);font-size:11px;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
       .pi-account-usage-freshness[data-stale='true']{color:#b45309}
-      .pi-account-usage-row{padding:7px 10px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
+      .pi-account-usage-row{padding:3px 7px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
       .pi-account-usage-row:first-child{border-top:0}
-      .pi-account-usage-top{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
-      .pi-account-usage-identity{display:flex;align-items:center;gap:6px;min-width:0}
-      .pi-account-usage-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--text-dim)}
+      .pi-account-usage-row[data-active='true']{background:color-mix(in srgb,var(--accent) 3%,var(--bg))}
+      .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:6px;min-width:0;height:20px}
+      .pi-account-usage-identity{display:flex;align-items:center;gap:5px;min-width:0}
+      .pi-account-usage-dot{width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:var(--text-dim)}
       .pi-account-usage-dot[data-state='active']{background:var(--accent)}
       .pi-account-usage-dot[data-state='error']{background:#dc2626}
       .pi-account-usage-email{min-width:0;overflow:hidden;color:var(--text);font-size:13px;font-weight:600;line-height:18px;text-overflow:ellipsis;white-space:nowrap}
-      .pi-account-usage-badge{flex:0 0 auto;padding:1px 5px;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--border));border-radius:7px;background:color-mix(in srgb,var(--accent) 7%,var(--bg));color:var(--accent);font-size:10px;line-height:14px}
-      .pi-account-usage-remaining{display:flex;align-items:baseline;gap:4px;flex:0 0 auto;font-variant-numeric:tabular-nums}
-      .pi-account-usage-remaining-label{font-size:11px;color:var(--text-dim)}
-      .pi-account-usage-remaining-value{font-size:16px;font-weight:700;line-height:1;color:var(--text)}
-      .pi-account-usage-meter{height:2px;margin:4px 0;overflow:hidden;border-radius:2px;background:var(--bg-hover)}
+      .pi-account-usage-remaining{display:flex;align-items:baseline;gap:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+      .pi-account-usage-remaining-label{font-size:10px;color:var(--text-dim)}
+      .pi-account-usage-remaining-value{font-size:14px;font-weight:700;line-height:1;color:var(--text)}
+      .pi-account-usage-switch{min-width:36px;height:20px;padding:0 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font:inherit;font-size:11px;font-weight:600;line-height:18px;cursor:pointer;transition:background 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out}
+      .pi-account-usage-switch:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent) 6%,var(--bg));color:var(--accent)}
+      .pi-account-usage-switch:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+      .pi-account-usage-switch:disabled{cursor:default;opacity:.72}
+      .pi-account-usage-switch[data-state='current']{border-color:color-mix(in srgb,var(--accent) 28%,var(--border));background:color-mix(in srgb,var(--accent) 7%,var(--bg));color:var(--accent)}
+      .pi-account-usage-switch[data-state='failed']{border-color:color-mix(in srgb,#dc2626 35%,var(--border));color:#b91c1c}
+      .pi-account-usage-meter{height:2px;margin:2px 0 1px;overflow:hidden;border-radius:2px;background:var(--bg-hover)}
       .pi-account-usage-meter>span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width 180ms ease-out}
       .pi-account-usage-meter>span[data-level='low']{background:#d97706}
       .pi-account-usage-meter>span[data-level='critical']{background:#dc2626}
-      .pi-account-usage-meta,.pi-account-usage-reset{display:flex;align-items:center;gap:14px;color:var(--text-muted);font-size:11px;line-height:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
-      .pi-account-usage-reset{margin-top:1px;overflow:hidden;color:var(--text-dim);text-overflow:ellipsis}
-      .pi-account-usage-empty{display:flex;min-height:72px;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:16px;color:var(--text-muted);text-align:center}
+      .pi-account-usage-meta{display:flex;align-items:center;min-width:0;overflow:hidden;color:var(--text-muted);font-size:11px;line-height:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
+      .pi-account-usage-meta>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+      .pi-account-usage-meta>span+span::before{margin:0 5px;color:var(--text-dim);content:'·'}
+      .pi-account-usage-empty{display:flex;min-height:58px;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px;color:var(--text-muted);text-align:center}
       .pi-account-usage-empty-title{font-size:13px;font-weight:600;color:var(--text-muted)}
       .pi-account-usage-empty-note{font-size:11px;color:var(--text-dim)}
-      @media(max-width:480px){#pi-account-usage-panel{width:min(344px,calc(100vw - 16px))}}
+      @media(max-width:480px){#pi-account-usage-panel{width:min(280px,calc(100vw - 16px))}}
       @media(prefers-reduced-motion:reduce){#pi-account-usage-button,#pi-account-usage-panel,.pi-account-usage-meter>span{transition:none!important}}
     `;
     document.head.appendChild(style);
@@ -976,6 +1043,7 @@
     header.className = "pi-account-usage-header";
     const title = appendText(header, "pi-account-usage-title", words().title);
     const freshness = appendText(header, "pi-account-usage-freshness", words().updating);
+    freshness.setAttribute("aria-live", "polite");
     const list = document.createElement("div");
     list.className = "pi-account-usage-list";
     panel.append(header, list);

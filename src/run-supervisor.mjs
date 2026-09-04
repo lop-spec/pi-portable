@@ -13,6 +13,7 @@ export const RUN_CONTROL_TYPE = "lop-run-control";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v9";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 export const PIWEB_ACCOUNT_USAGE_PATH = "/__pi_account_usage";
+export const PIWEB_ACCOUNT_SELECT_PATH = "/__pi_account_select";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 const GOAL_STATE_TYPE = "lop-checklist-goal-state";
@@ -944,6 +945,55 @@ export class RunSupervisor {
     }
   }
 
+  async handleAccountSelectProxy(request, response) {
+    if (!this.mutationOriginAllowed(request)) {
+      this.log("account-select-rejected", { reason: "cross-origin mutation" });
+      this.jsonResponse(response, 403, { ok: false, error: "跨域账号切换已拒绝" });
+      return;
+    }
+    if (!/^application\/json\b/iu.test(String(request.headers["content-type"] || ""))) {
+      this.log("account-select-rejected", { reason: "content-type must be application/json" });
+      this.jsonResponse(response, 415, { ok: false, error: "需要 Content-Type: application/json" });
+      return;
+    }
+    let id = "";
+    try { id = String(JSON.parse((await this.readRequestBody(request, 4096)).toString("utf8"))?.id || ""); }
+    catch (error) {
+      const reason = normalizeError(error?.message || error);
+      this.log("account-select-rejected", { reason });
+      this.jsonResponse(response, 400, { ok: false, error: "账号切换请求无效" });
+      return;
+    }
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(id)) {
+      this.log("account-select-rejected", { id: id.slice(0, 32), reason: "invalid account id" });
+      this.jsonResponse(response, 400, { ok: false, error: "账号 id 无效" });
+      return;
+    }
+    try {
+      const upstream = await this.fetch(`http://127.0.0.1:${this.bridgePort}/account/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id }),
+        cache: "no-store",
+        signal: timeoutSignal(1000),
+      });
+      const body = await upstream.json().catch(() => ({}));
+      if (!upstream.ok || body?.ok !== true) {
+        const status = upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502;
+        const reason = normalizeError(body?.error || `bridge account select HTTP ${upstream.status}`);
+        this.log("account-select-failed", { id, status, reason });
+        this.jsonResponse(response, status, { ok: false, error: reason });
+        return;
+      }
+      this.log("account-select-success", { id });
+      this.jsonResponse(response, 200, body);
+    } catch (error) {
+      const reason = normalizeError(error?.message || error);
+      this.log("account-select-proxy-error", { id, bridgePort: this.bridgePort, reason });
+      this.jsonResponse(response, 503, { ok: false, error: "账号切换服务暂不可用" });
+    }
+  }
+
   serveArchiveUi(response) {
     try {
       const currentSource = fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
@@ -1192,6 +1242,10 @@ export class RunSupervisor {
     }
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ACCOUNT_USAGE_PATH) {
       await this.handleAccountUsageProxy(response, parsedUrl);
+      return;
+    }
+    if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_SELECT_PATH) {
+      await this.handleAccountSelectProxy(request, response);
       return;
     }
     if (request.method === "GET" && this.serveCurrentPiWebPageChunk(parsedUrl, response)) return;

@@ -101,6 +101,18 @@ test("池状态跨实例持久化：冷却表落盘后新实例仍然生效", as
   assert.equal((await rebooted.pick(new Set())).id, "acct3");
 });
 
+test("手动切号清除冷却并立即成为下一条请求的账号，状态跨实例生效", async () => {
+  const root = makeHomes();
+  const pool = makePool(root);
+  const acct2 = await pool.pick(new Set());
+  await pool.onUpstreamFailure(acct2, 429, "", {});
+  assert.equal(pool.snapshot().find((member) => member.id === "acct2").cooldownMinLeft, 30);
+  assert.deepEqual(pool.select("acct2"), { ok: true, id: "acct2" });
+  assert.equal(pool.snapshot().find((member) => member.id === "acct2").cooldownMinLeft, 0);
+  assert.equal((await pool.pick(new Set())).id, "acct2");
+  assert.equal(makePool(root).snapshot().find((member) => member.id === "acct2").active, true);
+});
+
 test("pin 模式：锁定账号不可用时显式报错，不回落消耗 primary", async () => {
   const root = makeHomes();
   fs.writeFileSync(path.join(root, "account-pool-pin.json"), JSON.stringify({ autoRotate: false, account: "acct2" }), "utf8");
