@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 export const RUN_SUPERVISOR_VERSION = "run-supervisor-v2-fast-error";
 export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
-export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v6";
+export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v7";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;

@@ -19,6 +19,7 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /document\.addEventListener\("click", immediateActionClick, true\)/u, "keyboard activation must remain supported");
   assert.match(source, /function sessionIdFromRow\(row\)/u);
   assert.match(source, /performDirectAction\(pending, sessionId\)/u, "the normal path must not wait for the native delete callback and its page navigation");
+  assert.match(source, /pending\.wasSelected.*pending\.nextRow\?\.isConnected.*pending\.nextRow\.click\(\)/u, "archiving the selected row must hand off to an adjacent conversation instead of leaving stale content");
   assert.match(source, /nativeFetch\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{action\}`/u);
   assert.match(source, /forwardedActionEvents\.add\(forwarded\)/u, "the guarded native fallback must remain deduplicated");
   assert.doesNotMatch(source, /button\.innerHTML/u, "decorating a React-owned action must not replace its children and break reconciliation");

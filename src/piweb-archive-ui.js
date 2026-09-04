@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "piweb-session-archive-v6";
+  const VERSION = "piweb-session-archive-v7";
   const VIEW_KEY = "piweb-session-archive-view";
   if (window.__piSessionArchiveUiVersion === VERSION) return;
   window.__piSessionArchiveUiVersion = VERSION;
@@ -340,6 +340,8 @@
       timeout: 0,
       cleanupTimer: 0,
       animation: null,
+      wasSelected: row.style.background.includes("--bg-selected") || row.style.borderLeftColor.includes("--accent"),
+      nextRow: row.nextElementSibling || row.previousElementSibling || null,
     };
     state.optimisticActions.add(pending);
     row.dataset.piSessionArchivePending = "true";
@@ -391,6 +393,7 @@
         throw new Error(detail || `HTTP ${response.status}`);
       }
       state.archivedCount = Math.max(0, state.archivedCount + (action === "archive" ? 1 : -1));
+      if (action === "archive" && pending.wasSelected && pending.nextRow?.isConnected) pending.nextRow.click();
       scheduleDecorate();
       setTimeout(() => nativeRefreshButton()?.click(), 220);
     } catch (error) {
