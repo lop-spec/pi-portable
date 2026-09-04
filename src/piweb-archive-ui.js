@@ -817,12 +817,6 @@
     appendText(identity, "pi-account-usage-email", email, account.error ? `${email} · ${account.error}` : email);
     top.appendChild(identity);
 
-    const remaining = document.createElement("div");
-    remaining.className = "pi-account-usage-remaining";
-    appendText(remaining, "pi-account-usage-remaining-label", text.remaining);
-    appendText(remaining, "pi-account-usage-remaining-value", account.remainingPercent == null ? "—" : `${account.remainingPercent}%`);
-    top.appendChild(remaining);
-
     const action = document.createElement("button");
     action.type = "button";
     action.className = "pi-account-usage-switch";
@@ -854,6 +848,7 @@
 
     const meta = document.createElement("div");
     meta.className = "pi-account-usage-meta";
+    appendText(meta, "pi-account-usage-remaining-compact", `${text.remaining} ${account.remainingPercent == null ? "—" : `${account.remainingPercent}%`}`);
     appendText(meta, "", account.usedPercent == null ? text.unavailable : `${text.used} ${account.usedPercent}%`);
     appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
     const reset = appendText(meta, "", account.resetAt ? exactReset(account.resetAt) : `${text.resetAt} —`);
@@ -990,15 +985,12 @@
       .pi-account-usage-row{padding:3px 7px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
       .pi-account-usage-row:first-child{border-top:0}
       .pi-account-usage-row[data-active='true']{background:color-mix(in srgb,var(--accent) 3%,var(--bg))}
-      .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:6px;min-width:0;height:20px}
+      .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0;height:20px}
       .pi-account-usage-identity{display:flex;align-items:center;gap:5px;min-width:0}
       .pi-account-usage-dot{width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:var(--text-dim)}
       .pi-account-usage-dot[data-state='active']{background:var(--accent)}
       .pi-account-usage-dot[data-state='error']{background:#dc2626}
       .pi-account-usage-email{min-width:0;overflow:hidden;color:var(--text);font-size:13px;font-weight:600;line-height:18px;text-overflow:ellipsis;white-space:nowrap}
-      .pi-account-usage-remaining{display:flex;align-items:baseline;gap:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
-      .pi-account-usage-remaining-label{font-size:10px;color:var(--text-dim)}
-      .pi-account-usage-remaining-value{font-size:14px;font-weight:700;line-height:1;color:var(--text)}
       .pi-account-usage-switch{min-width:36px;height:20px;padding:0 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font:inherit;font-size:11px;font-weight:600;line-height:18px;cursor:pointer;transition:background 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out}
       .pi-account-usage-switch:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent) 6%,var(--bg));color:var(--accent)}
       .pi-account-usage-switch:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -1011,7 +1003,8 @@
       .pi-account-usage-meter>span[data-level='critical']{background:#dc2626}
       .pi-account-usage-meta{display:flex;align-items:center;min-width:0;overflow:hidden;color:var(--text-muted);font-size:11px;line-height:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
       .pi-account-usage-meta>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
-      .pi-account-usage-meta>span+span::before{margin:0 5px;color:var(--text-dim);content:'·'}
+      .pi-account-usage-meta>.pi-account-usage-remaining-compact{flex:0 0 auto;color:var(--text);font-weight:650}
+      .pi-account-usage-meta>span+span::before{margin:0 4px;color:var(--text-dim);content:'·'}
       .pi-account-usage-empty{display:flex;min-height:58px;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px;color:var(--text-muted);text-align:center}
       .pi-account-usage-empty-title{font-size:13px;font-weight:600;color:var(--text-muted)}
       .pi-account-usage-empty-note{font-size:11px;color:var(--text-dim)}
