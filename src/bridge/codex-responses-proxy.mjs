@@ -28,6 +28,7 @@ import { compressUpstreamBody, rewriteCodexRequestBody } from "./codex-cache-pol
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
 import { createModelFallbackPlan, requestWithOverloadRetry, RETRYABLE_UPSTREAM_STATUS } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
+import { createAccountUsageMonitor, readAccountUsageIdentity } from "./account-usage.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
 const HOST = "127.0.0.1";
@@ -253,6 +254,37 @@ const accountPool = ACCOUNT_HOMES ? createAccountPool({
   log,
 }) : null;
 
+// primary 的 auth 文件由客户端负责刷新，池不会写它。保留最近一次真实下游身份仅供
+// 只读额度查询，避免 primary 的磁盘 access token 过期后面板误报；凭据不落盘不打印。
+let latestPrimaryIdentity = null;
+function rememberDownstreamIdentity(headers) {
+  const token = String(headers?.authorization || "").replace(/^Bearer\s+/iu, "").trim();
+  if (!token || token.split(".").length !== 3) return;
+  latestPrimaryIdentity = {
+    token,
+    accountId: String(headers?.["chatgpt-account-id"] || ""),
+  };
+}
+
+function primaryUsageIdentity() {
+  // 兼容当前双布局：轮转备用号在 data/code-lite/homes，而官方启动入口维护的
+  // primary 在同一 vscodium 根的 homes/primary。只读且校验存在，不复制凭据。
+  const candidates = [
+    process.env.CODEX_PRIMARY_AUTH_FILE,
+    ACCOUNT_HOMES ? path.resolve(ACCOUNT_HOMES, "..", "..", "..", "homes", "primary", "auth.json") : "",
+  ].filter(Boolean);
+  for (const candidate of new Set(candidates)) {
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const identity = readAccountUsageIdentity(candidate);
+      if (identity.token) return identity;
+    } catch (error) {
+      log(`primary 额度身份读取失败：${String(error?.message || error).slice(0, 80)}`);
+    }
+  }
+  return latestPrimaryIdentity;
+}
+
 // 池身份注入：primary（useDownstream）沿用下游自带头；其余槽位替换两枚身份头。
 // 槽位缺 account_id 时删除该头（残留下游 primary 的 id 会与新 token 串号）。
 function withIdentity(headers, account) {
@@ -281,6 +313,47 @@ function decodeBodyText(raw, headers) {
   } catch { /* 解压失败按原文处理。 */ }
   return raw.toString("utf8");
 }
+
+function requestAccountUsage(identity) {
+  return new Promise((resolve, reject) => {
+    const request = https.request({
+      host: UPSTREAM_HOST,
+      path: "/backend-api/wham/usage",
+      method: "GET",
+      agent: agentFor(currentEgress().port),
+      headers: {
+        Authorization: `Bearer ${identity.token}`,
+        "chatgpt-account-id": identity.accountId || "",
+        originator: "codex_cli_rs",
+        "User-Agent": "codex_cli_rs/0.147.0 (Windows 10.0.19045; x86_64)",
+        Accept: "application/json",
+      },
+    }, async (response) => {
+      const raw = await drainBody(response, 512 * 1024);
+      if (response.statusCode !== 200) {
+        const error = new Error(`usage HTTP ${response.statusCode || 0}`);
+        error.statusCode = response.statusCode || 0;
+        reject(error);
+        return;
+      }
+      try { resolve(JSON.parse(decodeBodyText(raw, response.headers))); }
+      catch { reject(new Error("usage response is not JSON")); }
+    });
+    request.once("error", reject);
+    request.setTimeout(10_000, () => request.destroy(new Error("usage request timed out")));
+    request.end();
+  });
+}
+
+const accountUsageMonitor = accountPool ? createAccountUsageMonitor({
+  members: () => accountPool.members(),
+  accountState: () => accountPool.snapshot(),
+  requestUsage: requestAccountUsage,
+  refreshMember: (member) => accountPool.refresh(member),
+  identityOverride: (id) => id === "primary" ? primaryUsageIdentity() : null,
+  cacheFile: path.join(PORTABLE_DATA, "account-usage-cache.json"),
+  log,
+}) : null;
 
 // failover 环 drain 过的终态响应（全池 429/给不出可切账号）重建为可流式转发的
 // 响应对象：统一给明文（下游转发层会删 content-encoding，不能再送压缩字节）。
@@ -335,6 +408,7 @@ function recordSseOverload(req, response, { attempt, maxRetries, delayMs = 0, er
 // 无安全边界或解析失败时 fail-open 原样透传,绝不为了缓存命中率改变模型可见内容。
 
 async function handleResponses(req, res) {
+  rememberDownstreamIdentity(req.headers);
   let body = await readBody(req);
   let fwdHeaders = req.headers;
   const originalBytes = body.length;
@@ -601,6 +675,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ ok: true, enabled: Boolean(accountPool), accounts: accountPool ? accountPool.snapshot() : [] }));
   }
+  if (url === "/account-usage" && req.method === "GET") {
+    try {
+      const force = new URL(req.url || "/account-usage", `http://${HOST}:${PORT}`).searchParams.get("refresh") === "1";
+      if (accountUsageMonitor) void accountUsageMonitor.refreshIfDue(force);
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(JSON.stringify(accountUsageMonitor?.snapshot() || {
+        ok: true, enabled: false, refreshing: false, modelTokensConsumed: 0, accounts: [],
+      }));
+    } catch (error) {
+      log(`账号额度接口失败：${String(error?.message || error).slice(0, 120)}`);
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(JSON.stringify({ ok: false, error: "账号额度服务暂不可用", accounts: [] }));
+    }
+  }
   if (url === "/account/select" && req.method === "POST") {
     if (!accountPool) {
       res.writeHead(409, { "Content-Type": "application/json" });
@@ -634,6 +722,7 @@ const server = http.createServer(async (req, res) => {
   // {"object":"list","data":[...]}——静态拼一份会报 missing field `models`（2026-08-19 实测）。
   // 所以原样转发给上游同名端点，格式由上游保证，本地不猜。
   if (url === "/v1/models" && req.method === "GET") {
+    rememberDownstreamIdentity(req.headers);
     try {
       const upRes = await upstreamGet("/backend-api/codex/models" + (req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""), req.headers);
       const out = { ...upRes.headers };
@@ -681,6 +770,9 @@ server.listen(PORT, HOST, () => {
     const keepFresh = () => accountPool.refreshExpiring().catch((e) => log(`凭据保鲜失败：${String(e?.message || e).slice(0, 80)}`));
     setTimeout(keepFresh, 30_000).unref();
     setInterval(keepFresh, 4 * 60 * 60_000).unref();
+    accountUsageMonitor.start();
   }
   log(`流吞吐观测：SSE 尾部真实 usage → ${METRICS_FILE}`);
 });
+
+server.on("close", () => accountUsageMonitor?.stop());

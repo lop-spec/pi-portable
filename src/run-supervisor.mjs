@@ -12,6 +12,7 @@ export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v9";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
+export const PIWEB_ACCOUNT_USAGE_PATH = "/__pi_account_usage";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 const GOAL_STATE_TYPE = "lop-checklist-goal-state";
@@ -584,6 +585,7 @@ export class RunSupervisor {
     this.webPort = Number(options.webPort || process.env.PI_WEB_PORT || 30140);
     this.publicWebPort = Number(options.publicWebPort || process.env.PI_RUN_SUPERVISOR_PUBLIC_PORT || 0);
     this.healthPort = Number(options.healthPort || process.env.PI_RUN_SUPERVISOR_PORT || (this.publicWebPort || this.webPort) + 1);
+    this.bridgePort = Number(options.bridgePort || process.env.CODEX_PROXY_PORT || 8794);
     this.pollMs = Number(options.pollMs || process.env.PI_RUN_SUPERVISOR_POLL_MS || DEFAULT_POLL_MS);
     this.graceMs = Number(options.graceMs || process.env.PI_RUN_SUPERVISOR_GRACE_MS || DEFAULT_GRACE_MS);
     this.fetch = options.fetchImpl || globalThis.fetch;
@@ -915,6 +917,33 @@ export class RunSupervisor {
     } catch { return false; }
   }
 
+  async handleAccountUsageProxy(response, parsedUrl) {
+    try {
+      const refresh = parsedUrl.searchParams.get("refresh") === "1" ? "?refresh=1" : "";
+      const upstream = await this.fetch(`http://127.0.0.1:${this.bridgePort}/account-usage${refresh}`, {
+        cache: "no-store",
+        signal: timeoutSignal(500),
+      });
+      const body = await upstream.json();
+      if (!upstream.ok || !body || !Array.isArray(body.accounts)) {
+        throw new Error(`bridge account usage HTTP ${upstream.status}`);
+      }
+      this.jsonResponse(response, 200, body);
+    } catch (error) {
+      const reason = normalizeError(error?.message || error);
+      // This is a user-visible degradation path and must stay observable without a debug flag.
+      this.log("account-usage-proxy-error", { bridgePort: this.bridgePort, reason });
+      this.jsonResponse(response, 503, {
+        ok: false,
+        enabled: false,
+        refreshing: false,
+        modelTokensConsumed: 0,
+        accounts: [],
+        error: "账号额度服务暂不可用",
+      });
+    }
+  }
+
   serveArchiveUi(response) {
     try {
       const currentSource = fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
@@ -1159,6 +1188,10 @@ export class RunSupervisor {
     const parsedUrl = new URL(request.url || "/", "http://127.0.0.1");
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ARCHIVE_UI_PATH) {
       this.serveArchiveUi(response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === PIWEB_ACCOUNT_USAGE_PATH) {
+      await this.handleAccountUsageProxy(response, parsedUrl);
       return;
     }
     if (request.method === "GET" && this.serveCurrentPiWebPageChunk(parsedUrl, response)) return;
@@ -1658,6 +1691,7 @@ export class RunSupervisor {
       webPort: this.webPort,
       publicWebPort: this.publicWebPort || null,
       healthPort: this.healthPort,
+      accountUsageBridgePort: this.bridgePort,
       webReachable: this.webReachable,
       pollMs: this.pollMs,
       graceMs: this.graceMs,

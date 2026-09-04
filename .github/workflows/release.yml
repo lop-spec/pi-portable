@@ -35,9 +35,12 @@ jobs:
           node tests/lop-chain-contract.mjs
           node --test tests/goal-redirector-contract.mjs
           node --test tests/run-supervisor.mjs
+          node --test tests/account-pool-contract.mjs
+          node --test tests/account-usage-contract.mjs
           node --test tests/piweb-session-archive.mjs
           node --test tests/piweb-archive-confirmation-contract.mjs
           node --test tests/piweb-worktree-visibility-contract.mjs
+          node --test tests/piweb-account-usage-contract.mjs
           node tests/rules-snapshot-contract.mjs
           node tests/deploy-rules-remote-contract.mjs
           node --test tests/pi-history-contract.mjs
@@ -136,6 +139,7 @@ jobs:
           if (-not (Test-Path stage/src/launcher.mjs)) { throw "launcher missing" }
           if (-not (Test-Path stage/src/run-supervisor.mjs)) { throw "run supervisor missing" }
           if (-not (Test-Path stage/src/piweb-archive-ui.js)) { throw "pi-web archive UI missing" }
+          if (-not (Test-Path stage/src/bridge/account-usage.mjs)) { throw "account usage monitor missing" }
           if (-not (Test-Path stage/tools/remote-verify.mjs)) { throw "remote verifier missing" }
           if (-not (Test-Path stage/tools/deploy-rules-remote.mjs)) { throw "remote rules deployer missing" }
           if (-not (Test-Path stage/tools/patch-piweb-interactions.mjs)) { throw "pi-web interactions patch missing" }

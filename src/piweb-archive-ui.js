@@ -569,3 +569,464 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
   else start();
 })();
+
+(() => {
+  "use strict";
+
+  const VERSION = "piweb-account-usage-v1";
+  const ENDPOINT = "/__pi_account_usage";
+  const BROWSER_REFRESH_MS = 60_000;
+  if (window.__piAccountUsageUiVersion === VERSION) return;
+  window.__piAccountUsageUiVersion = VERSION;
+
+  const state = {
+    data: null,
+    error: "",
+    loading: false,
+    open: false,
+    lastFetchAt: 0,
+    suppressClick: false,
+    renderedLocale: "",
+    host: null,
+    button: null,
+    panel: null,
+    list: null,
+    title: null,
+    freshness: null,
+  };
+
+  const labels = {
+    en: {
+      title: "Account pool usage",
+      button: "View account pool usage",
+      remaining: "left",
+      used: "Used",
+      resets: "Reset credits",
+      resetAt: "Resets",
+      current: "Current",
+      cached: "Cached",
+      loading: "Loading usage…",
+      empty: "No rotating accounts found",
+      unavailable: "Usage is temporarily unavailable",
+      retrying: "Retrying automatically",
+      updatedNow: "Updated now",
+      updatedMinutes: (minutes) => `Updated ${minutes}m ago`,
+      updating: "Updating…",
+      soon: "soon",
+      minutes: (minutes) => `${minutes}m`,
+      hours: (hours) => `${hours}h`,
+      days: (days, hours) => `${days}d ${hours}h`,
+    },
+    "zh-CN": {
+      title: "账号池额度",
+      button: "查看轮转账号池额度",
+      remaining: "剩余",
+      used: "已用",
+      resets: "重置次数",
+      resetAt: "重置时间",
+      current: "当前",
+      cached: "缓存",
+      loading: "正在读取额度…",
+      empty: "未发现轮转账号",
+      unavailable: "额度暂不可用",
+      retrying: "稍后自动重试",
+      updatedNow: "刚刚更新",
+      updatedMinutes: (minutes) => `${minutes} 分钟前更新`,
+      updating: "更新中…",
+      soon: "即将重置",
+      minutes: (minutes) => `${minutes} 分钟后`,
+      hours: (hours) => `${hours} 小时后`,
+      days: (days, hours) => `${days} 天 ${hours} 小时后`,
+    },
+    "zh-TW": {
+      title: "帳號池額度",
+      button: "檢視輪轉帳號池額度",
+      remaining: "剩餘",
+      used: "已用",
+      resets: "重置次數",
+      resetAt: "重置時間",
+      current: "目前",
+      cached: "快取",
+      loading: "正在讀取額度…",
+      empty: "未發現輪轉帳號",
+      unavailable: "額度暫時無法使用",
+      retrying: "稍後自動重試",
+      updatedNow: "剛剛更新",
+      updatedMinutes: (minutes) => `${minutes} 分鐘前更新`,
+      updating: "更新中…",
+      soon: "即將重置",
+      minutes: (minutes) => `${minutes} 分鐘後`,
+      hours: (hours) => `${hours} 小時後`,
+      days: (days, hours) => `${days} 天 ${hours} 小時後`,
+    },
+  };
+
+  function locale() {
+    try {
+      const stored = localStorage.getItem("pi-locale");
+      if (stored === "en" || stored === "zh-CN" || stored === "zh-TW") return stored;
+    } catch { /* storage is optional */ }
+    const value = String(document.documentElement.lang || navigator.language || "en").toLowerCase();
+    if (value.includes("zh-tw") || value.includes("zh-hant")) return "zh-TW";
+    if (value.includes("zh")) return "zh-CN";
+    const titles = [...document.querySelectorAll("button[title]")].map((button) => button.title);
+    if (titles.some((title) => title === "關閉完成提示音" || title === "開啟完成提示音")) return "zh-TW";
+    if (titles.some((title) => title === "关闭完成提示音" || title === "开启完成提示音")) return "zh-CN";
+    return "en";
+  }
+
+  function words() { return labels[locale()] || labels.en; }
+
+  function staticSvg(markup) {
+    const holder = document.createElement("span");
+    holder.style.display = "contents";
+    holder.insertAdjacentHTML("afterbegin", markup);
+    return holder.firstElementChild;
+  }
+
+  function gaugeIcon() {
+    return staticSvg('<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15a8 8 0 1 1 16 0"/><path d="m12 15 4-4"/><path d="M5.5 18h13"/></svg>');
+  }
+
+  function isVisible(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  }
+
+  function findAnchor() {
+    const soundNames = new Set([
+      "Disable completion sound", "Enable completion sound",
+      "关闭完成提示音", "开启完成提示音",
+      "關閉完成提示音", "開啟完成提示音",
+    ]);
+    const sound = [...document.querySelectorAll("button[title]")]
+      .filter((button) => soundNames.has(button.title) && isVisible(button))
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    if (sound?.parentElement) {
+      const rect = sound.parentElement.getBoundingClientRect();
+      if (rect.top > 40) return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    }
+    const moreNames = new Set(["More controls", "更多控件", "更多控制項"]);
+    const more = [...document.querySelectorAll("button[aria-label]")]
+      .filter((button) => moreNames.has(button.getAttribute("aria-label")) && isVisible(button))
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    if (!more) return null;
+    const rect = more.getBoundingClientRect();
+    return rect.top > 40 ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
+  }
+
+  function positionUi() {
+    if (!state.host || !state.panel) return;
+    if (state.data && state.renderedLocale && state.renderedLocale !== locale()) {
+      render();
+      return;
+    }
+    const anchor = findAnchor();
+    if (!anchor) {
+      state.host.style.visibility = "hidden";
+      state.panel.style.visibility = "hidden";
+      return;
+    }
+    const left = Math.max(8, anchor.left - 38);
+    state.host.style.left = `${left}px`;
+    state.host.style.top = `${anchor.top}px`;
+    state.host.style.visibility = "visible";
+    state.panel.style.right = `${Math.max(8, window.innerWidth - anchor.right)}px`;
+    state.panel.style.bottom = `${Math.max(8, window.innerHeight - anchor.top + 8)}px`;
+    state.panel.style.maxHeight = `${Math.max(180, anchor.top - 20)}px`;
+    state.panel.style.visibility = state.open ? "visible" : "hidden";
+  }
+
+  function relativeReset(resetAt) {
+    const text = words();
+    const left = Date.parse(String(resetAt || "")) - Date.now();
+    if (!Number.isFinite(left) || left <= 0) return text.soon;
+    const minutes = Math.max(1, Math.ceil(left / 60_000));
+    if (minutes < 60) return text.minutes(minutes);
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return text.hours(hours);
+    return text.days(Math.floor(hours / 24), hours % 24);
+  }
+
+  function exactReset(resetAt) {
+    const milliseconds = Date.parse(String(resetAt || ""));
+    if (!Number.isFinite(milliseconds)) return "—";
+    return new Intl.DateTimeFormat(locale(), {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date(milliseconds));
+  }
+
+  function appendText(parent, className, text, title = "") {
+    const node = document.createElement("span");
+    node.className = className;
+    node.textContent = text;
+    if (title) node.title = title;
+    parent.appendChild(node);
+    return node;
+  }
+
+  function emptyState(primary, secondary = "") {
+    const row = document.createElement("div");
+    row.className = "pi-account-usage-empty";
+    appendText(row, "pi-account-usage-empty-title", primary);
+    if (secondary) appendText(row, "pi-account-usage-empty-note", secondary);
+    state.list.appendChild(row);
+  }
+
+  function accountRow(account) {
+    const text = words();
+    const row = document.createElement("div");
+    row.className = "pi-account-usage-row";
+    if (account.stale || account.error) row.dataset.stale = "true";
+
+    const top = document.createElement("div");
+    top.className = "pi-account-usage-top";
+    const identity = document.createElement("div");
+    identity.className = "pi-account-usage-identity";
+    const dot = document.createElement("span");
+    dot.className = "pi-account-usage-dot";
+    dot.dataset.state = account.error && account.remainingPercent == null ? "error" : account.active ? "active" : "idle";
+    identity.appendChild(dot);
+    const email = String(account.email || account.id || "—");
+    appendText(identity, "pi-account-usage-email", email, email);
+    if (account.active) appendText(identity, "pi-account-usage-badge", text.current);
+    else if (account.stale || account.error) appendText(identity, "pi-account-usage-badge", text.cached);
+    top.appendChild(identity);
+
+    const remaining = document.createElement("div");
+    remaining.className = "pi-account-usage-remaining";
+    appendText(remaining, "pi-account-usage-remaining-label", text.remaining);
+    appendText(remaining, "pi-account-usage-remaining-value", account.remainingPercent == null ? "—" : `${account.remainingPercent}%`);
+    top.appendChild(remaining);
+    row.appendChild(top);
+
+    if (account.remainingPercent != null) {
+      const meter = document.createElement("div");
+      meter.className = "pi-account-usage-meter";
+      meter.setAttribute("role", "progressbar");
+      meter.setAttribute("aria-label", `${email} ${text.remaining}`);
+      meter.setAttribute("aria-valuemin", "0");
+      meter.setAttribute("aria-valuemax", "100");
+      meter.setAttribute("aria-valuenow", String(account.remainingPercent));
+      const fill = document.createElement("span");
+      fill.style.width = `${Math.max(0, Math.min(100, Number(account.remainingPercent) || 0))}%`;
+      fill.dataset.level = account.remainingPercent <= 5 ? "critical" : account.remainingPercent <= 20 ? "low" : "normal";
+      meter.appendChild(fill);
+      row.appendChild(meter);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "pi-account-usage-meta";
+    if (account.usedPercent == null) {
+      appendText(meta, "", text.unavailable);
+      appendText(meta, "", text.retrying);
+    } else {
+      appendText(meta, "", `${text.used} ${account.usedPercent}%`);
+      appendText(meta, "", `${text.resets} ${account.resetCredits ?? "—"}`);
+    }
+    row.appendChild(meta);
+
+    const reset = document.createElement("div");
+    reset.className = "pi-account-usage-reset";
+    if (account.resetAt) {
+      const full = new Date(account.resetAt).toLocaleString(locale(), { hour12: false });
+      reset.textContent = `${text.resetAt} ${exactReset(account.resetAt)} · ${relativeReset(account.resetAt)}`;
+      reset.title = full;
+    } else {
+      reset.textContent = `${text.resetAt} —`;
+    }
+    row.appendChild(reset);
+    return row;
+  }
+
+  function render() {
+    if (!state.list || !state.title || !state.freshness || !state.panel || !state.button) return;
+    const text = words();
+    state.renderedLocale = locale();
+    state.title.textContent = text.title;
+    state.button.title = text.button;
+    state.button.setAttribute("aria-label", text.button);
+    state.panel.setAttribute("aria-label", text.title);
+    state.list.replaceChildren();
+    state.panel.setAttribute("aria-busy", String(state.loading));
+
+    const accounts = Array.isArray(state.data?.accounts) ? state.data.accounts : [];
+    if (!state.data && state.loading) emptyState(text.loading);
+    else if (!state.data && state.error) emptyState(text.unavailable, text.retrying);
+    else if (!state.data?.enabled || accounts.length === 0) emptyState(text.empty);
+    else for (const account of accounts) state.list.appendChild(accountRow(account));
+
+    const ages = accounts.map((account) => Number(account.ageMs)).filter(Number.isFinite);
+    const oldestAge = ages.length ? Math.max(...ages) : 0;
+    const minutes = Math.max(0, Math.floor(oldestAge / 60_000));
+    state.freshness.textContent = state.loading
+      ? text.updating
+      : minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes);
+    state.freshness.dataset.stale = String(Boolean(state.error || accounts.some((account) => account.stale)));
+    state.button.dataset.state = state.error && !state.data ? "error" : accounts.some((account) => account.remainingPercent != null && account.remainingPercent <= 20) ? "low" : "ready";
+    positionUi();
+  }
+
+  async function refresh(force = false) {
+    if (state.loading) return;
+    state.loading = true;
+    state.lastFetchAt = Date.now();
+    render();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1200);
+    try {
+      const response = await fetch(`${ENDPOINT}${force ? "?refresh=1" : ""}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !Array.isArray(data.accounts)) throw new Error(data.error || `HTTP ${response.status}`);
+      state.data = data;
+      state.error = "";
+    } catch (error) {
+      state.error = String(error?.message || error || "request failed").slice(0, 120);
+      console.error("[pi-web account usage] refresh failed:", state.error);
+    } finally {
+      clearTimeout(timeout);
+      state.loading = false;
+      render();
+    }
+  }
+
+  function setOpen(open, startedAt = performance.now()) {
+    state.open = Boolean(open);
+    state.button.setAttribute("aria-expanded", String(state.open));
+    state.panel.dataset.open = String(state.open);
+    positionUi();
+    if (!state.open) return;
+    document.documentElement.dataset.piAccountUsageOpenLatencyMs = (performance.now() - startedAt).toFixed(2);
+    if (!state.lastFetchAt || Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
+  }
+
+  function ensureStyle() {
+    if (document.querySelector("style[data-pi-account-usage-style]")) return;
+    const style = document.createElement("style");
+    style.dataset.piAccountUsageStyle = "true";
+    style.textContent = `
+      #pi-account-usage-host{position:fixed;z-index:2147482500;width:32px;height:32px;pointer-events:none}
+      #pi-account-usage-button{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer;pointer-events:auto;transition:background 140ms ease-out,color 140ms ease-out,transform 140ms ease-out}
+      #pi-account-usage-button:hover,#pi-account-usage-button[aria-expanded='true']{background:var(--bg-hover);color:var(--text)}
+      #pi-account-usage-button:active{transform:scale(.96)}
+      #pi-account-usage-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+      #pi-account-usage-button::after{position:absolute;top:5px;right:5px;width:4px;height:4px;border-radius:50%;background:transparent;content:''}
+      #pi-account-usage-button[data-state='low']::after{background:#d97706}
+      #pi-account-usage-button[data-state='error']::after{background:#dc2626}
+      #pi-account-usage-panel{position:fixed;z-index:2147482499;width:352px;max-width:calc(100vw - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);box-shadow:0 8px 22px rgba(0,0,0,.13);opacity:0;transform:translateY(5px) scale(.99);transform-origin:bottom right;pointer-events:none;visibility:hidden;transition:opacity 150ms ease-out,transform 150ms ease-out,visibility 0s linear 150ms;font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
+      #pi-account-usage-panel[data-open='true']{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;visibility:visible;transition-delay:0s}
+      .pi-account-usage-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;height:36px;padding:0 10px;border-bottom:1px solid var(--border);background:var(--bg)}
+      .pi-account-usage-title{font-size:14px;font-weight:650;color:var(--text)}
+      .pi-account-usage-freshness{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+      .pi-account-usage-freshness[data-stale='true']{color:#b45309}
+      .pi-account-usage-row{padding:7px 10px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
+      .pi-account-usage-row:first-child{border-top:0}
+      .pi-account-usage-top{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+      .pi-account-usage-identity{display:flex;align-items:center;gap:6px;min-width:0}
+      .pi-account-usage-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--text-dim)}
+      .pi-account-usage-dot[data-state='active']{background:var(--accent)}
+      .pi-account-usage-dot[data-state='error']{background:#dc2626}
+      .pi-account-usage-email{min-width:0;overflow:hidden;color:var(--text);font-size:13px;font-weight:600;line-height:18px;text-overflow:ellipsis;white-space:nowrap}
+      .pi-account-usage-badge{flex:0 0 auto;padding:1px 5px;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--border));border-radius:7px;background:color-mix(in srgb,var(--accent) 7%,var(--bg));color:var(--accent);font-size:10px;line-height:14px}
+      .pi-account-usage-remaining{display:flex;align-items:baseline;gap:4px;flex:0 0 auto;font-variant-numeric:tabular-nums}
+      .pi-account-usage-remaining-label{font-size:11px;color:var(--text-dim)}
+      .pi-account-usage-remaining-value{font-size:16px;font-weight:700;line-height:1;color:var(--text)}
+      .pi-account-usage-meter{height:2px;margin:4px 0;overflow:hidden;border-radius:2px;background:var(--bg-hover)}
+      .pi-account-usage-meter>span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width 180ms ease-out}
+      .pi-account-usage-meter>span[data-level='low']{background:#d97706}
+      .pi-account-usage-meter>span[data-level='critical']{background:#dc2626}
+      .pi-account-usage-meta,.pi-account-usage-reset{display:flex;align-items:center;gap:14px;color:var(--text-muted);font-size:11px;line-height:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
+      .pi-account-usage-reset{margin-top:1px;overflow:hidden;color:var(--text-dim);text-overflow:ellipsis}
+      .pi-account-usage-empty{display:flex;min-height:72px;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:16px;color:var(--text-muted);text-align:center}
+      .pi-account-usage-empty-title{font-size:13px;font-weight:600;color:var(--text-muted)}
+      .pi-account-usage-empty-note{font-size:11px;color:var(--text-dim)}
+      @media(max-width:480px){#pi-account-usage-panel{width:min(344px,calc(100vw - 16px))}}
+      @media(prefers-reduced-motion:reduce){#pi-account-usage-button,#pi-account-usage-panel,.pi-account-usage-meter>span{transition:none!important}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function createUi() {
+    if (state.host) return;
+    ensureStyle();
+    const host = document.createElement("div");
+    host.id = "pi-account-usage-host";
+    const button = document.createElement("button");
+    button.id = "pi-account-usage-button";
+    button.type = "button";
+    button.setAttribute("aria-haspopup", "dialog");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", "pi-account-usage-panel");
+    button.appendChild(gaugeIcon());
+    host.appendChild(button);
+
+    const panel = document.createElement("section");
+    panel.id = "pi-account-usage-panel";
+    panel.dataset.open = "false";
+    panel.setAttribute("role", "dialog");
+    const header = document.createElement("header");
+    header.className = "pi-account-usage-header";
+    const title = appendText(header, "pi-account-usage-title", words().title);
+    const freshness = appendText(header, "pi-account-usage-freshness", words().updating);
+    const list = document.createElement("div");
+    list.className = "pi-account-usage-list";
+    panel.append(header, list);
+    document.documentElement.append(host, panel);
+
+    state.host = host;
+    state.button = button;
+    state.panel = panel;
+    state.list = list;
+    state.title = title;
+    state.freshness = freshness;
+    title.textContent = words().title;
+
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const startedAt = performance.now();
+      state.suppressClick = true;
+      setTimeout(() => { state.suppressClick = false; }, 500);
+      setOpen(!state.open, startedAt);
+    });
+    button.addEventListener("click", () => {
+      if (state.suppressClick) {
+        state.suppressClick = false;
+        return;
+      }
+      setOpen(!state.open, performance.now());
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!state.open || event.composedPath().includes(button) || event.composedPath().includes(panel)) return;
+      setOpen(false);
+    }, true);
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !state.open) return;
+      event.preventDefault();
+      setOpen(false);
+      button.focus({ preventScroll: true });
+    }, true);
+    window.addEventListener("resize", positionUi, { passive: true });
+    render();
+    void refresh(false);
+  }
+
+  const start = () => {
+    createUi();
+    positionUi();
+    setInterval(positionUi, 1000);
+    setInterval(() => {
+      if (document.visibilityState === "visible" && Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
+      if (state.open) render();
+    }, BROWSER_REFRESH_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
+    });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+  else start();
+})();
