@@ -205,8 +205,14 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
   body = await (await fetch(`${base}/api/sessions`)).json();
   assert.deepEqual(body.sessions.map((item) => item.id), [SESSION_ID, SECOND_SESSION_ID, CHILD_SESSION_ID]);
 
+  const forcedCatalogueRequestsBeforeCachedArchive = upstreamRequests.filter((item) => item.url?.includes("force=1")).length;
   response = await fetch(`${base}/api/sessions/${SESSION_ID}`, { method: "DELETE" });
   assert.equal((await expectJsonStatus(response, 200)).archived, true, "legacy DELETE is a non-destructive archive alias");
+  assert.equal(
+    upstreamRequests.filter((item) => item.url?.includes("force=1")).length,
+    forcedCatalogueRequestsBeforeCachedArchive,
+    "an action from the rendered session list must reuse its full cached catalogue instead of waiting for another global force scan",
+  );
   assert.equal(hardDeleteRequests, 0);
   assert.equal(sha256(fs.readFileSync(fx.first)), firstHash);
 
@@ -239,7 +245,11 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
   assert.equal(pageChunkResponse.status, 200, "the supervisor must serve a current chunk that stale Next has not indexed");
   assert.match(await pageChunkResponse.text(), new RegExp(CURRENT_PAGE_MARK));
   assert.equal(upstreamRequests.some((item) => item.url?.includes(CURRENT_PAGE_HASH)), false, "current page chunk is served directly rather than forwarded to stale Next");
-  assert.match(fs.readFileSync(path.join(fx.root, "run-supervisor.log"), "utf8"), /"event":"piweb-page-chunk-served"/u);
+  const supervisorLog = fs.readFileSync(path.join(fx.root, "run-supervisor.log"), "utf8");
+  assert.match(supervisorLog, /"event":"piweb-page-chunk-served"/u);
+  assert.match(supervisorLog, /"event":"session-archive-catalogue"[^\n]*"source":"ui-cache"/u);
+  assert.match(supervisorLog, /"event":"session-archive-failed"/u, "rejected running-session mutations must be logged unconditionally");
+  assert.match(supervisorLog, /"event":"session-archive-rejected"/u, "cross-origin mutations must be logged unconditionally");
   const uiResponse = await fetch(`${base}${PIWEB_ARCHIVE_UI_PATH}`);
   assert.equal(uiResponse.status, 200);
   assert.match(uiResponse.headers.get("content-type") || "", /javascript/u);
@@ -250,7 +260,7 @@ test("public Pi Web proxy replaces deletion with archive, filters views, restore
   assert.match(uiSource, /\/restore/u);
   assert.match(uiSource, /归档/u);
   assert.match(uiSource, /恢复/u);
-  assert.match(uiSource, /未找到会话/u, "the current zh-CN empty state must be mapped to the archive empty state");
+  assert.doesNotMatch(uiSource, /element\.textContent\s*=/u, "archive UI must not replace React-owned empty-state text nodes");
   assert.match(uiSource, /requestListRefresh/u, "archive view must actively request its own list even while native refresh is busy");
   assert.match(uiSource, /window\.location\.reload\(\)/u, "archive view keeps a deterministic reload fallback when native refresh stays unavailable");
   assert.equal(hardDeleteRequests, 0);

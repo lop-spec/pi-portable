@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "piweb-session-archive-v2";
+  const VERSION = "piweb-session-archive-v4";
   const VIEW_KEY = "piweb-session-archive-view";
   if (window.__piSessionArchiveUiVersion === VERSION) return;
   window.__piSessionArchiveUiVersion = VERSION;
@@ -62,7 +62,7 @@
     "刪除（按住 Shift 點選可跳過確認）",
   ]);
   const refreshTitles = new Set(["Refresh", "刷新", "重新整理"]);
-  const emptySessionTexts = new Set(["No sessions found", "未找到会话", "暂无会话", "找不到工作階段"]);
+  const forwardedActionEvents = new WeakSet();
 
   function language() {
     const html = String(document.documentElement?.lang || "").toLowerCase();
@@ -219,8 +219,15 @@
 
   function ensureControl() {
     const refresh = nativeRefreshButton();
-    if (!refresh?.parentElement) return;
-    let control = document.querySelector("button[data-pi-session-archive-control]");
+    if (!refresh) return;
+    let host = document.getElementById("pi-session-archive-control-host");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "pi-session-archive-control-host";
+      host.style.cssText = "position:fixed;z-index:2147483000;width:max-content;height:32px;pointer-events:auto";
+      document.documentElement.appendChild(host);
+    }
+    let control = host.querySelector("button[data-pi-session-archive-control]");
     if (!control) {
       control = document.createElement("button");
       control.type = "button";
@@ -233,9 +240,7 @@
         decorate();
         requestListRefresh(baselineSerial, state.view);
       });
-    }
-    if (control.parentElement !== refresh.parentElement || control.nextElementSibling !== refresh) {
-      refresh.parentElement.insertBefore(control, refresh);
+      host.appendChild(control);
     }
     const text = words();
     const archivedView = state.view === "archived";
@@ -247,7 +252,7 @@
       "display:flex", "align-items:center", "justify-content:center", "gap:5px", "height:32px",
       `width:${archivedView ? "auto" : state.archivedCount > 0 ? "auto" : "32px"}`,
       `padding:${archivedView || state.archivedCount > 0 ? "0 8px" : "0"}`,
-      "flex-shrink:0", "border:1px solid var(--border)", "border-radius:7px", "cursor:pointer",
+      "border:1px solid var(--border)", "border-radius:7px", "cursor:pointer",
       `background:${archivedView ? "var(--bg-selected)" : "var(--bg-hover)"}`,
       `color:${archivedView ? "var(--accent)" : "var(--text-muted)"}`,
       "font:600 11px/1 system-ui,sans-serif", "white-space:nowrap",
@@ -257,6 +262,10 @@
       : state.archivedCount > 0 ? `<span>${state.archivedCount}</span>` : "";
     const markup = icon("archive") + suffix;
     if (control.innerHTML !== markup) control.innerHTML = markup;
+    const refreshRect = refresh.getBoundingClientRect();
+    const controlWidth = control.getBoundingClientRect().width || 32;
+    host.style.top = `${Math.max(0, refreshRect.top)}px`;
+    host.style.left = `${Math.max(4, refreshRect.left - controlWidth - 8)}px`;
   }
 
   function decorateActions() {
@@ -270,8 +279,7 @@
       const label = restoring ? text.actionRestore : text.actionArchive;
       if (button.title !== label) button.title = label;
       button.setAttribute("aria-label", label);
-      const markup = icon(restoring ? "restore" : "archive");
-      if (button.innerHTML !== markup) button.innerHTML = markup;
+      button.dataset.piSessionArchiveMode = restoring ? "restore" : "archive";
     }
   }
 
@@ -289,6 +297,7 @@
     clearTimeout(pending.hideTimer);
     clearTimeout(pending.cleanupTimer);
     state.optimisticActions.delete(pending);
+    if (pending.button?.isConnected) delete pending.button.dataset.piSessionArchiveBusy;
     if (!pending.row?.isConnected) return;
     delete pending.row.dataset.piSessionArchivePending;
     delete pending.row.dataset.piSessionArchiveHidden;
@@ -305,6 +314,7 @@
     if (!row) return null;
     const pending = {
       row,
+      button,
       display: row.style.display,
       opacity: row.style.opacity,
       transform: row.style.transform,
@@ -342,38 +352,33 @@
   }
 
   function immediateActionClick(event) {
-    if (event.shiftKey) return;
+    if (forwardedActionEvents.has(event)) return;
+    if (event.type === "pointerdown" && event.button !== 0) return;
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     const button = target?.closest("button[data-pi-session-archive-action]");
     if (!button || button.disabled) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (button.dataset.piSessionArchiveBusy) return;
+    button.dataset.piSessionArchiveBusy = "true";
     beginOptimisticAction(button);
-    button.dispatchEvent(new MouseEvent("click", {
+    const forwarded = new MouseEvent("click", {
       bubbles: true,
       cancelable: true,
       view: window,
-      button: event.button,
+      button: 0,
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
       metaKey: event.metaKey,
       shiftKey: true,
-    }));
+    });
+    forwardedActionEvents.add(forwarded);
+    button.dispatchEvent(forwarded);
   }
 
   function enableImmediateActions() {
+    document.addEventListener("pointerdown", immediateActionClick, true);
     document.addEventListener("click", immediateActionClick, true);
-  }
-
-  function decorateEmptyState() {
-    for (const element of document.querySelectorAll("div")) {
-      const value = String(element.textContent || "").trim();
-      if (!element.dataset.piSessionArchiveEmpty && !emptySessionTexts.has(value)) continue;
-      element.dataset.piSessionArchiveEmpty = "true";
-      const next = state.view === "archived" ? words().emptyArchive : element.dataset.piSessionArchiveOriginal || value;
-      if (!element.dataset.piSessionArchiveOriginal) element.dataset.piSessionArchiveOriginal = value;
-      if (element.textContent !== next) element.textContent = next;
-    }
   }
 
   function decorate() {
@@ -382,7 +387,6 @@
     ensureStyle();
     ensureControl();
     decorateActions();
-    decorateEmptyState();
     document.documentElement.dataset.piSessionArchiveView = state.view;
   }
 

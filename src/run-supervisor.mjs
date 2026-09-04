@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 export const RUN_SUPERVISOR_VERSION = "run-supervisor-v1";
 export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
-export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v2";
+export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v4";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
@@ -575,6 +575,8 @@ export class RunSupervisor {
       { sessionRoot: this.sessionRoot, now: this.now },
     );
     this.archiveUiSource = options.archiveUiSource || fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
+    this.sessionCatalogue = [];
+    this.sessionCatalogueAt = 0;
     this.logFile = path.resolve(options.logFile || path.join(dataRoot, "run-supervisor.log"));
     const portableHome = String(process.env.PI_PORTABLE_HOME || "").trim();
     const configuredPiWebRoot = options.piWebPackageRoot || (portableHome ? path.join(portableHome, "app", "node_modules", "@agegr", "pi-web") : "");
@@ -1000,6 +1002,8 @@ export class RunSupervisor {
       this.writeBuffered(response, upstreamResult);
       return;
     }
+    this.sessionCatalogue = body.sessions;
+    this.sessionCatalogueAt = this.now();
     const partition = this.archiveStore.partition(body.sessions);
     const archivedGroupCount = new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size;
     const view = parsedUrl.searchParams.get("archiveView") === "archived" ? "archived" : "active";
@@ -1029,6 +1033,8 @@ export class RunSupervisor {
     if (!response.ok) throw new Error(`sessions HTTP ${response.status}`);
     const body = await response.json();
     if (!Array.isArray(body?.sessions)) throw new Error("sessions response has no catalogue");
+    this.sessionCatalogue = body.sessions;
+    this.sessionCatalogueAt = this.now();
     return body.sessions;
   }
 
@@ -1051,30 +1057,58 @@ export class RunSupervisor {
 
   async handleArchiveMutation(request, response, action, encodedId) {
     if (!this.mutationOriginAllowed(request)) {
+      this.log("session-archive-rejected", { action, reason: "cross-origin mutation" });
       this.jsonResponse(response, 403, { error: "cross-origin session archive mutation rejected" });
       return;
     }
     let sessionId;
     try { sessionId = decodeURIComponent(encodedId); }
-    catch { this.jsonResponse(response, 400, { error: "invalid session id encoding" }); return; }
+    catch {
+      this.log("session-archive-rejected", { action, reason: "invalid session id encoding" });
+      this.jsonResponse(response, 400, { error: "invalid session id encoding" });
+      return;
+    }
+    this.log("session-archive-request", { action, sessionId });
     if (action === "restore") {
       try {
         const result = this.archiveStore.restore(sessionId);
         if (result.restored) this.log("session-restored", { sessionId, sessionIds: result.sessionIds });
         this.jsonResponse(response, 200, { ok: true, restored: result.restored, preserved: true, sessionId, sessionIds: result.sessionIds });
       } catch (error) {
-        this.jsonResponse(response, 500, { error: String(error?.message || error) });
+        const message = String(error?.message || error);
+        this.log("session-archive-failed", { action, sessionId, status: 500, error: message });
+        this.jsonResponse(response, 500, { error: message });
       }
       return;
     }
     try {
-      const [catalogue, running] = await Promise.all([this.fetchSessionCatalogue(), this.fetchRunning()]);
-      const target = catalogue.find((session) => String(session?.id || "") === sessionId);
-      if (!target) { this.jsonResponse(response, 404, { error: "Session not found" }); return; }
+      let catalogue = this.sessionCatalogue;
+      let catalogueSource = "ui-cache";
+      let target = catalogue.find((session) => String(session?.id || "") === sessionId);
+      if (!target) {
+        catalogue = await this.fetchSessionCatalogue();
+        catalogueSource = "forced-refresh";
+        target = catalogue.find((session) => String(session?.id || "") === sessionId);
+      }
+      this.log("session-archive-catalogue", {
+        action,
+        sessionId,
+        source: catalogueSource,
+        ageMs: this.sessionCatalogueAt ? Math.max(0, this.now() - this.sessionCatalogueAt) : null,
+        count: catalogue.length,
+      });
+      const running = await this.fetchRunning();
+      if (!target) {
+        this.log("session-archive-failed", { action, sessionId, status: 404, error: "Session not found" });
+        this.jsonResponse(response, 404, { error: "Session not found" });
+        return;
+      }
       const family = this.sessionFamily(catalogue, sessionId);
       const runningFamily = family.map((session) => String(session.id)).filter((id) => running.has(id));
       if (runningFamily.length) {
-        this.jsonResponse(response, 409, { error: `Session is running and cannot be archived: ${runningFamily.join(", ")}` });
+        const message = `Session is running and cannot be archived: ${runningFamily.join(", ")}`;
+        this.log("session-archive-failed", { action, sessionId, status: 409, error: message });
+        this.jsonResponse(response, 409, { error: message });
         return;
       }
       const result = this.archiveStore.archiveMany(family, sessionId);
@@ -1095,6 +1129,7 @@ export class RunSupervisor {
     } catch (error) {
       const message = String(error?.message || error);
       const status = /requires|outside|does not exist|does not match|not a Pi JSONL/u.test(message) ? 409 : 500;
+      this.log("session-archive-failed", { action, sessionId, status, error: message });
       this.jsonResponse(response, status, { error: message });
     }
   }

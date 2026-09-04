@@ -15,7 +15,13 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /event\.preventDefault\(\)/u);
   assert.match(source, /event\.stopImmediatePropagation\(\)/u);
   assert.match(source, /shiftKey:\s*true/u, "the native destructive action must be invoked through its existing no-confirmation path");
-  assert.match(source, /document\.addEventListener\("click", immediateActionClick, true\)/u);
+  assert.match(source, /document\.addEventListener\("pointerdown", immediateActionClick, true\)/u, "a physical press must be captured before the parent row can replace the button");
+  assert.match(source, /document\.addEventListener\("click", immediateActionClick, true\)/u, "keyboard activation must remain supported");
+  assert.match(source, /forwardedActionEvents\.add\(forwarded\)/u, "the forwarded native click must be deduplicated without trusting timing");
+  assert.doesNotMatch(source, /button\.innerHTML/u, "decorating a React-owned action must not replace its children and break reconciliation");
+  assert.doesNotMatch(source, /refresh\.parentElement\.insertBefore/u, "the archive-view control must not become a React-managed sibling");
+  assert.doesNotMatch(source, /element\.textContent\s*=/u, "archive decoration must not replace React-owned text nodes");
+  assert.match(source, /document\.documentElement\.appendChild\(host\)/u);
   assert.match(source, /function beginOptimisticAction\(button\)/u);
   assert.match(source, /opacity 120ms ease/u, "the row should leave immediately instead of waiting for a full rescan");
   assert.match(source, /restoreOptimisticAction\(pendingAction\)/u, "a failed request must restore the optimistic row");
@@ -31,8 +37,11 @@ test("archive request failures are visible and logged", () => {
   assert.match(source, /catch \(error\)/u, "network-level failures must not stay silent");
 });
 
-test("the supervisor refreshes archive UI source without a process restart", () => {
+test("the supervisor refreshes archive UI source and logs every mutation failure", () => {
   assert.match(supervisorSource, /fs\.readFileSync\(PIWEB_ARCHIVE_UI_FILE, "utf8"\)/u);
   assert.match(supervisorSource, /piweb-archive-ui-reloaded/u);
   assert.match(supervisorSource, /piweb-archive-ui-reload-failed/u, "reload failures must never be silent");
+  assert.match(supervisorSource, /session-archive-request/u);
+  assert.match(supervisorSource, /session-archive-failed/u);
+  assert.match(supervisorSource, /session-archive-rejected/u);
 });
