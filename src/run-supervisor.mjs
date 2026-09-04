@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 export const RUN_SUPERVISOR_VERSION = "run-supervisor-v1";
 export const RECOVERY_PREFIX = "[lop-run-supervisor recovery]";
 export const RUN_CONTROL_TYPE = "lop-run-control";
-export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v1";
+export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v2";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
@@ -894,6 +894,15 @@ export class RunSupervisor {
   }
 
   serveArchiveUi(response) {
+    try {
+      const currentSource = fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
+      if (currentSource !== this.archiveUiSource) {
+        this.archiveUiSource = currentSource;
+        this.log("piweb-archive-ui-reloaded", { version: PIWEB_ARCHIVE_VERSION });
+      }
+    } catch (error) {
+      this.log("piweb-archive-ui-reload-failed", { error: String(error?.message || error) });
+    }
     const body = Buffer.from(this.archiveUiSource);
     response.writeHead(200, {
       "content-type": "application/javascript; charset=utf-8",

@@ -59,30 +59,10 @@ test('v8 slim: proxy keeps compat/pool/egress/overload/metrics/cache-key and not
   })), { 'content-type': 'application/json' }, {}).meta.effectiveTier, null, '无 tier 时不得兜底注入');
 });
 
-test('protocol text lives in the AGENTS managed block asset and launcher syncs it', () => {
-  const asset = read('../assets/pi-agents-protocol.md');
+test('retired AGENTS protocol projection cannot return through the launcher', () => {
   const launcher = read('../src/launcher.mjs');
-  assert.match(asset, /^<!-- lop-protocol:begin -->/u);
-  assert.match(asset, /<!-- lop-protocol:end -->\s*$/u);
-  assert.match(asset, /keep going until the query or task is completely resolved/u);
-  assert.match(asset, /both <deterministic-current-evidence> and <deterministic-final-draft/u);
-  assert.match(asset, /Do not call any tool, do not emit an acceptance checklist/u);
-  // 与 lop-chain collapsedAcceptanceChecklist / checklist gate 的协议闭环:任一端单边删改先红。
-  assert.match(asset, /【验收清单】N\/N 全部完成/u);
-  assert.match(asset, /exact number of frozen contract items/u);
-  assert.match(asset, /Only two item states are valid/u);
-  assert.match(asset, /Never use '\[~\]'/u);
-  assert.match(asset, /checked item saying the target was not met/u);
-  assert.match(asset, /Do not restate the full checklist in later replies/u);
-  assert.match(asset, /listing just the changed items/u);
-  assert.match(asset, /Highest-priority output rule/u);
-  assert.match(asset, /acceptance-evidence\.md/u);
-  assert.match(asset, /one-line conclusions, key numbers, and the evidence file path/u);
-  assert.match(asset, /preloaded shell helper `ev <cmd\.\.\.>`/u);
-  assert.match(asset, /Never re-type command outputs/u);
-  assert.match(launcher, /function syncAgentsProtocol\(\)/u);
-  assert.match(launcher, /syncAgentsProtocol\(\);/u);
-  assert.match(launcher, /assets", "pi-agents-protocol\.md"/u);
+  assert.equal(fs.existsSync(new URL('../assets/pi-agents-protocol.md', import.meta.url)), false);
+  assert.doesNotMatch(launcher, /syncAgentsProtocol|pi-agents-protocol\.md|lop-protocol:begin|lop-protocol:end/u);
 });
 
 // pi 形态:pi-ai 序列化=单条 developer 字符串系统提示 + user 块数组。
