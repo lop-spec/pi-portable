@@ -757,7 +757,7 @@
     state.host.style.visibility = "visible";
     state.panel.style.right = `${Math.max(8, window.innerWidth - anchor.right)}px`;
     state.panel.style.bottom = `${Math.max(8, window.innerHeight - anchor.top + 8)}px`;
-    state.panel.style.maxHeight = `${Math.max(180, anchor.top - 20)}px`;
+    state.panel.style.maxHeight = `${Math.min(360, Math.max(180, anchor.top - 20))}px`;
     state.panel.style.visibility = state.open ? "visible" : "hidden";
   }
 
