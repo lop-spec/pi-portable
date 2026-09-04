@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import { disableTrustGate, MARK } from "../tools/patch-pi-trust-off.mjs";
 
-const supervisorSource = fs.readFileSync(new URL("../src/run-supervisor.mjs", import.meta.url), "utf8");
+const proxySource = fs.readFileSync(new URL("../src/piweb-ui-proxy.mjs", import.meta.url), "utf8");
 
 // pi SDK 编译产物里的两种形态：dist/core（未压缩）与 dist/bundle（minified）。
 const CORE = `export function hasTrustRequiringProjectResources(cwd) {
@@ -35,16 +35,16 @@ test("trust patch is idempotent and fails closed when the anchor is gone", () =>
   assert.equal(missing.hits, 0);
 });
 
-test("supervisor proxy must pass the client Host through", () => {
+test("UI proxy must pass the client Host through", () => {
   // 改写 Host 会让浏览器的 Origin(:publicWebPort) 与 Host(:webPort) 不同源，
   // pi-web 的 CSRF 防护 (isApiRequestOriginAllowed) 会把所有写类 API 打成 403。
   assert.doesNotMatch(
-    supervisorSource,
+    proxySource,
     /\.\.\.extra,\s*host: `127\.0\.0\.1:\$\{this\.webPort\}`/,
     "proxyHeaders must not unconditionally overwrite the Host header",
   );
   assert.match(
-    supervisorSource,
+    proxySource,
     /if \(!result\.host\) result\.host = `127\.0\.0\.1:\$\{this\.webPort\}`/,
     "a Host is still synthesised for non-browser callers that send none",
   );

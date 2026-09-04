@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 import {
   PIWEB_ACCOUNT_SELECT_PATH,
   PIWEB_ACCOUNT_USAGE_PATH,
-  RunSupervisor,
-} from "../src/run-supervisor.mjs";
+  PiWebUiProxy,
+} from "../src/piweb-ui-proxy.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const uiSource = fs.readFileSync(path.join(root, "src", "piweb-archive-ui.js"), "utf8");
@@ -79,7 +79,7 @@ test("UI proxy serves a sanitized same-origin quota snapshot", async () => {
   assert.equal(PIWEB_ACCOUNT_USAGE_PATH, "/__pi_account_usage");
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-account-usage-proxy-"));
   const calls = [];
-  const proxy = new RunSupervisor({
+  const proxy = new PiWebUiProxy({
     dataRoot: temporary,
     bridgePort: 18794,
     fetchImpl: async (url) => {
@@ -107,7 +107,7 @@ test("same-origin account switch is confirmed by the bridge and immediately retu
   assert.equal(PIWEB_ACCOUNT_SELECT_PATH, "/__pi_account_select");
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-account-select-proxy-"));
   const calls = [];
-  const proxy = new RunSupervisor({
+  const proxy = new PiWebUiProxy({
     dataRoot: temporary,
     bridgePort: 18794,
     fetchImpl: async (url, init) => {
@@ -141,7 +141,7 @@ test("cross-origin switch and quota proxy failures are visible in response and l
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-account-usage-error-"));
   const logFile = path.join(temporary, "ui-proxy.log");
   let calls = 0;
-  const proxy = new RunSupervisor({
+  const proxy = new PiWebUiProxy({
     dataRoot: temporary,
     logFile,
     fetchImpl: async () => { calls += 1; throw new Error("bridge unavailable"); },

@@ -1,51 +1,50 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { applyHideAgentToolCalls } from "../tools/patch-piweb-fold.mjs";
+import { applyShowAgentToolCalls } from "../tools/patch-piweb-fold.mjs";
 
 const patchSource = fs.readFileSync(new URL("../tools/patch-piweb-fold.mjs", import.meta.url), "utf8");
 
 const cases = [
   {
     label: "client minifier symbols",
-    source: "before;.map((block,i)=>({block,originalIndex:i})).filter(({block:e})=>!ef(e,{isStreaming:t}));after;text-render;thinking-render",
-    expected: ".filter(({block:e})=>!ef(e,{isStreaming:t})&&\"toolCall\"!==e.type)",
+    visible: "before;.filter(({block:e})=>!ef(e,{isStreaming:t}));after;text-render;thinking-render",
+    hidden: "before;.filter(({block:e})=>!ef(e,{isStreaming:t})&&\"toolCall\"!==e.type);after;text-render;thinking-render",
   },
   {
     label: "server minifier symbols",
-    source: "before;.map((block,i)=>({block,originalIndex:i})).filter(({block:a})=>!be(a,{isStreaming:b}));after;text-render;thinking-render",
-    expected: ".filter(({block:a})=>!be(a,{isStreaming:b})&&\"toolCall\"!==a.type)",
+    visible: "before;.filter(({block:a})=>!be(a,{isStreaming:b}));after;text-render;thinking-render",
+    hidden: "before;.filter(({block:a})=>!be(a,{isStreaming:b})&&\"toolCall\"!==a.type);after;text-render;thinking-render",
   },
 ];
 
-test("agent tool calls are filtered only from AssistantMessageView block items", () => {
+test("agent tool calls are restored to the official visible block filter", () => {
   for (const fixture of cases) {
-    const result = applyHideAgentToolCalls(fixture.source, fixture.label);
+    const result = applyShowAgentToolCalls(fixture.hidden, fixture.label);
     assert.equal(result.applied, true, fixture.label);
-    assert.match(result.out, new RegExp(fixture.expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(result.out, /text-render;thinking-render$/, "text/thinking paths must remain byte-for-byte present");
-    assert.equal(result.out.replace(/&&"toolCall"!==[\w$]+\.type/, ""), fixture.source, "only the toolCall exclusion may be added");
+    assert.equal(result.out, fixture.visible);
+    assert.match(result.out, /text-render;thinking-render$/, "text/thinking paths remain byte-for-byte present");
   }
 });
 
-test("tool-call visibility patch is idempotent", () => {
-  const once = applyHideAgentToolCalls(cases[0].source, "once");
-  const twice = applyHideAgentToolCalls(once.out, "twice");
-  assert.equal(twice.applied, false);
-  assert.equal(twice.out, once.out);
+test("visible tool-call semantics are idempotent", () => {
+  const result = applyShowAgentToolCalls(cases[0].visible, "visible");
+  assert.equal(result.applied, false);
+  assert.equal(result.out, cases[0].visible);
 });
 
-test("tool-call visibility patch fails closed on missing or ambiguous anchors", () => {
-  assert.throws(() => applyHideAgentToolCalls("no assistant block filter", "missing"), /original=0 patched=0/);
+test("tool-call visibility restoration fails closed on missing or ambiguous anchors", () => {
+  assert.throws(() => applyShowAgentToolCalls("no assistant block filter", "missing"), /visible=0 hidden=0/);
   assert.throws(
-    () => applyHideAgentToolCalls(`${cases[0].source}\n${cases[1].source}`, "ambiguous"),
-    /original=2 patched=0/,
+    () => applyShowAgentToolCalls(`${cases[0].visible}\n${cases[1].visible}`, "ambiguous"),
+    /visible=2 hidden=0/,
   );
 });
 
-test("old page and layout chunks are retained and old page hashes receive the same visibility filter", () => {
+test("old page and layout chunks are retained while known page hashes are made visible", () => {
   assert.doesNotMatch(patchSource, /fs\.unlinkSync\((?:stage\.file|pageClientOld|layoutOld)\)/);
   assert.match(patchSource, /previousPageRetained: needsRename/);
   assert.match(patchSource, /legacyPageWrites\.push\(\{ file, out: legacy\.out \}\)/);
   assert.match(patchSource, /for \(const item of legacyPageWrites\) fs\.writeFileSync\(item\.file, item\.out\)/);
+  assert.doesNotMatch(patchSource, /hideAgentToolCalls/);
 });

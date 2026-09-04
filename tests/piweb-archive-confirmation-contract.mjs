@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(root, "src", "piweb-archive-ui.js"), "utf8");
-const supervisorSource = fs.readFileSync(path.join(root, "src", "run-supervisor.mjs"), "utf8");
+const proxySource = fs.readFileSync(path.join(root, "src", "piweb-ui-proxy.mjs"), "utf8");
 
 test("archive action is a one-click operation with no confirmation state", () => {
   const immediateSource = source.slice(source.indexOf("function immediateActionClick"), source.indexOf("function enableImmediateActions"));
@@ -53,14 +53,14 @@ test("archive request failures are visible and logged", () => {
   assert.match(source, /catch \(error\)/u, "network-level failures must not stay silent");
 });
 
-test("the supervisor refreshes archive UI source and logs every mutation failure", () => {
-  assert.match(supervisorSource, /fs\.readFileSync\(PIWEB_ARCHIVE_UI_FILE, "utf8"\)/u);
-  assert.match(supervisorSource, /piweb-archive-ui-reloaded/u);
-  assert.match(supervisorSource, /piweb-archive-ui-reload-failed/u, "reload failures must never be silent");
-  assert.match(supervisorSource, /session-archive-request/u);
-  assert.match(supervisorSource, /Array\.isArray\(body\.runningSessionIds\).*this\.runningIds = new Set/u, "the rendered list must refresh the local running-session snapshot");
-  assert.match(supervisorSource, /runningSessionsForArchive\(maxWaitMs = 120\)/u, "archive may probe fresh running state only behind a hard interactive timeout");
-  assert.match(supervisorSource, /session-archive-running-cache/u, "running-state probe fallback must be logged");
-  assert.match(supervisorSource, /session-archive-failed/u);
-  assert.match(supervisorSource, /session-archive-rejected/u);
+test("the UI proxy refreshes archive source and logs every mutation failure", () => {
+  assert.match(proxySource, /fs\.readFileSync\(PIWEB_ARCHIVE_UI_FILE, "utf8"\)/u);
+  assert.match(proxySource, /piweb-archive-ui-reloaded/u);
+  assert.match(proxySource, /piweb-archive-ui-reload-failed/u, "reload failures must never be silent");
+  assert.match(proxySource, /session-archive-request/u);
+  assert.match(proxySource, /Array\.isArray\(body\.runningSessionIds\).*this\.runningIds = new Set/u, "the rendered list must refresh the local running-session snapshot");
+  assert.match(proxySource, /runningSessionsForArchive\(maxWaitMs = 120\)/u, "archive may probe fresh running state only behind a hard interactive timeout");
+  assert.match(proxySource, /session-archive-running-cache/u, "running-state probe fallback must be logged");
+  assert.match(proxySource, /session-archive-failed/u);
+  assert.match(proxySource, /session-archive-rejected/u);
 });

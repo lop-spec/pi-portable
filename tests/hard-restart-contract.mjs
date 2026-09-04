@@ -1,6 +1,6 @@
 // 硬重启契约:托盘"重启"必须是无条件彻底重启,不得退化成"开个窗口"。
 // 覆盖三条真实踩过的坑:
-//   1 junction 布局下 isMain 恒 false —— 监督器静默 exit 0,launcher 判"未就绪"杀整树;
+//   1 junction 布局下 isMain 恒 false —— UI 代理静默 exit 0,launcher 判"未就绪"杀整树;
 //   2 清场只认自家 children —— 僵死实例留下的孤儿活过重启,新实例撞端口起不来;
 //   3 常驻形态 stdin 非 TTY —— ask() 永久挂起,进程活着却一件事不做。
 import assert from "node:assert/strict";
@@ -10,35 +10,35 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-import { isDirectRun } from "../src/run-supervisor.mjs";
+import { isDirectRun } from "../src/piweb-ui-proxy.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..");
 const launcher = fs.readFileSync(path.join(ROOT, "src", "launcher.mjs"), "utf8");
 
-test("junction 布局下监督器仍认得自己是主模块", { skip: process.platform !== "win32" }, () => {
+test("junction 布局下 UI 代理仍认得自己是主模块", { skip: process.platform !== "win32" }, () => {
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), "pi-hard-restart-"));
   const link = path.join(stage, "src");
   const mk = spawnSync("cmd.exe", ["/c", "mklink", "/J", link, path.join(ROOT, "src")], { windowsHide: true, encoding: "utf8" });
   if (mk.status !== 0) { fs.rmSync(stage, { recursive: true, force: true }); return; } // 无权建 junction 时跳过
   try {
-    const viaJunction = path.join(link, "run-supervisor.mjs");
+    const viaJunction = path.join(link, "piweb-ui-proxy.mjs");
     assert.notEqual(
       path.resolve(viaJunction).toLowerCase(),
-      path.resolve(path.join(ROOT, "src", "run-supervisor.mjs")).toLowerCase(),
+      path.resolve(path.join(ROOT, "src", "piweb-ui-proxy.mjs")).toLowerCase(),
       "前置条件:junction 路径必须与真实路径字面不同,否则本用例测不到回归",
     );
-    assert.equal(isDirectRun(viaJunction, import.meta.url.replace("/tests/hard-restart-contract.mjs", "/src/run-supervisor.mjs")), true,
-      "launcher 以 HOME/src 路径拉起监督器时,isMain 必须为 true(否则进程静默 exit 0)");
+    assert.equal(isDirectRun(viaJunction, import.meta.url.replace("/tests/hard-restart-contract.mjs", "/src/piweb-ui-proxy.mjs")), true,
+      "launcher 以 HOME/src 路径拉起 UI 代理时,isMain 必须为 true(否则进程静默 exit 0)");
     assert.equal(isDirectRun("", import.meta.url), false, "无 argv[1] 不算直跑");
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 });
 
-test("监督器直跑判定不受盘符大小写与相对路径影响", () => {
-  const self = new URL("../src/run-supervisor.mjs", import.meta.url);
-  const real = path.resolve(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..", "src", "run-supervisor.mjs");
+test("UI 代理直跑判定不受盘符大小写与相对路径影响", () => {
+  const self = new URL("../src/piweb-ui-proxy.mjs", import.meta.url);
+  const real = path.resolve(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..", "src", "piweb-ui-proxy.mjs");
   assert.equal(isDirectRun(real, self.href), true);
   assert.equal(isDirectRun(real.toLowerCase(), self.href), true, "argv 盘符大小写不同不得判为非主模块");
-  assert.equal(isDirectRun(path.join(ROOT, "src", "..", "src", "run-supervisor.mjs"), self.href), true, "含 .. 的等价路径必须判为主模块");
+  assert.equal(isDirectRun(path.join(ROOT, "src", "..", "src", "piweb-ui-proxy.mjs"), self.href), true, "含 .. 的等价路径必须判为主模块");
   assert.equal(isDirectRun(path.join(ROOT, "src", "launcher.mjs"), self.href), false, "别的脚本不得被判成本模块");
 });
 

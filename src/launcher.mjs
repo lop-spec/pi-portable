@@ -9,7 +9,6 @@ import path from "node:path";
 import readline from "node:readline";
 import { detectEgress } from "./egress-autodetect.mjs";
 import { openAssets } from "./assets-crypto.mjs";
-import { RULES_ASSET_LAYOUT, syncRulesSnapshot } from "./rules-snapshot.mjs";
 import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
@@ -17,7 +16,7 @@ const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
 const BLOB = path.join(HOME, "assets.enc");
 const PORTS = {
   bridge: Number(process.env.PI_BRIDGE_PORT || 8794),
-  web: Number(process.env.PI_WEB_PORT || 30141), // user-facing supervisor proxy
+  web: Number(process.env.PI_WEB_PORT || 30141), // user-facing archive/UI proxy
   webInternal: Number(process.env.PI_WEB_INTERNAL_PORT || (Number(process.env.PI_WEB_PORT || 30141) - 1)),
   supervisor: Number(process.env.PI_RUN_SUPERVISOR_PORT || (Number(process.env.PI_WEB_PORT || 30141) + 1)),
 };
@@ -25,6 +24,8 @@ const NODE = process.env.PI_NODE_EXE || path.join(HOME, "runtime", "node.exe");
 const PROCESS_HOST = process.platform === "win32" && process.env.PI_PROCESS_HOST && fs.existsSync(process.env.PI_PROCESS_HOST)
   ? process.env.PI_PROCESS_HOST : "";
 const NATIVE_RESTART_EXIT_CODE = 75;
+// 仅防旧 assets.enc 把退役 rules.jsonl 写回活动根；launcher 不生成也不消费该 bootstrap。
+const LEGACY_ASSET_LAYOUT = Object.freeze({ "rules.jsonl": path.join("registry", "bootstrap-rules.jsonl") });
 
 function spawnPortableNode(nodeExe, args, options) {
   if (PROCESS_HOST) return spawn(PROCESS_HOST, ["--pi-node-host", ...args], options);
@@ -33,11 +34,9 @@ function spawnPortableNode(nodeExe, args, options) {
 // 加密资产段的布局契约(打包器必须按这些键写入,launcher 依赖它们):
 //   .pi/agent/models.json|settings.json|AGENTS.md  pi 配置(HOME 被指向 DATA,故需前导点)
 //   auth.json  codex 登录态文件(仅键名约定,不含内容) scan-allow: 布局契约键名,非凭证
-//   rules-pretool.mjs                              S7 工具门私有规则(可选)
+//   rules-pretool.mjs                              旧包兼容键；当前单一真值在 .pi/agent/data
 //   egress-extra-ports.json                        个人出口端口(可选,自适应优先探测)
-//   rules.jsonl(旧包兼容键) / registry/bootstrap-rules.jsonl  只作为规则 bootstrap
-//   anchors.jsonl / profile-anchors.json                        其它执行链数据面(可选)
-// data/rules.jsonl 始终由 rules-snapshot 单向生成,不再由加密资产直接覆盖。
+// 旧 rules.jsonl/anchors/profile-anchors 仅可被旧资产解包保留，launcher 不再生成或消费。
 const children = [];
 let shuttingDown = false;
 
@@ -173,22 +172,6 @@ function ask(question, { silent = false } = {}) {
     }
     rl.question(question, (a) => { rl.close(); if (silent) process.stdout.write("\n"); resolve(a.trim()); });
   });
-}
-
-function refreshRulesSnapshot() {
-  try {
-    const rules = syncRulesSnapshot({
-      dataRoot: DATA,
-      upstreamSource: process.env.PI_RULES_SOURCE || null,
-      upstreamLabel: process.env.PI_RULES_SOURCE_LABEL || undefined,
-    });
-    if (rules.skipped) log(`规则快照跳过:${rules.reason}`);
-    else log(`规则快照${rules.changed ? "已生成" : "已是目标态"}(${rules.ruleCount} 条,${rules.sha256.slice(0, 12)},${rules.sourceKind})`);
-    return rules;
-  } catch (e) {
-    log(`规则快照同步失败(保留上次已验证 rules.jsonl):${String(e.message).slice(0, 160)}`);
-    return null;
-  }
 }
 
 // ── 关闭:杀整棵进程树 ─────────────────────────────────────────
@@ -330,13 +313,19 @@ process.on("SIGTERM", () => shutdown(0));
 // ── 主流程 ────────────────────────────────────────────────────
 async function main() {
   fs.mkdirSync(DATA, { recursive: true });
-  log(`pi-portable 启动 HOME=${HOME}`);
+  // 受管远端可用数据根标记进入无头模式，避免计划任务需要额外 cmd/PowerShell 包装或弹窗。
+  // 本机没有该标记时维持托盘与窗口原行为。
+  const headlessMarker = path.join(DATA, "headless.enabled");
+  if (fs.existsSync(headlessMarker)) {
+    process.env.PI_HEADLESS = "1";
+    process.env.PI_AUTO_WINDOW = "0";
+  }
+  log(`pi-portable 启动 HOME=${HOME}${process.env.PI_HEADLESS === "1" ? " headless=1" : ""}`);
 
   // 1 自检
   if (!fs.existsSync(NODE) && !process.env.PI_NODE_EXE) log(`警告:未找到便携 node(${NODE}),将使用当前 node`);
   const nodeExe = fs.existsSync(NODE) ? NODE : process.execPath;
   const portableEnv = withSilentWindowsProcessEnv(withPortableNode(process.env, nodeExe));
-  refreshRulesSnapshot(); // 已有实例也先收敛规则；运行中的扩展下一轮直接读取新生成物。
   if (process.env.PI_FORCE_FRESH === "1") {
     // 硬重启拉起的冷启实例:残留一律不复用,先清场再起全套(否则会退化成"只开个窗口")。
     log("冷启:不复用任何残留实例,先做全局清场");
@@ -352,11 +341,11 @@ async function main() {
   if (fs.existsSync(BLOB)) {
     try {
       let r;
-      try { r = openAssets(BLOB, DATA, { layout: RULES_ASSET_LAYOUT }); }
+      try { r = openAssets(BLOB, DATA, { layout: LEGACY_ASSET_LAYOUT }); }
       catch {
         log("首次启动:需要一次解密口令(之后本机免输)");
         const pw = await ask("口令: ", { silent: true });
-        r = openAssets(BLOB, DATA, { password: pw, layout: RULES_ASSET_LAYOUT });
+        r = openAssets(BLOB, DATA, { password: pw, layout: LEGACY_ASSET_LAYOUT });
       }
       log(`资产就绪(${r.source === "cached" ? "本机密钥缓存" : "口令解密"},${r.ms}ms,${r.written.length} 项)`);
     } catch (e) {
@@ -366,8 +355,6 @@ async function main() {
     }
   } else log("无加密资产段(base 版):使用本机已有配置");
 
-  refreshRulesSnapshot(); // 首次从 legacy bootstrap 迁移后再生成一次。
-
   try {
     const changed = portableizeModelAuth();
     if (changed) log(`模型鉴权已便携化(${changed} 个 provider → data\\auth.json)`);
@@ -376,7 +363,6 @@ async function main() {
     const shellPath = configurePortableBash();
     if (shellPath) log(`Bash 已配置:${shellPath}`);
   } catch (e) { log(`Bash 配置失败:${e.message}`); }
-
   try {
     const extension = syncManagedFollowupExtension();
     if (extension.status === "source-missing") log(`自动追问扩展源缺失,未安装:${extension.source}`);
@@ -455,12 +441,10 @@ async function main() {
   // 起 pi-web 前先把产物补丁钉在位:npm 升级/异机重装会还原 .next 产物,脚本均幂等
   // (已打 => already-patched 零写入;版本/锚点不符 => exit≠0 零写入)。失败只告警,按现有产物继续。
   // 顺序硬约束:fold 在前,draft-persist 其次,interactions 再按当前 chunk 寻锚;
-  // hide-recovered/drop-auto/show-thinking/hide-hidden-extension/conversation-nodes 依次链尾；show-thinking
-  // 必须晚于历史 hide-thinking 产物，负责迁移并恢复用户可见推理摘要；conversation-nodes
-  // 必须最后运行，按真实用户问题与 stop 终答生成完整单行节点索引。
-  // (chunk 名指纹含当前 chunk hash,乱序会同名换内容毒缓存)。
+  // drop-auto/show-thinking/conversation-nodes 依次链尾；不再应用隐藏 recovery、扩展消息或工具卡的补丁，
+  // 模型上下文及工具过程对用户保持可见。chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-hide-recovered.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-hide-hidden-extension-messages.mjs", "patch-piweb-conversation-nodes.mjs"]) {
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-conversation-nodes.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
@@ -515,10 +499,10 @@ async function main() {
   }
   log(`pi-web 内部运行面就绪 :${PORTS.webInternal}`);
 
-  // 6 持久化运行监督器:prompt_error/runner 消失时续接，web 重启后从 state.json 恢复。
-  // supervisor 只投递恢复 prompt，绝不直接重放工具调用；自身崩溃由 launcher 熔断守护。
-  const supervisorScript = path.join(HOME, "src", "run-supervisor.mjs");
-  const supervisorErrLog = path.join(DATA, "run-supervisor-stderr.log");
+  // 6 会话归档 UI 透明代理：只处理归档/额度展示，其余请求字节流透传；不读取 prompt、
+  // 不跟踪任务、不注入恢复消息，也不改变模型 Stop。自身崩溃仍由 launcher 熔断守护。
+  const supervisorScript = path.join(HOME, "src", "piweb-ui-proxy.mjs");
+  const supervisorErrLog = path.join(DATA, "piweb-ui-proxy-stderr.log");
   const supervisorRestarts = [];
   const supervisorEnv = {
     ...portableEnv,
@@ -532,7 +516,7 @@ async function main() {
   };
   function startRunSupervisor() {
     if (!fs.existsSync(supervisorScript)) {
-      log(`运行监督器缺失:${supervisorScript}`);
+      log(`会话 UI 代理缺失:${supervisorScript}`);
       return null;
     }
     const errFd = fs.openSync(supervisorErrLog, "a");
@@ -548,12 +532,12 @@ async function main() {
       const at = children.indexOf(supervisor);
       if (at >= 0) children.splice(at, 1);
       if (shuttingDown) return;
-      log(`运行监督器退出 code=${code ?? "-"} signal=${signal ?? "-"}(详见 ${supervisorErrLog})`);
+      log(`会话 UI 代理退出 code=${code ?? "-"} signal=${signal ?? "-"}(详见 ${supervisorErrLog})`);
       const now = Date.now();
       supervisorRestarts.push(now);
       while (supervisorRestarts.length && now - supervisorRestarts[0] > 60000) supervisorRestarts.shift();
       if (supervisorRestarts.length > 5) {
-        log("运行监督器 60s 内退出超 5 次,交回原生 launcher 重启整套运行面");
+        log("会话 UI 代理 60s 内退出超 5 次,交回原生 launcher 重启整套运行面");
         shutdown(5);
         return;
       }
@@ -564,7 +548,7 @@ async function main() {
   if (!(await httpOk(`http://127.0.0.1:${PORTS.supervisor}/health`))) startRunSupervisor();
   for (let i = 0; i < 20 && !(await httpOk(`http://127.0.0.1:${PORTS.supervisor}/health`)); i++) await new Promise((r) => setTimeout(r, 250));
   if (!(await httpOk(`http://127.0.0.1:${PORTS.supervisor}/health`))) {
-    log(`运行监督器未就绪,详见 ${supervisorErrLog}`);
+    log(`会话 UI 代理未就绪,详见 ${supervisorErrLog}`);
     shutdown(5);
   }
   for (let i = 0; i < 20 && !(await httpOk(`http://127.0.0.1:${PORTS.web}/`)); i++) await new Promise((r) => setTimeout(r, 250));
@@ -572,7 +556,7 @@ async function main() {
     log(`持久化 Web 代理未就绪 :${PORTS.web}`);
     shutdown(5);
   }
-  log(`运行监督器就绪 health=:${PORTS.supervisor} public=:${PORTS.web} upstream=:${PORTS.webInternal}`);
+  log(`会话 UI 代理就绪 health=:${PORTS.supervisor} public=:${PORTS.web} upstream=:${PORTS.webInternal}`);
 
   // 7 托盘 + 窗口:托盘在则关窗驻留(单击托盘再进入,菜单可重启/彻底退出);托盘不可用回退关窗即退
   if (process.env.PI_HEADLESS === "1") { log("无头模式:不开窗口,等待终止信号"); setInterval(() => {}, 1 << 30); return; }

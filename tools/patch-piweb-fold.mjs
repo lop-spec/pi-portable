@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pi-web 0.8.11 本地补丁：折叠历史过程，并从 Agent 消息中隐藏工具卡片（工具仍执行、会话仍留痕）。
+// pi-web 0.8.11 本地补丁：只折叠历史过程；Agent 工具卡保持官方可见。
 // 用法: node patch-piweb-fold.mjs [--pkg <包目录>] [--backup <原始备份目录>] [--upgrade-backup <升级前备份目录>] [--check]
 // 约束: 仅 0.8.11；任一锚点命中数不符 => 中止且零写入；可重入（v1-v3 自动补齐到 v4）。
 // 回滚: upgrade-backup 整体拷回 .next 对应路径并删除 page-f01dc0de20260831.js；或用原始 backup 全量回滚；随后重启服务。旧 chunk 会保留，避免运行中的旧进程 404。
@@ -11,15 +11,15 @@ import { fileURLToPath } from "node:url";
 const TOOL_BLOCK_FILTER = /\.filter\(\(\{block:([\w$]+)\}\)=>!([\w$]+)\(\1,\{isStreaming:([\w$]+)\}\)\)/g;
 const PATCHED_TOOL_BLOCK_FILTER = /\.filter\(\(\{block:([\w$]+)\}\)=>!([\w$]+)\(\1,\{isStreaming:([\w$]+)\}\)&&"toolCall"!==\1\.type\)/g;
 
-export function applyHideAgentToolCalls(src, label = "bundle") {
+export function applyShowAgentToolCalls(src, label = "bundle") {
   const original = [...src.matchAll(TOOL_BLOCK_FILTER)];
   const patched = [...src.matchAll(PATCHED_TOOL_BLOCK_FILTER)];
-  if (original.length === 0 && patched.length === 1) return { out: src, applied: false };
-  if (original.length !== 1 || patched.length !== 0) {
-    throw new Error(`${label}: R3 工具卡过滤锚点异常 original=${original.length} patched=${patched.length}`);
+  if (original.length === 1 && patched.length === 0) return { out: src, applied: false };
+  if (original.length !== 0 || patched.length !== 1) {
+    throw new Error(`${label}: 工具卡可见性锚点异常 visible=${original.length} hidden=${patched.length}`);
   }
-  const out = src.replace(TOOL_BLOCK_FILTER, (_all, block, emptyThinking, streaming) =>
-    `.filter(({block:${block}})=>!${emptyThinking}(${block},{isStreaming:${streaming}})&&"toolCall"!==${block}.type)`);
+  const out = src.replace(PATCHED_TOOL_BLOCK_FILTER, (_all, block, emptyThinking, streaming) =>
+    `.filter(({block:${block}})=>!${emptyThinking}(${block},{isStreaming:${streaming}}))`);
   return { out, applied: true };
 }
 
@@ -39,8 +39,8 @@ if ([PAGE_OLD, PAGE_V1, PAGE_V3].some((v) => v.length !== PAGE_NEW.length) || LA
 
 const die = (m) => { console.error("[ABORT] " + m); process.exit(1); };
 const ID = "([\\w$]+)";
-const applyR3 = (src, label) => {
-  try { return applyHideAgentToolCalls(src, label); }
+const applyToolVisibility = (src, label) => {
+  try { return applyShowAgentToolCalls(src, label); }
   catch (error) { die(error instanceof Error ? error.message : String(error)); }
 };
 
@@ -132,7 +132,7 @@ function applyR2c(src, label) {
 // ---------- 可重入升级：v1-v3 补齐语义补丁，并换 page chunk URL 绕过 SW cacheFirst ----------
 // stage 以 server 侧当前引用的 page chunk 为准,而不是按固定文件名猜:链尾补丁(draft/interactions/
 // hide-*/drop-auto)会把 chunk 改名成 pw…,旧的 f01dc0de… 文件只是被保留的孤儿,按它找引用必为 0
-// (对端 DESKTOP-3EGB4LB 2026-09-01→09-02 fold 每次冷启都 ABORT,R3 隐藏工具卡从未落地)。
+// （旧版本曾在这里追加工具卡隐藏；当前脚本会把该改写反向恢复为官方可见语义）。
 const refManifest = path.join(PKG, ".next", "server", "app", "page_client-reference-manifest.js");
 const refHashes = fs.existsSync(refManifest)
   ? [...new Set([...fs.readFileSync(refManifest, "utf8").matchAll(/static\/chunks\/app\/page-([a-z0-9]+)\.js/g)].map((m) => m[1]))]
@@ -140,7 +140,10 @@ const refHashes = fs.existsSync(refManifest)
 if (refHashes.length > 1) die(`page chunk 引用解析异常: ${JSON.stringify(refHashes)}`);
 const refHash = refHashes[0];
 const stage = (() => {
-  if (!refHash || refHash === PAGE_OLD) return [
+  // server manifest 是当前唯一引用真值；旧输出 chunk 会长期保留给已打开页面，不能反向
+  // 推断为当前 stage。manifest 仍指官方旧 hash 时，直接在该文件上补齐折叠升级。
+  if (refHash === PAGE_OLD) return { name: "fold-base", file: pageClientOld, hash: PAGE_OLD, target: PAGE_NEW };
+  if (!refHash) return [
     { name: "v4", file: pageClientNew, hash: PAGE_NEW },
     { name: "v3", file: pageClientV3, hash: PAGE_V3 },
     { name: "v1", file: pageClientV1, hash: PAGE_V1 },
@@ -149,7 +152,7 @@ const stage = (() => {
   if (!fs.existsSync(file)) die("当前引用的 page chunk 不存在: " + file);
   const known = { [PAGE_NEW]: "v4", [PAGE_V3]: "v3", [PAGE_V1]: "v1" }[refHash];
   if (known) return { name: known, file, hash: refHash, target: PAGE_NEW };
-  // 链式 pw… chunk:补齐 R2b/R2c/R3 后等长改名(pwf+13hex,指纹含当前 hash+内容),绕过 SW cacheFirst。
+  // 链式 pw… chunk:补齐折叠并恢复工具卡可见后等长改名，绕过 SW cacheFirst。
   const digest = crypto.createHash("sha256").update(refHash + PAGE_NEW + fs.readFileSync(file, "utf8")).digest("hex");
   const target = ("pwf" + digest).slice(0, refHash.length);
   return { name: "chained", file, hash: refHash, target, chained: true };
@@ -164,13 +167,13 @@ if (stage) {
   for (const [get, set, label] of [[() => cs, (v) => (cs = v), "client"], [() => ss, (v) => (ss = v), "server"]]) {
     const b = applyR2b(get(), label); set(b.out); b.applied && edits.push(label + "-r2b");
     const c = applyR2c(get(), label); set(c.out); c.applied && edits.push(label + "-r2c");
-    const h = applyR3(get(), label); set(h.out); h.applied && edits.push(label + "-r3-hide-tools");
+    const h = applyToolVisibility(get(), label); set(h.out); h.applied && edits.push(label + "-show-tools");
   }
 
-  // 运行中的 Next 可能继续返回旧 hash；旧 page chunk 也只加 R3，确保当前进程立即生效。
+  // 运行中的 Next 可能继续返回旧 hash；已知旧 page chunk 也恢复工具卡可见。
   for (const file of [pageClientOld, pageClientV1, pageClientV3]) {
     if (!fs.existsSync(file)) continue;
-    const legacy = applyR3(fs.readFileSync(file, "utf8"), `legacy-${path.basename(file)}`);
+    const legacy = applyToolVisibility(fs.readFileSync(file, "utf8"), `legacy-${path.basename(file)}`);
     if (legacy.applied) legacyPageWrites.push({ file, out: legacy.out });
   }
 
@@ -196,11 +199,11 @@ if (stage) {
     process.exit(0);
   }
   if (!edits.length && !legacyPageWrites.length && !needsRename) {
-    console.log(JSON.stringify({ status: "already-patched", mode: "v4", chunk: `page-${stage.hash}.js`, hideAgentToolCalls: true, legacyPagesPatched: true, pkg: PKG }));
+    console.log(JSON.stringify({ status: "already-patched", mode: "fold-visible-tools", chunk: `page-${stage.hash}.js`, agentToolCallsVisible: true, pkg: PKG }));
     process.exit(0);
   }
 
-  // 增量备份保留 v3 折叠行为，便于只回滚“隐藏工具卡”；已有备份绝不覆盖。
+  // 增量备份保留变更前折叠行为；已有备份绝不覆盖。
   for (const file of [stage.file, pageServer, ...legacyPageWrites.map((item) => item.file), ...refEdits.map((item) => item.file)]) {
     const rel = path.relative(PKG, file);
     const dst = path.join(UPGRADE_BACKUP, rel);
@@ -216,7 +219,7 @@ if (stage) {
   // 不删 stage.file：运行中的 Next 进程可能仍返回旧 hash；保留旧 chunk 才能零中断。
   console.log(JSON.stringify({
     status: "upgraded", from: stage.name, target: "v4", chunk: { from: `page-${stage.hash}.js`, to: `page-${needsRename ? TARGET : stage.hash}.js` }, edits,
-    hideAgentToolCalls: true, pageRenamed: needsRename, previousPageRetained: needsRename,
+    agentToolCallsVisible: true, pageRenamed: needsRename, previousPageRetained: needsRename,
     legacyPagesPatched: legacyPageWrites.length, refFilesRenamed: refEdits.length, upgradeBackup: UPGRADE_BACKUP, pkg: PKG,
   }));
   process.exit(0);
@@ -257,10 +260,9 @@ function patchBundle(src, label) {
   const r2c = applyR2c(out, label);
   if (!r2c.applied) die(label + ": R2c 未生效");
   out = r2c.out;
-  const r3 = applyR3(out, label);
-  if (!r3.applied) die(label + ": R3 工具卡过滤未生效");
-  out = r3.out;
-  return { out, idents: { jsx, pdg, tr, ey, em, refsMap, msgRefs }, hideAgentToolCalls: true };
+  const visibility = applyToolVisibility(out, label);
+  out = visibility.out;
+  return { out, idents: { jsx, pdg, tr, ey, em, refsMap, msgRefs }, agentToolCallsVisible: true };
 }
 
 const clientSrc = fs.readFileSync(pageClientOld, "utf8");
@@ -269,8 +271,7 @@ const layoutSrc = fs.readFileSync(layoutOld, "utf8");
 
 const client = patchBundle(clientSrc, "client");
 const server = patchBundle(serverSrc, "server");
-const legacyClient = applyR3(clientSrc, "legacy-client");
-if (!legacyClient.applied) die("legacy-client: R3 工具卡过滤未生效");
+const legacyClient = applyToolVisibility(clientSrc, "legacy-client");
 
 const SW_OLD = `encodeURIComponent("${VERSION}")`;
 const swCount = layoutSrc.split(SW_OLD).length - 1;
@@ -307,8 +308,8 @@ const summary = {
   status: CHECK ? "check-ok" : "patched",
   pkg: PKG, version: VERSION, mark: SW_MARK,
   idents: { client: client.idents, server: server.idents },
-  hideAgentToolCalls: client.hideAgentToolCalls && server.hideAgentToolCalls,
-  legacyPagesPatched: legacyClient.applied,
+  agentToolCallsVisible: client.agentToolCallsVisible && server.agentToolCallsVisible,
+  legacyPagesUpdated: legacyClient.applied,
   swAnchor: swCount,
   rename: { [`page-${PAGE_OLD}`]: `page-${PAGE_NEW}`, [`layout-${LAY_OLD}`]: `layout-${LAY_NEW}` },
   refEdits: refEdits.map((e) => ({ file: path.relative(PKG, e.f), page: e.cPage, layout: e.cLay })),
@@ -326,7 +327,7 @@ for (const f of toBackup) {
   fs.copyFileSync(f, dst);
 }
 
-// ---------- 落盘（新名写入→引用替换；旧 chunk 同样隐藏工具卡并保留给运行中的旧进程） ----------
+// ---------- 落盘（新名写入→引用替换；旧 chunk 保持工具卡可见并留给运行中的旧进程） ----------
 fs.writeFileSync(pageClientNew, client.out);
 fs.writeFileSync(pageClientOld, legacyClient.out);
 fs.writeFileSync(layoutNew, layoutPatched);

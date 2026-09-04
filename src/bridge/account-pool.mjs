@@ -332,15 +332,19 @@ export function createAccountPool(options) {
 // 需用它重建下游响应）；pinnedUnavailable 时返回 { pinnedUnavailable }，由调用方
 // 合成 429 显式报错。
 export async function sendWithAccountFailover({ pool, headers, send, applyIdentity, drain, decode, log = () => {} }) {
-  if (!pool) return { response: await send(headers), account: null, drained: null };
+  if (!pool) return { response: await send(headers), account: null, drained: null, attempts: 1, accountsTried: ["downstream"] };
   let account = await pool.pick(new Set()).catch(() => null);
-  if (account?.pinnedUnavailable) return { pinnedUnavailable: account };
-  if (!account) return { response: await send(headers), account: null, drained: null };
+  if (account?.pinnedUnavailable) return { pinnedUnavailable: account, attempts: 0, accountsTried: [] };
+  if (!account) return { response: await send(headers), account: null, drained: null, attempts: 1, accountsTried: ["downstream"] };
   const tried = new Set([account.id]);
+  const accountsTried = [];
+  let attempts = 0;
   for (;;) {
+    attempts += 1;
+    accountsTried.push(account.id);
     const response = await send(applyIdentity(headers, account));
     const status = response.statusCode;
-    if (status !== 429 && status !== 401) return { response, account, drained: null };
+    if (status !== 429 && status !== 401) return { response, account, drained: null, attempts, accountsTried };
     const raw = await drain(response);
     const text = decode(raw, response.headers);
     log(`上游 HTTP ${status} 账号=${account.id} ${text.slice(0, 200)}`);
@@ -360,6 +364,6 @@ export async function sendWithAccountFailover({ pool, headers, send, applyIdenti
         continue;
       }
     }
-    return { response, account, drained: { raw, text } };
+    return { response, account, drained: { raw, text }, attempts, accountsTried };
   }
 }
