@@ -75,6 +75,7 @@ node tools/deploy-rules-remote.mjs --host user@host --remote-root D:/path/to/pi-
 6. launcher 同时守护 Pi Web 与 `run-supervisor`;对外地址仍是 `127.0.0.1:30141`，但先进入 supervisor 的透明持久化代理，Pi Web 私有上游改为 `127.0.0.1:30140`。这样 prompt 在转发前已写入 `data/run-supervisor/state.json`，不受 Pi“首个 assistant 前不落 session JSONL”的窗口影响。Pi Web 异常退出会原位重启，健康面默认 `http://127.0.0.1:30142/health`，事件证据写入 `data/run-supervisor.log`。同一叶节点只投递一次恢复，连续三次相同失败转 `blocked`；UI Abort、显式 `/lop-goal-cancel`、`取消当前目标` 或 `停止自动续跑` 会写 durable cancel marker 并禁止恢复。
 7. 输入框支持直接粘贴系统文件：图片沿用图片附件链，普通文件在浏览器无法暴露绝对路径时上传到当前会话目录并插入 `@文件` 引用（单文件 25 MB、单次 100 MB；重名自动改名，绝不覆盖），文件与文本混合粘贴会保留文本。聊天离开底部时会显示 30 px 的“回到底部”悬浮按钮，到底后自动隐藏。扩展明确标为 `display:false` 的内部消息只保留在会话/模型上下文中，不渲染任何消息框；可见扩展消息与普通消息不受影响。模型生成中的用户可见推理摘要保留并默认展开，只有已结束且内容为空的推理块会被过滤。桌面端每个非空会话始终显示对话节点侧栏：真实用户问题与 `stop` 终答分别作为 Q/A 节点，工具小轮次与恢复控制消息不计；节点压成单行，索引覆盖完整活动分支并可滚动查看、点击定位。
 8. 会话列表的垃圾桶语义已整体替换为“归档”：归档只原子更新 `data/.pi/agent/session-archive.json` sidecar，原生 `sessions/**/*.jsonl` 保持原路径、原字节；顶部归档按钮可查看并恢复。旧客户端即使发出 `DELETE /api/sessions/:id` 也只会进入非破坏性归档兼容路径，不会到达 Pi Web 的硬删除 API。归档会话继续由 Pi `SessionManager` 读取并由 Pi/GPT 共用历史层检索；从归档会话继续发送消息时会先自动恢复。
+9. Worktree 切换器作为项目分类使用：始终显示 main，并自动显示 Pi Web 在 `<repo>-worktrees/` 下创建或复用的分类分支（包括“历史对话”和用户从“新建 worktree”创建的分支）；Claude/Codex 等智能体在其他位置生成的临时 worktree 不显示。过滤只影响切换器，不删除分支、worktree 或其历史会话；分类由既有路径约定自动发现，无额外注册表或同步维护点。
 
 无头验证(SSH 远程,不开窗口):`runtime\node.exe tools\remote-verify.mjs "<测试 prompt>"`——出口/桥 health/pi 全链/S6 预审日志一次回显。
 

@@ -98,6 +98,47 @@
     return url.href;
   }
 
+  function normalizeWorktreePath(value) {
+    return String(value ?? "").replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
+  }
+
+  // Treat Pi Web's own <repo>-worktrees directory as the project-category
+  // namespace. Agent-created checkouts elsewhere (for example
+  // .claude/worktrees) remain usable by their sessions, but never clutter the
+  // category switcher. This is derived from paths, so there is no registry to
+  // maintain and existing user-created worktrees are discovered automatically.
+  function filterProjectCategoryWorktrees(body) {
+    if (!body || typeof body !== "object" || typeof body.projectRoot !== "string" || !Array.isArray(body.worktrees)) {
+      throw new Error("unexpected /api/worktrees response shape");
+    }
+    const projectRoot = normalizeWorktreePath(body.projectRoot);
+    if (!projectRoot) throw new Error("project root is empty");
+    const categoryRoot = `${projectRoot}-worktrees/`;
+    const worktrees = body.worktrees.filter((worktree) => (
+      worktree?.isMain === true || normalizeWorktreePath(worktree?.path).startsWith(categoryRoot)
+    ));
+    const mainWorktree = worktrees.find((worktree) => worktree?.isMain === true);
+    if (!mainWorktree?.path) throw new Error("main worktree is missing");
+    const visiblePaths = new Set(worktrees.map((worktree) => normalizeWorktreePath(worktree?.path)));
+    const currentWorktreePath = visiblePaths.has(normalizeWorktreePath(body.currentWorktreePath))
+      ? body.currentWorktreePath
+      : mainWorktree.path;
+    return { ...body, currentWorktreePath, worktrees };
+  }
+
+  async function projectCategoryWorktreeResponse(response) {
+    const body = filterProjectCategoryWorktrees(await response.clone().json());
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    headers.set("content-type", "application/json; charset=utf-8");
+    return new Response(JSON.stringify(body), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
   function showError(message) {
     if (!document.body) return;
     document.querySelector("[data-pi-session-archive-toast]")?.remove();
@@ -113,6 +154,9 @@
   window.fetch = async function piSessionArchiveFetch(input, init) {
     const url = requestUrl(input);
     const requestMethod = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+    const isWorktreeListRequest = Boolean(
+      url && url.origin === window.location.origin && url.pathname === "/api/worktrees" && requestMethod === "GET"
+    );
     let method = requestMethod;
     let action = "";
     let requestedListView = "";
@@ -151,8 +195,23 @@
         console.error("[pi-web archive]", message);
         restoreOptimisticAction(pendingAction);
         showError(message);
+      } else if (isWorktreeListRequest) {
+        console.error("[pi-web worktrees] list request failed:", error);
       }
       throw error;
+    }
+    if (isWorktreeListRequest) {
+      if (!response.ok) {
+        console.error(`[pi-web worktrees] list request returned HTTP ${response.status}`);
+      } else {
+        try {
+          response = await projectCategoryWorktreeResponse(response);
+        } catch (error) {
+          // Fail open so an upstream response-shape change does not break the
+          // selector, but never make the visibility policy fail silently.
+          console.error("[pi-web worktrees] visibility filter failed:", error);
+        }
+      }
     }
     // A delete callback refresh and an immediate archive-view toggle can overlap.
     // Never let the older view's slower response overwrite the current React list.
