@@ -1,6 +1,6 @@
 // 受管双机同步（YANGYONG ↔ DESKTOP-3EGB4LB），一条命令完成：对端备份 → 传输 → 读回 SHA256 比对 → 代码顺带 node --check。
 // 用法：
-//   node peer-sync.mjs push <文件...>            整文件同步（仓库、~/.pi/agent、~/.claude 三棵树按主机名自动映射到对端路径）
+//   node peer-sync.mjs push <文件...>            整文件同步（三棵已知树自动映射；其他目录按相同绝对路径同步，仅处理显式指定文件）
 //   node peer-sync.mjs patch <文件> < spec.json   只同步改动行：stdin 为 {"old":"...","new":"..."} 或其数组，每个锚点在对端必须恰好一处；
 //                                                适用于 AGENTS.md / CLAUDE.md 这类含机器特有内容、不能整文件覆盖的文件
 //   node peer-sync.mjs status                     打印映射与 SSH 连通性
@@ -32,7 +32,7 @@ export const SITES = {
 };
 export const PEER_OF = { yangyong: "desktop-3egb4lb", "desktop-3egb4lb": "yangyong" };
 const SSH_USER = "lop";
-const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR"];
+const SSH_OPTS = ["-i", "C:/Users/lop/.ssh/id_ed25519", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR"];
 const CHECKABLE_RE = /\.(mjs|cjs|js)$/iu;
 
 const norm = (p) => String(p).replace(/\\/g, "/").replace(/\/+$/u, "");
@@ -45,7 +45,7 @@ export function localSiteName(hostname = os.hostname()) {
   return name;
 }
 
-/** 本机路径（或别名）→ { local, remote, tree }；三棵树之外的路径拒绝，避免把随手文件推到对端。junction/符号链接两侧都按 realpath 比。 */
+/** 已知树按根映射，其他目录使用相同绝对路径；junction/符号链接按 realpath 比，不递归扫描目录。 */
 export function mapPath(input, siteName = localSiteName(), { realpath = realOrSelf } = {}) {
   const site = SITES[siteName];
   const peer = SITES[PEER_OF[siteName]];
@@ -61,7 +61,7 @@ export function mapPath(input, siteName = localSiteName(), { realpath = realOrSe
       return { local: abs, remote: rel ? `${peer[tree]}/${rel}` : peer[tree], tree };
     }
   }
-  throw new Error(`不在受管三棵树内（仓库/agent/claude）：${abs}`);
+  return { local: abs, remote: abs, tree: "absolute" };
 }
 
 const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
@@ -71,15 +71,15 @@ const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 function ssh(host, body, { allowFail = false } = {}) {
   const full = `[Console]::OutputEncoding=[Text.Encoding]::UTF8\n$ErrorActionPreference='Continue'\n${body}`;
   const encoded = Buffer.from(full, "utf16le").toString("base64");
-  const r = spawnSync("ssh", [...SSH_OPTS, `${SSH_USER}@${host}`, `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`], { encoding: "utf8" });
+  const r = spawnSync("ssh", [...SSH_OPTS, `${SSH_USER}@${host}`, `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`], { encoding: "utf8", windowsHide: true });
   if (r.status !== 0 && !allowFail) throw new Error(`ssh 失败(${r.status})：${String(r.stderr || r.stdout).trim().slice(0, 200)}`);
   return String(r.stdout || "");
 }
 function scpTo(host, local, remote) {
-  execFileSync("scp", ["-q", ...SSH_OPTS, local, `${SSH_USER}@${host}:${norm(remote)}`], { stdio: ["ignore", "pipe", "pipe"] });
+  execFileSync("scp", ["-q", ...SSH_OPTS, local, `${SSH_USER}@${host}:${norm(remote)}`], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 function scpFrom(host, remote, local) {
-  execFileSync("scp", ["-q", ...SSH_OPTS, `${SSH_USER}@${host}:${norm(remote)}`, local], { stdio: ["ignore", "pipe", "pipe"] });
+  execFileSync("scp", ["-q", ...SSH_OPTS, `${SSH_USER}@${host}:${norm(remote)}`, local], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 
 /** 对端：目录保证存在；已有文件做 .bak-<ts>-<label> 备份；返回每个文件一行（BAK 路径 / NEW / FAIL）。 */
@@ -87,7 +87,7 @@ function scpFrom(host, remote, local) {
 function remotePrepare(host, remotes, label) {
   const list = remotes.map((r) => psq(winPath(r))).join(",");
   const body = `$ts=Get-Date -Format 'yyyyMMdd-HHmmss'
-foreach ($p in @(${list})) { try { New-Item -ItemType Directory -Force -Path (Split-Path -LiteralPath $p) | Out-Null; if (Test-Path -LiteralPath $p) { $d=$p+'.bak-'+$ts+'-${label}'; Copy-Item -LiteralPath $p -Destination $d -Force; 'BAK '+$d } else { 'NEW' } } catch { 'FAIL '+$_ } }`;
+foreach ($p in @(${list})) { try { New-Item -ItemType Directory -Force -Path (Split-Path -LiteralPath $p) -ErrorAction Stop | Out-Null; if (Test-Path -LiteralPath $p) { $d=$p+'.bak-'+$ts+'-${label}'; Copy-Item -LiteralPath $p -Destination $d -ErrorAction Stop; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $p -ErrorAction Stop).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $d -ErrorAction Stop).Hash) { throw 'backup hash mismatch' }; 'BAK '+$d } else { 'NEW' } } catch { 'FAIL '+$_ } }`;
   return ssh(host, body).trim().split(/\r?\n/).filter(Boolean);
 }
 /** 对端：每个文件一行 "<sha256>[ check=<exit>]"；.mjs/.cjs/.js 顺带对端 node --check。 */
@@ -104,6 +104,7 @@ export function runPush(files, { siteName = localSiteName(), label = "pre-sync" 
   const items = files.map((f) => mapPath(f, siteName));
   for (const it of items) if (!fs.existsSync(it.local) || !fs.statSync(it.local).isFile()) throw new Error(`本机文件不存在：${it.local}`);
   const prepared = remotePrepare(peer.host, items.map((i) => i.remote), label);
+  if (prepared.length !== items.length || prepared.some((line) => !/^(BAK |NEW$)/u.test(line))) throw new Error(`对端备份失败，未传输：${prepared.join("; ")}`);
   for (const it of items) scpTo(peer.host, it.local, it.remote);
   const verify = remoteVerify(peer.host, peer, items.map((i) => i.remote));
   let failed = 0;
@@ -144,6 +145,7 @@ export function runPatch(file, spec, { siteName = localSiteName(), label = "pre-
   const out = raw.includes("\r\n") ? patched.replace(/\n/g, "\r\n") : patched;
   fs.writeFileSync(tmp, out, "utf8");
   const prepared = remotePrepare(peer.host, [it.remote], label);
+  if (prepared.length !== 1 || !/^(BAK |NEW$)/u.test(prepared[0])) throw new Error(`对端备份失败，未传输：${prepared.join("; ")}`);
   scpTo(peer.host, tmp, it.remote);
   const [line] = remoteVerify(peer.host, peer, [it.remote]);
   const expect = sha256(fs.readFileSync(tmp));
@@ -158,6 +160,7 @@ function runStatus(siteName = localSiteName()) {
   const peer = SITES[peerName];
   console.log(`本机 ${siteName} → 对端 ${peerName} (${peer.host})`);
   for (const tree of ["repo", "agent", "claude"]) console.log(`  ${tree.padEnd(6)} ${SITES[siteName][tree]}  ->  ${peer[tree]}`);
+  console.log("  其他目录：相同绝对路径（仅显式指定文件，不递归）");
   const out = ssh(peer.host, "$env:COMPUTERNAME", { allowFail: true }).trim();
   console.log(out ? `  SSH ok: ${out}` : "  SSH 不通");
   return out ? 0 : 1;
@@ -172,7 +175,7 @@ if (isMain) {
   try {
     const labelIdx = rest.indexOf("--label");
     const label = labelIdx >= 0 ? String(rest[labelIdx + 1] || "sync").replace(/[^\w.-]+/g, "-") : undefined;
-    const files = rest.filter((a, i) => a !== "--label" && i !== labelIdx + 1);
+    const files = rest.filter((a, i) => labelIdx < 0 || (i !== labelIdx && i !== labelIdx + 1));
     const opts = label ? { label } : {};
     if (cmd === "push" && files.length) process.exit(runPush(files, opts) ? 1 : 0);
     if (cmd === "patch" && files.length === 1) process.exit(runPatch(files[0], JSON.parse(fs.readFileSync(0, "utf8")), opts));

@@ -33,8 +33,14 @@ test("别名 AGENTS / CLAUDE 与反斜杠路径", () => {
   assert.equal(mapPath("C:\\Users\\lop\\Documents\\claude\\pi-portable\\assets\\bash-prelude.sh", "yangyong", { realpath: identity }).remote, "D:/Downloads/pi-protable/assets/bash-prelude.sh");
 });
 
-test("三棵树之外拒绝，避免误推随手文件", () => {
-  assert.throws(() => mapPath("C:/Users/lop/Downloads/x.txt", "yangyong", { realpath: identity }), /不在受管三棵树内/u);
+test("所有目录可用：已知树之外按相同绝对路径同步，双向一致", () => {
+  for (const site of Object.keys(SITES)) {
+    for (const file of ["C:/Users/lop/Downloads/x.txt", "C:/Users/lop/AppData/Roaming/npm/system-prompt.js", "D:/其它目录/有 空格.txt"]) {
+      assert.deepEqual(mapPath(file, site, { realpath: identity }), { local: file, remote: file, tree: "absolute" });
+    }
+  }
+  const sibling = "C:/Users/lop/Documents/claude/pi-portable-other/x.txt";
+  assert.equal(mapPath(sibling, "yangyong", { realpath: identity }).tree, "absolute");
 });
 
 test("patch：锚点恰好一处才改，替换文本里的 $ 不被当作替换模式", () => {
