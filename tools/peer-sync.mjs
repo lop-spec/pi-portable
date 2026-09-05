@@ -83,22 +83,19 @@ function scpFrom(host, remote, local) {
 }
 
 /** 对端：目录保证存在；已有文件做 .bak-<ts>-<label> 备份；返回每个文件一行（BAK 路径 / NEW / FAIL）。 */
+// 对端脚本用"路径数组 + 循环"：多文件时 -EncodedCommand 的体积只随路径长度增长(Windows 命令行上限 8191 字符)。
 function remotePrepare(host, remotes, label) {
-  const lines = remotes.map((r) => {
-    const p = psq(winPath(r));
-    const dir = psq(winPath(path.posix.dirname(norm(r))));
-    return `try { New-Item -ItemType Directory -Force -Path ${dir} | Out-Null; if (Test-Path -LiteralPath ${p}) { $d=${p}+'.bak-'+$ts+'-${label}'; Copy-Item -LiteralPath ${p} -Destination $d -Force; 'BAK '+$d } else { 'NEW' } } catch { 'FAIL '+$_ }`;
-  });
-  return ssh(host, `$ts=Get-Date -Format 'yyyyMMdd-HHmmss'\n${lines.join("\n")}`).trim().split(/\r?\n/).filter(Boolean);
+  const list = remotes.map((r) => psq(winPath(r))).join(",");
+  const body = `$ts=Get-Date -Format 'yyyyMMdd-HHmmss'
+foreach ($p in @(${list})) { try { New-Item -ItemType Directory -Force -Path (Split-Path -LiteralPath $p) | Out-Null; if (Test-Path -LiteralPath $p) { $d=$p+'.bak-'+$ts+'-${label}'; Copy-Item -LiteralPath $p -Destination $d -Force; 'BAK '+$d } else { 'NEW' } } catch { 'FAIL '+$_ } }`;
+  return ssh(host, body).trim().split(/\r?\n/).filter(Boolean);
 }
 /** 对端：每个文件一行 "<sha256>[ check=<exit>]"；.mjs/.cjs/.js 顺带对端 node --check。 */
 function remoteVerify(host, peerSite, remotes) {
-  const lines = remotes.map((r) => {
-    const p = psq(winPath(r));
-    const check = CHECKABLE_RE.test(r) ? `& ${psq(winPath(peerSite.node))} --check ${p} 2>&1 | Out-Null; $c=' check='+$LASTEXITCODE` : "$c=''";
-    return `try { $h=(Get-FileHash -Algorithm SHA256 -LiteralPath ${p}).Hash.ToLower(); ${check}; $h+$c } catch { 'FAIL '+$_ }`;
-  });
-  return ssh(host, lines.join("\n")).trim().split(/\r?\n/).filter(Boolean);
+  const list = remotes.map((r) => psq(winPath(r))).join(",");
+  const body = `$node=${psq(winPath(peerSite.node))}
+foreach ($p in @(${list})) { try { $h=(Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLower(); $c=''; if ($p -match '\\.(mjs|cjs|js)$') { & $node --check $p 2>&1 | Out-Null; $c=' check='+$LASTEXITCODE }; $h+$c } catch { 'FAIL '+$_ } }`;
+  return ssh(host, body).trim().split(/\r?\n/).filter(Boolean);
 }
 
 export function runPush(files, { siteName = localSiteName(), label = "pre-sync" } = {}) {
