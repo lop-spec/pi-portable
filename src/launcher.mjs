@@ -488,7 +488,7 @@ async function main() {
   // recovery、扩展消息或工具卡的补丁，模型上下文及工具过程对用户保持可见。
   // chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-conversation-nodes.mjs"]) {
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-service-tier.mjs", "patch-piweb-conversation-nodes.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });

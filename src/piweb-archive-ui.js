@@ -718,6 +718,14 @@
   }
 
   function findAnchor() {
+    // The model selector is a stable composer anchor; sound controls are optional.
+    const model = [...document.querySelectorAll(".model-selector.is-toolbar")]
+      .filter(isVisible)
+      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    if (model) {
+      const rect = model.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    }
     const soundNames = new Set([
       "Disable completion sound", "Enable completion sound",
       "关闭完成提示音", "开启完成提示音",
@@ -751,7 +759,7 @@
       state.panel.style.visibility = "hidden";
       return;
     }
-    const left = Math.max(8, anchor.left - 38);
+    const left = Math.max(8, anchor.left - (document.getElementById("pi-service-tier-button") ? 74 : 38));
     state.host.style.left = `${left}px`;
     state.host.style.top = `${anchor.top}px`;
     state.host.style.visibility = "visible";
@@ -1093,4 +1101,114 @@
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
   else start();
+})();
+
+(() => {
+  "use strict";
+  if (window.__piServiceTierUi) return;
+  window.__piServiceTierUi = true;
+  const KEY = "pi-service-tier";
+  const choices = [
+    ["native", "默认", "不指定 TIER，遵循原生行为"],
+    ["default", "Standard", "标准速度 / 标准用量"],
+    ["priority", "Fast", "优先处理 / 更高用量"],
+    ["flex", "Flex", "弹性处理 / 可能更慢"],
+  ];
+  let selected = "native", explicitSelection = false, button, panel, note;
+  try { const saved = localStorage.getItem(KEY); explicitSelection = saved !== null; selected = saved || "native"; }
+  catch (error) { console.error("[pi-web service tier] preference read failed:", error); }
+  if (!choices.some(([value]) => value === selected)) {
+    console.warn("[pi-web service tier] invalid saved tier; using native:", selected);
+    selected = "native";
+  }
+  const fetchNative = window.fetch.bind(window);
+  window.fetch = async function piServiceTierFetch(input, init) {
+    let url, command;
+    try {
+      url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = init?.method || (input instanceof Request ? input.method : "GET");
+      if (url.origin === location.origin && method.toUpperCase() === "POST" && /^\/api\/agent\/(?!new$)[^/]+$/.test(url.pathname)) {
+        const body = init?.body ?? (input instanceof Request ? await input.clone().text() : null);
+        if (typeof body === "string") command = JSON.parse(body);
+      }
+    } catch (error) { console.error("[pi-web service tier] request inspection failed:", error); }
+    if (explicitSelection && command && ["prompt", "steer", "follow_up"].includes(command.type)) {
+      // Reapply the explicit preference on every submission so resumed/recreated
+      // sessions cannot display Fast while silently running at native speed.
+      try {
+        const response = await fetchNative(url.href, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "set_service_tier", serviceTier: selected === "native" ? null : selected }),
+          signal: init?.signal,
+        });
+        const result = await response.json();
+        if (!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+      } catch (error) {
+        console.error("[pi-web service tier] selection not applied:", error);
+        if (note) note.textContent = `TIER 未生效：${error.message}。后端补丁需在服务重载后生效。`;
+        return new Response(JSON.stringify({ error: `TIER 未生效：${error.message}`, code: "prompt_rejected", accepted: false }), { status: 409, headers: { "Content-Type": "application/json" } });
+      }
+    }
+    return fetchNative(input, init);
+  };
+
+  function position() {
+    const anchor = [...document.querySelectorAll(".model-selector.is-toolbar")].find(e => e.getBoundingClientRect().width > 0);
+    if (!button) return;
+    button.hidden = !anchor;
+    if (!anchor) { panel.hidden = true; return; }
+    const rect = anchor.getBoundingClientRect();
+    button.style.left = `${Math.max(8, rect.left - 36)}px`;
+    button.style.top = `${rect.top}px`;
+    panel.style.right = `${Math.max(8, innerWidth - rect.right)}px`;
+    panel.style.bottom = `${Math.max(8, innerHeight - rect.top + 8)}px`;
+  }
+  function render() {
+    const choice = choices.find(([value]) => value === selected);
+    button.title = `速度 / TIER：${choice[1]}`;
+    button.setAttribute("aria-label", button.title);
+    button.dataset.tier = selected;
+    for (const item of panel.querySelectorAll("button[data-tier]")) item.setAttribute("aria-checked", String(item.dataset.tier === selected));
+  }
+  function start() {
+    const style = document.createElement("style");
+    style.textContent = `
+      #pi-service-tier-button{position:fixed;z-index:2147482500;width:32px;height:32px;padding:7px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}
+      #pi-service-tier-button:hover,#pi-service-tier-button[aria-expanded=true]{background:var(--bg-hover);color:var(--text)}
+      #pi-service-tier-button[data-tier=priority]{color:var(--accent)}
+      #pi-service-tier-panel{position:fixed;z-index:2147482501;width:250px;max-width:calc(100vw - 16px);padding:6px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px #0002;font:12px/1.5 system-ui}
+      #pi-service-tier-panel button{display:block;width:100%;padding:8px;border:0;border-radius:6px;text-align:left;background:transparent;color:inherit;cursor:pointer;font:inherit}
+      #pi-service-tier-panel button:hover,#pi-service-tier-panel button[aria-checked=true]{background:var(--bg-hover)}
+      #pi-service-tier-panel button[aria-checked=true]{color:var(--accent)}
+      #pi-service-tier-panel button:disabled{opacity:.45;cursor:not-allowed}
+      #pi-service-tier-panel small{display:block;color:var(--text-muted)}
+      #pi-service-tier-panel p{margin:6px;padding:4px;color:var(--text-muted)}
+    `;
+    document.head.appendChild(style);
+    button = document.createElement("button");
+    button.id = "pi-service-tier-button";
+    button.type = "button";
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-expanded", "false");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "aria-hidden": "true" })) svg.setAttribute(key, value);
+    const bolt = document.createElementNS(svg.namespaceURI, "path");
+    bolt.setAttribute("d", "M13 2 4 14h7l-1 8 10-13h-7l1-7Z");
+    svg.appendChild(bolt); button.appendChild(svg);
+    panel = document.createElement("section"); panel.id = "pi-service-tier-panel"; panel.hidden = true; panel.setAttribute("role", "menu"); panel.setAttribute("aria-label", "速度 / TIER");
+    for (const [value, label, description] of choices) {
+      const item = document.createElement("button"); item.type = "button"; item.dataset.tier = value; item.setAttribute("role", "menuitemradio"); item.textContent = label;
+      const detail = document.createElement("small"); detail.textContent = description; item.appendChild(detail);
+      item.onclick = () => { selected = value; explicitSelection = true; try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); } render(); panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); };
+      panel.appendChild(item);
+    }
+    const ultra = document.createElement("button"); ultra.type = "button"; ultra.disabled = true; ultra.textContent = "Ultrafast · 待上游确认支持"; ultra.title = "不能把未知的 ultrafast 参数伪装成 Fast"; panel.appendChild(ultra);
+    note = document.createElement("p"); note.textContent = "下次发送时生效，不改变正在生成的请求。"; panel.appendChild(note);
+    button.onclick = () => { panel.hidden = !panel.hidden; button.setAttribute("aria-expanded", String(!panel.hidden)); position(); if (!panel.hidden) panel.querySelector('[aria-checked="true"]')?.focus(); };
+    document.addEventListener("pointerdown", event => { if (!panel.contains(event.target) && !button.contains(event.target)) { panel.hidden = true; button.setAttribute("aria-expanded", "false"); } });
+    document.addEventListener("keydown", event => { if (panel.hidden) return; if (event.key === "Escape") { panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = [...panel.querySelectorAll("button[data-tier]")]; const at = items.indexOf(document.activeElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length].focus(); } });
+    document.documentElement.append(button, panel); render(); position();
+    window.addEventListener("resize", position, { passive: true }); setInterval(position, 1000);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
 })();
