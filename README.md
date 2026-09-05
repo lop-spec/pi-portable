@@ -66,7 +66,8 @@ launcher 只应用以下补丁：
 - 文件粘贴、回到底部和显式 follow-up 入口；
 - 移除字面 `auto` 并显示实际 thinking 档位；
 - 展示模型 reasoning summary；
-- Q/A 对话节点。
+- Q/A 对话节点；
+- Worktree 作为会话分类：分类间记录隔离，main 保留未分类的智能体临时 worktree 历史，切换时卸载旧聊天和文件页。
 
 不再应用 `hide-recovered` 或 `hide-hidden-extension-messages`，模型上下文中的控制消息不得被 UI 静默隐藏。
 

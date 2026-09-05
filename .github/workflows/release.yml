@@ -40,6 +40,7 @@ jobs:
           node --test tests/piweb-archive-confirmation-contract.mjs
           node --test tests/piweb-worktree-visibility-contract.mjs
           node --test tests/piweb-account-usage-contract.mjs
+          node --test tests/patch-piweb-worktree-sessions-contract.mjs
           node --test tests/codex-overload-retry.mjs
           node tests/bridge-5xx-retry-e2e.mjs
           node tests/pi-pretool-contract.mjs
@@ -131,6 +132,7 @@ jobs:
           Copy-Item tools/patch-piweb-interactions.mjs stage/tools/patch-piweb-interactions.mjs
           Copy-Item tools/patch-piweb-drop-auto-thinking.mjs stage/tools/patch-piweb-drop-auto-thinking.mjs
           Copy-Item tools/patch-piweb-show-thinking.mjs stage/tools/patch-piweb-show-thinking.mjs
+          Copy-Item tools/patch-piweb-worktree-sessions.mjs stage/tools/patch-piweb-worktree-sessions.mjs
           Copy-Item tools/patch-piweb-conversation-nodes.mjs stage/tools/patch-piweb-conversation-nodes.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md
@@ -147,6 +149,7 @@ jobs:
           if (-not (Test-Path stage/tools/patch-piweb-interactions.mjs)) { throw "pi-web interactions patch missing" }
           if (-not (Test-Path stage/tools/patch-piweb-drop-auto-thinking.mjs)) { throw "pi-web drop-auto-thinking patch missing" }
           if (-not (Test-Path stage/tools/patch-piweb-show-thinking.mjs)) { throw "pi-web show-thinking patch missing" }
+          if (-not (Test-Path stage/tools/patch-piweb-worktree-sessions.mjs)) { throw "pi-web worktree-sessions patch missing" }
           if (-not (Test-Path stage/tools/patch-piweb-conversation-nodes.mjs)) { throw "pi-web conversation-nodes patch missing" }
           if (Test-Path stage/tools/patch-piweb-hide-recovered.mjs) { throw "retired hide-recovered patch must not ship" }
           if (Test-Path stage/tools/patch-piweb-hide-hidden-extension-messages.mjs) { throw "retired hidden-extension patch must not ship" }

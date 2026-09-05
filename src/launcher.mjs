@@ -443,10 +443,11 @@ async function main() {
   // 起 pi-web 前先把产物补丁钉在位:npm 升级/异机重装会还原 .next 产物,脚本均幂等
   // (已打 => already-patched 零写入;版本/锚点不符 => exit≠0 零写入)。失败只告警,按现有产物继续。
   // 顺序硬约束:fold 在前,draft-persist 其次,interactions 再按当前 chunk 寻锚;
-  // drop-auto/show-thinking/conversation-nodes 依次链尾；不再应用隐藏 recovery、扩展消息或工具卡的补丁，
-  // 模型上下文及工具过程对用户保持可见。chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
+  // drop-auto/show-thinking/worktree-sessions 依次执行，conversation-nodes 保持链尾；不再应用隐藏
+  // recovery、扩展消息或工具卡的补丁，模型上下文及工具过程对用户保持可见。
+  // chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-conversation-nodes.mjs"]) {
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-conversation-nodes.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
