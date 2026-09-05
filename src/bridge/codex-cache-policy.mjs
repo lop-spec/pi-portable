@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { gunzipSync, gzipSync, inflateSync } from 'node:zlib';
+import { gunzipSync, gzipSync, inflateSync, zstdDecompressSync } from 'node:zlib';
 
 const GPT56_MODEL = /^gpt-5\.6(?:-|$)/iu;
 const VOLATILE_DEVELOPER_TEXT = /<\/?(?:environment_context|history-resolved)\b|history-(?:used|conflict):/iu;
@@ -186,22 +186,35 @@ export function rewriteCodexRequestBody(body, headers, { explicitBreakpoint = tr
   try {
     const encoding = String(headerValue(headers, 'content-encoding') || '').toLowerCase();
     let raw = body;
-    if (encoding.includes('gzip')) raw = gunzipSync(body);
-    else if (encoding.includes('deflate')) raw = inflateSync(body);
+    let decodedEncoding = '';
+    if (encoding.includes('gzip')) {
+      raw = gunzipSync(body);
+      decodedEncoding = 'gzip';
+    } else if (encoding.includes('deflate')) {
+      raw = inflateSync(body);
+      decodedEncoding = 'deflate';
+    } else if (encoding.includes('zstd')) {
+      raw = zstdDecompressSync(body);
+      decodedEncoding = 'zstd';
+    }
     const original = JSON.parse(raw.toString('utf8'));
     const { payload, cache } = applyCodexRequestPolicy(original, { explicitBreakpoint });
     // tier 只读不改:请求带什么 service_tier 就透传什么(是否被授予以 tok/s 判)。
     const effectiveTier = Object.prototype.hasOwnProperty.call(payload, 'service_tier')
       ? payload.service_tier
       : null;
+    // Native openai-codex uses zstd. Even when cache policy does not apply (for
+    // example a newly published major), normalize the successfully decoded JSON
+    // so compatibility stripping and model fallback can inspect it downstream.
     if (!cache.applied) {
       return {
-        body,
-        headers,
+        body: decodedEncoding ? raw : body,
+        headers: decodedEncoding ? removeHeader(headers, 'content-encoding') : headers,
         meta: {
           parseFailed: false,
           cacheApplied: false,
           effectiveTier,
+          decodedEncoding,
           cache,
         },
       };
@@ -213,6 +226,7 @@ export function rewriteCodexRequestBody(body, headers, { explicitBreakpoint = tr
         parseFailed: false,
         cacheApplied: cache.applied,
         effectiveTier,
+        decodedEncoding,
         cache,
       },
     };
@@ -224,6 +238,7 @@ export function rewriteCodexRequestBody(body, headers, { explicitBreakpoint = tr
         parseFailed: true,
         cacheApplied: false,
         effectiveTier: null,
+        decodedEncoding: '',
         cache: null,
       },
     };

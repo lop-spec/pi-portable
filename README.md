@@ -29,6 +29,7 @@ Windows 上的便携 pi-web 运行面：原生 Pi AgentSession、ChatGPT Codex R
 - `src/piweb-archive-ui.js`：会话归档和账号用量界面。归档只更新 sidecar，不删除原生 session JSONL。
 - `src/bridge/codex-responses-proxy.mjs`：Responses 协议桥、账号池、出口、缓存键、首输出前有界重试和执行观测。
 - `src/bridge/account-pool.mjs`：账号 sticky、冷却、刷新及手动切号。
+- `src/live-model-catalog.mjs`：把 8794 接到 Pi 原生 `openai-codex` 动态目录；旧 `codex-bridge` 保留给历史会话恢复。
 - `src/lop-pretool.ts`：Pi 扩展壳；私有规则位于运行机 `.pi/agent/data/rules-pretool.mjs`，不随公开发行包分发。
 - `src/extensions/lop-followup.ts`：用户主动选择“彻底/达标/根因/根治/计划”后才运行；手动输入、模型异常、会话恢复或达到 8 轮上限时暂停。
 - `assets/bash-prelude.sh`：只定义静默 SSH helper，不裁剪工具输出。
@@ -45,10 +46,12 @@ Windows 上的便携 pi-web 运行面：原生 Pi AgentSession、ChatGPT Codex R
 
 它不注入 prompt、不调用模型、不读写验收/目标状态，也不改变 retry、compaction 或 Stop。规则缺失会 fail-open 并写一行日志；自动修复失败会阻止原错误命令执行。
 
-### 账号与过载
+### 模型、账号与过载
 
+- 模型按钮读取 Pi 官方动态目录：固定展示 `gpt-5.6-sol`、`gpt-5.6-terra`，并自动纳入 GPT 6 及后续大版本；打开按钮会强制刷新，不靠手工改 `models.json`。
+- 初次迁移的全局默认是 `gpt-5.6-sol`；按钮切换通过 Pi 原生 `setModel(..., { persist: true })` 写入全局默认，新会话继承，已有会话继续以自身 `model_change` 为准。
 - 账号池保留自动 sticky、401/429 冷却和切换，也允许用户从额度面板即时切号。
-- `gpt-5.6-sol` 只在首个有效输出前因明确 overload/5xx 按 `terra → luna → reserve` 有界 fallback。
+- `gpt-5.6-sol` 只在首个有效输出前因明确 overload/5xx 按 `terra → luna → reserve` 有界 fallback；显式选择 Terra 或新模型不会被静默改回 Sol。
 - reasoning、文本或工具调用一旦开始输出，本次响应即 committed，之后不重放。
 - bridge 是该 provider 的重试责任层；Pi agent-level retry 在运行配置中关闭，避免跨层乘法重试。
 - 响应头和 metrics 记录 requested/upstream model、实际账号、出口和尝试数，不记录 token 或 prompt 正文。
@@ -64,6 +67,7 @@ launcher 只应用以下补丁：
 - 历史过程折叠，但工具卡保持可见；
 - 输入草稿持久化；
 - 文件粘贴、回到底部和显式 follow-up 入口；
+- 模型按钮实时刷新 Pi 原生目录，并把显式选择持久化为全局默认；
 - 移除字面 `auto` 并显示实际 thinking 档位；
 - 展示模型 reasoning summary；
 - Q/A 对话节点；
@@ -103,12 +107,14 @@ pi-portable-launcher.exe
 node tests/launcher-portable-node-contract.mjs
 node --test tests/piweb-ui-proxy.mjs tests/hard-restart-contract.mjs
 node --test tests/account-pool-contract.mjs tests/account-usage-contract.mjs
+node --test tests/codex-model-catalog-contract.mjs tests/live-model-catalog-contract.mjs
 node --test tests/codex-overload-retry.mjs
 node tests/bridge-5xx-retry-e2e.mjs
 node tests/pi-pretool-contract.mjs
 node --test tests/patch-piweb-fold-contract.mjs
 node --test tests/patch-piweb-draft-persist-contract.mjs
 node --test tests/patch-piweb-interactions-contract.mjs
+node --test tests/patch-piweb-live-models-contract.mjs
 node --test tests/patch-piweb-drop-auto-thinking-contract.mjs
 node --test tests/patch-piweb-show-thinking-contract.mjs
 node --test tests/patch-piweb-conversation-nodes-contract.mjs

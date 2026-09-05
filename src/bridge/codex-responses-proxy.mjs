@@ -30,6 +30,7 @@ import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-
 import { createModelFallbackPlan, requestWithOverloadRetry, RETRYABLE_UPSTREAM_STATUS } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
 import { createAccountUsageMonitor, readAccountUsageIdentity } from "./account-usage.mjs";
+import { codexModelsUpstreamPath, DEFAULT_CODEX_MODELS_CLIENT_VERSION, modelCatalogResponseHeaders } from "./codex-model-catalog.mjs";
 import { appendLineRotating } from "../log-rotate.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
@@ -45,7 +46,7 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 // (协议文本移入 pi AGENTS.md 管理块,桥部署不再作废会话前缀)、response memo 精确重放、
 // history 快路 reasoning 改写、tier 兜底——三样从未在真实流量里起作用,却是本周两起静默
 // 缺陷(强制 max、注入失效)的温床。
-const POLICY_VERSION = "gpt56-slim-v8.2.0";
+const POLICY_VERSION = "gpt56-live-models-v8.3.0";
 // pi 压缩摘要请求单独的推理档位（默认 low；CODEX_SUMMARY_EFFORT=off 关闭）。判定只看 input[0]，无状态。
 const SUMMARY_EFFORT = resolveSummaryEffort(process.env.CODEX_SUMMARY_EFFORT);
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
@@ -701,6 +702,7 @@ const server = http.createServer(async (req, res) => {
       explicitBreakpoint: EXPLICIT_BREAKPOINT,
       forceReasoningEffort: "off",
       summaryEffort: SUMMARY_EFFORT,
+      modelsClientVersion: process.env.CODEX_MODELS_CLIENT_VERSION || DEFAULT_CODEX_MODELS_CLIENT_VERSION,
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
       accountHomes: ACCOUNT_HOMES || null,
       accounts: accountPool ? accountPool.snapshot() : [],
@@ -776,15 +778,13 @@ const server = http.createServer(async (req, res) => {
 
   // codex 启动时探 /v1/models 刷新可用模型列表。它要的是 {"models":[...]}，不是 OpenAI 的
   // {"object":"list","data":[...]}——静态拼一份会报 missing field `models`（2026-08-19 实测）。
-  // 所以原样转发给上游同名端点，格式由上游保证，本地不猜。
+  // 通用 OpenAI 客户端不会传必填 client_version，桥补前向能力版本；响应若是 gzip，
+  // 必须连同 content-encoding 原样转发，不能把压缩字节伪装成 JSON 明文。
   if (url === "/v1/models" && req.method === "GET") {
     rememberDownstreamIdentity(req.headers);
     try {
-      const upRes = await upstreamGet("/backend-api/codex/models" + (req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""), req.headers);
-      const out = { ...upRes.headers };
-      delete out["content-encoding"];
-      delete out["transfer-encoding"];
-      res.writeHead(upRes.statusCode, out);
+      const upRes = await upstreamGet(codexModelsUpstreamPath(req.url), req.headers);
+      res.writeHead(upRes.statusCode, modelCatalogResponseHeaders(upRes.headers));
       res.on("error", (error) => log(`models 响应流失败：${String(error?.message || error).slice(0, 120)}`));
       return upRes.pipe(res);
     } catch (e) {
@@ -794,7 +794,9 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (url === "/v1/responses" && req.method === "POST") {
+  // Pi 的原生 openai-codex adapter 使用 /v1/codex/responses；保留旧
+  // /v1/responses 别名让历史 codex-bridge 会话继续运行。
+  if ((url === "/v1/responses" || url === "/v1/codex/responses") && req.method === "POST") {
     try { return await handleResponses(req, res); }
     catch (e) {
       log("处理失败：" + String(e.message).slice(0, 120));

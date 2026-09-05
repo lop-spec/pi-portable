@@ -12,6 +12,7 @@ import { openAssets } from "./assets-crypto.mjs";
 import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
 import { appendLineRotating } from "./log-rotate.mjs";
 import { BRIDGE_REARM_MS, createBridgeGuard, describeBridgeExit } from "./bridge-guard.mjs";
+import { configureLiveModelCatalog } from "./live-model-catalog.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -372,6 +373,10 @@ async function main() {
     if (changed) log(`模型鉴权已便携化(${changed} 个 provider → data\\auth.json)`);
   } catch (e) { log(`模型鉴权便携化失败:${e.message}`); }
   try {
+    const catalogue = configureLiveModelCatalog(path.join(DATA, ".pi", "agent"));
+    log(`实时模型目录:${catalogue.status}${catalogue.defaultModel ? ` default=${catalogue.defaultModel}` : ""}${catalogue.reason ? ` (${catalogue.reason})` : ""}`);
+  } catch (e) { log(`实时模型目录配置失败:${e.message}`); }
+  try {
     const shellPath = configurePortableBash();
     if (shellPath) log(`Bash 已配置:${shellPath}`);
   } catch (e) { log(`Bash 配置失败:${e.message}`); }
@@ -483,7 +488,7 @@ async function main() {
   // recovery、扩展消息或工具卡的补丁，模型上下文及工具过程对用户保持可见。
   // chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-conversation-nodes.mjs"]) {
+  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-interactions.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-conversation-nodes.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
