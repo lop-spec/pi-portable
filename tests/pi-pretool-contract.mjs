@@ -45,7 +45,9 @@ try {
   }
 
   const extension = fs.readFileSync(extensionFile, "utf8");
-  assert.ok(extension.includes("pretool-only-v2"));
+  assert.ok(extension.includes("pretool-only-v3"));
+  assert.ok(extension.includes("lop-pretool.log"));
+  assert.equal(extension.includes("\"lop-chain.log\""), false);
   assert.ok(extension.includes("getSessionId"));
   assert.ok(extension.includes("getSessionFile"));
   assert.ok(extension.includes("S7 FIXUP_BLOCK"));

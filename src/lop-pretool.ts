@@ -7,14 +7,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v2";
+export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v3";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_DIR = path.resolve(MODULE_DIR, "..");
 const RULE_DATA = path.join(AGENT_DIR, "data");
 const RUNTIME_DATA = process.env.PI_PORTABLE_DATA || RULE_DATA;
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(RULE_DATA, "rules-pretool.mjs");
-const LOG = process.env.PI_CHAIN_LOG || path.join(RUNTIME_DATA, "lop-chain.log");
+const LOG = process.env.PI_PRETOOL_LOG || process.env.PI_CHAIN_LOG || path.join(RUNTIME_DATA, "lop-pretool.log");
 
 function log(line: string) {
   try {
