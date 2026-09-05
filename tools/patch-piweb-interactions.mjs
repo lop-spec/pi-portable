@@ -17,7 +17,8 @@ import { fileURLToPath } from "node:url";
 export const MARK = "__pwPasteAndScrollV2";
 export const FOLLOWUP_MARK = "__pwFollowupModeV1";
 export const FOLLOWUP_RELOAD_MARK = "__pwFollowupReloadV1";
-export const PATCH_REVISION = "r4";
+export const PATCH_REVISION = "r5";
+export const COMPOSER_MARK = "__pwComposerControlsV1";
 
 /**
  * 将浏览器 Clipboard/DataTransfer 归一化为一次粘贴计划。
@@ -412,10 +413,39 @@ export function applyFollowupModeUi(src, label = "bundle") {
   };
 }
 
+export function applyComposerControls(src, label = "bundle") {
+  const fullMark = "__pwFullToolDefaultV1";
+  let defaultApplied = false;
+  if (!src.includes(fullMark)) {
+    const preference = requireOne(src, /function\(([\w$]+)=([\w$]+)\(\)\)\{if\(!\1\)return"default";try\{let ([\w$]+)=\1\.getItem\(([\w$]+)\);return\(0,([\w$]+)\.([\w$]+)\)\(\3\)\?\3:"default"\}catch\{return"default"\}\}\(\)/g, `${label}: saved tool default`);
+    src = src.slice(0, preference.index) + `function(){/*${fullMark}*/return"full"}()` + src.slice(preference.index + preference[0].length);
+    defaultApplied = true;
+  }
+  if (src.includes(COMPOSER_MARK)) return { out: src, applied: defaultApplied };
+  const model = requireOne(src, CHAT_MODEL_RENDER, `${label}: composer model`);
+  const right = requireOne(src, /marginLeft:([\w$]+)\?0:"auto"\},children:\[/g, `${label}: composer right controls`);
+  const tools = requireOne(src, /!([\w$]+)&&([\w$]+)&&\(0,([\w$]+)\.jsxs\)\("div",\{ref:([\w$]+),style:\{position:"relative"\},children:\[\(0,\3\.jsxs\)\("button",\{onClick:\(\)=>!\1&&([\w$]+)\(e=>!e\),disabled:\1,title:([\w$]+)\("chat.changeToolPreset"\)/g, `${label}: composer tools`);
+  const sound = requireOne(src, /void 0!==([\w$]+)&&\(0,([\w$]+)\.jsx\)\("button",\{onClick:\1,title:([\w$]+)\?([\w$]+)\("chat.disableSound"\)/g, `${label}: composer sound`);
+  const audio = requireOne(src, /let ([\w$]+)=localStorage\.getItem\("pi-sound-enabled"\);return null===\1\|\|"true"===\1/g, `${label}: audio default`);
+  const preset = requireOne(src, /\[([\w$]+),([\w$]+)\]=\(0,([\w$]+)\.useState\)\("default"\)/g, `${label}: tool default`);
+  const edits = [
+    { start: model.index, end: model.index + model[0].length, text: 'null' },
+    { start: right.index, end: right.index + right[0].length, text: `${right[0]}${model[0]},` },
+    { start: tools.index, end: tools.index + tools[0].length, text: tools[0].replace(/^![\w$]+&&[\w$]+&&/, '!1&&') },
+    { start: sound.index, end: sound.index + sound[0].length, text: sound[0].replace(/^void 0!==[\w$]+&&/, '!1&&') },
+    { start: audio.index, end: audio.index + audio[0].length, text: `/*${COMPOSER_MARK}*/return!1` },
+    { start: preset.index, end: preset.index + preset[0].length, text: preset[0].replace('("default")', '("full")') },
+  ].sort((a, b) => b.start - a.start);
+  let out = src;
+  for (const edit of edits) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
+  return { out, applied: true };
+}
+
 export function applyPiWebInteractions(src, label = "bundle") {
   if (src.includes(MARK)) {
     const followup = applyFollowupModeUi(src, label);
-    return { out: followup.out, applied: followup.applied, idents: followup.idents ? { followup: followup.idents } : null };
+    const composer = applyComposerControls(followup.out, label);
+    return { out: composer.out, applied: followup.applied || composer.applied, idents: followup.idents ? { followup: followup.idents } : null };
   }
 
   // 先收齐全部锚点，任何失败都发生在构造 edits 前，保证调用方零写入。
@@ -530,7 +560,7 @@ export function applyPiWebInteractions(src, label = "bundle") {
   let out = src;
   for (const edit of edits) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
   const followup = applyFollowupModeUi(out, label);
-  out = followup.out;
+  out = applyComposerControls(followup.out, label).out;
   if (!out.includes(MARK) || !out.includes(FOLLOWUP_MARK) || !out.includes(FOLLOWUP_RELOAD_MARK) || !out.includes('"data-pw-scroll-bottom":"true"')) {
     throw new Error(`${label}: 补丁后标记校验失败，拒绝写入`);
   }
@@ -594,6 +624,7 @@ function main() {
     .update(buildModeSend.toString())
     .update(applyFollowupModeUi.toString())
     .update(applyPiWebInteractions.toString())
+    .update(applyComposerControls.toString())
     .digest("hex");
   const nextHash = ("pwi" + fingerprint).slice(0, currentHash.length);
   const chunkDirectory = path.join(PKG, ".next", "static", "chunks", "app");
@@ -601,7 +632,7 @@ function main() {
   if (!fs.existsSync(currentChunk)) die("当前 page chunk 不存在: " + currentChunk);
   const source = fs.readFileSync(currentChunk, "utf8");
 
-  if (source.includes(MARK) && source.includes(FOLLOWUP_MARK) && source.includes(FOLLOWUP_RELOAD_MARK)) {
+  if (source.includes(MARK) && source.includes(FOLLOWUP_MARK) && source.includes(FOLLOWUP_RELOAD_MARK) && source.includes(COMPOSER_MARK) && source.includes("__pwFullToolDefaultV1")) {
     console.log(JSON.stringify({ status: "already-patched", pkg: PKG, chunk: path.basename(currentChunk) }));
     process.exit(0);
   }
@@ -621,7 +652,9 @@ function main() {
     (function walk(directory) {
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
         const candidate = path.join(directory, entry.name);
-        if (entry.isDirectory()) walk(candidate); else candidates.push(candidate);
+        if (entry.isDirectory()) {
+          if (entry.name !== "_历史版本") walk(candidate);
+        } else if (!entry.name.includes(".bak-")) candidates.push(candidate);
       }
     })(path.join(PKG, ".next", "server", "app"));
     for (const name of ["build-manifest.json", "app-build-manifest.json", "react-loadable-manifest.json"]) {
