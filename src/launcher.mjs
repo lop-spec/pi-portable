@@ -325,12 +325,12 @@ process.on("SIGTERM", () => shutdown(0));
 // ── 主流程 ────────────────────────────────────────────────────
 async function main() {
   fs.mkdirSync(DATA, { recursive: true });
-  // 受管远端可用数据根标记进入无头模式，避免计划任务需要额外 cmd/PowerShell 包装或弹窗。
-  // 本机没有该标记时维持托盘与窗口原行为。
+  // 受管远端的数据根标记只禁止登录自启时弹窗，仍保留交互桌面的托盘与双击进入能力。
+  // 真正的无头启动必须由调用方显式传 PI_HEADLESS=1；否则标记会让人工双击也静默退出。
   const headlessMarker = path.join(DATA, "headless.enabled");
   if (fs.existsSync(headlessMarker)) {
-    process.env.PI_HEADLESS = "1";
     process.env.PI_AUTO_WINDOW = "0";
+    log("检测到受管启动标记:禁止首次自启弹窗;仅显式 PI_HEADLESS=1 才进入无头模式");
   }
   log(`pi-portable 启动 HOME=${HOME}${process.env.PI_HEADLESS === "1" ? " headless=1" : ""}`);
 
@@ -633,7 +633,8 @@ async function openWindow() {
   if (!cmd) { log("未找到 Chrome/Edge,用默认浏览器打开"); spawnSync("cmd.exe", ["/c", "start", "", url], { windowsHide: true }); return; }
   // --user-data-dir 独立配置 → 独立应用身份,任务栏图标取 pi-web 自带 favicon/manifest 图标
   const profile = path.join(DATA, "browser-profile");
-  const win = spawn(cmd[0], [...cmd.slice(1), `--app=${url}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check"], { stdio: "ignore", windowsHide: true });
+  // 这是用户明确进入的 GUI；windowsHide:true 会让 Edge 进程存在但主窗口不可见。
+  const win = spawn(cmd[0], [...cmd.slice(1), `--app=${url}`, `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check"], { stdio: "ignore", windowsHide: false });
   children.push(win);
   ledgerRecord(win.pid, "window");
   windowProc = win;

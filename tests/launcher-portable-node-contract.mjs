@@ -26,7 +26,11 @@ assert.match(source, /function portableizeModelAuth\(\)/, "便携启动时必须
 assert.match(source, /process\.env\.PI_PORTABLE_DATA,'auth\.json'/, "模型鉴权必须读取便携 data/auth.json");
 assert.match(source, /function configurePortableBash\(\)/, "启动器必须配置非标准安装位置的 Git Bash");
 assert.match(source, /"Programs", "Git", "bin", "bash\.exe"/, "启动器必须识别 Git for Windows 当前用户安装路径");
-assert.match(source, /path\.join\(DATA, "headless\.enabled"\)/, "受管远端必须能通过数据根标记无窗常驻");
+assert.match(source, /path\.join\(DATA, "headless\.enabled"\)/, "受管远端必须能通过数据根标记禁止登录自启弹窗");
+assert.match(source, /process\.env\.PI_AUTO_WINDOW = "0"/, "受管启动标记必须保留托盘但禁止首次自启弹窗");
+assert.doesNotMatch(source, /process\.env\.PI_HEADLESS = "1"/, "受管启动标记不得把人工双击也强制成无头模式");
+assert.match(source, /仅显式 PI_HEADLESS=1 才进入无头模式/u, "标记降级为仅禁自启弹窗时必须留下原因日志");
+assert.match(source, /--app=\$\{url\}[\s\S]*windowsHide: false/, "用户明确进入时浏览器 GUI 不得被 Windows 隐藏");
 assert.match(source, /function syncManagedFollowupExtension\(\)/, "启动器必须同步用户主动开启的自动追问扩展");
 assert.match(source, /自动追问扩展源缺失,未安装/u, "扩展同步失败必须留下无条件启动日志");
 assert.equal(fs.existsSync(path.join(root, "src", "extensions", "lop-followup.ts")), true, "发行源码层必须包含默认关闭的自动追问扩展");
