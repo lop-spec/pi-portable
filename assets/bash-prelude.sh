@@ -15,3 +15,12 @@ yyf()   { local f="$1"; shift; ssh.exe -o BatchMode=yes -o ConnectTimeout=10 yy@
 # 工具结果回传给模型;顺带 strip ANSI、清理二进制、归一 CR。
 # ev 只回显末尾 40 行,中段输出模型永远看不到,是对模型所见的单方面裁剪,故退役。
 # 需要任务级证据文件时直接用重定向:  <命令> >> acceptance-evidence.md 2>&1
+
+# 2026-09-05:规则里的"备份→改→读回→同步对端"各固化成一条命令(单一真值在 tools/backup.mjs、tools/peer-sync.mjs):
+#   bak <文件...> [--label x]         精确物理备份到就近 _历史版本/ 并读回哈希
+#   peerpush <文件...>                整文件同步到另一台受管机(对端备份+传输+SHA256 读回+node --check)
+#   peerpatch <文件> <<'JSON'         只同步改动行: {"old":"...","new":"..."},用于 AGENTS.md 这类含机器特有内容的文件
+_pi_tools() { printf '%s' "${PI_PORTABLE_HOME:-C:/Users/lop/Documents/claude/pi-portable}/tools"; }
+bak()       { node "$(_pi_tools)/backup.mjs" "$@"; }
+peerpush()  { node "$(_pi_tools)/peer-sync.mjs" push "$@"; }
+peerpatch() { node "$(_pi_tools)/peer-sync.mjs" patch "$@"; }

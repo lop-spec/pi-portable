@@ -11,6 +11,7 @@ import { detectEgress } from "./egress-autodetect.mjs";
 import { openAssets } from "./assets-crypto.mjs";
 import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
 import { appendLineRotating } from "./log-rotate.mjs";
+import { BRIDGE_REARM_MS, createBridgeGuard, describeBridgeExit } from "./bridge-guard.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -156,6 +157,15 @@ function portAlive(port, timeout = 1200) {
 }
 async function httpOk(url, timeout = 2000) {
   try { const r = await fetch(url, { signal: AbortSignal.timeout(timeout) }); return r.ok; } catch { return false; }
+}
+// 8794 上是不是一座活着的 pi-portable 桥（/health 回 ok + policyVersion）；外部替换的桥也算。
+async function bridgeHealthy(port, timeout = 2000) {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(timeout) });
+    if (!r.ok) return false;
+    const j = await r.json();
+    return j?.ok === true && typeof j.policyVersion === "string";
+  } catch { return false; }
 }
 function ask(question, { silent = false } = {}) {
   // 常驻形态(wscript //B、计划任务、托盘自启)下 stdin 不是 TTY:readline 会永远等一个
@@ -387,7 +397,19 @@ async function main() {
   // 桥守护:stderr 落盘留崩因证据;桥退出(非收尾)自动重启,崩溃循环时熔断防空转。
   // 2026-08-29 异机实测:桥静默崩溃后 pi-web 独活,pi 全线 Connection error 且零日志——两个缺口都在这里补。
   const bridgeErrLog = path.join(DATA, "bridge-stderr.log");
-  const bridgeRestarts = [];
+  // 退出后的处置由 bridge-guard 决策(可测试):健康桥在监听→接管看护;崩溃循环→熔断但 2 分钟后重探;否则重拉。
+  // 2026-09-05 实录:外部脚本 Stop-Process 换桥后 launcher 连撞 5 次 EADDRINUSE 永久熔断,桥从此脱离守护。
+  const bridgeGuard = createBridgeGuard();
+  async function bridgeRearmCheck() {
+    if (shuttingDown) return;
+    const listening = await portAlive(PORTS.bridge);
+    const healthy = listening && await bridgeHealthy(PORTS.bridge);
+    const decision = bridgeGuard.rearm({ listening, healthy });
+    if (decision.action === "adopt") { setTimeout(bridgeRearmCheck, decision.watchInMs); return; }
+    if (decision.action === "wait") { log("桥守护:8794 有监听但 /health 不健康,继续等待"); setTimeout(bridgeRearmCheck, decision.retryInMs); return; }
+    log("桥守护:8794 无人监听,重拉桥");
+    startBridge();
+  }
   function startBridge() {
     const errFd = fs.openSync(bridgeErrLog, "a");
     let bridge;
@@ -401,22 +423,36 @@ async function main() {
       if (shuttingDown) return;
       const at = children.indexOf(bridge);
       if (at >= 0) children.splice(at, 1);
-      log(`桥进程退出 code=${code ?? "-"} signal=${signal ?? "-"}(崩因见 ${bridgeErrLog})`);
-      const now = Date.now();
-      bridgeRestarts.push(now);
-      while (bridgeRestarts.length && now - bridgeRestarts[0] > 60000) bridgeRestarts.shift();
-      if (bridgeRestarts.length > 5) { log("桥 60s 内退出超 5 次,熔断自动重启(pi 可用其它 provider)"); return; }
-      setTimeout(() => {
+      log(`桥进程退出 ${describeBridgeExit(code, signal)}(崩因见 ${bridgeErrLog})`);
+      void (async () => {
+        const healthy = await bridgeHealthy(PORTS.bridge);
         if (shuttingDown) return;
-        log("桥自动重启…");
-        startBridge();
-      }, 1000);
+        const decision = bridgeGuard.decide({ healthy });
+        if (decision.action === "adopt") {
+          log(`桥守护:8794 已有健康桥在服务(外部替换),不重拉;每 ${Math.round(decision.watchInMs / 1000)}s 看护一次`);
+          setTimeout(bridgeRearmCheck, decision.watchInMs);
+          return;
+        }
+        if (decision.action === "break") {
+          log(`桥 60s 内退出超 5 次,熔断自动重启;${Math.round(decision.retryInMs / 1000)}s 后重新探测(pi 可用其它 provider)`);
+          setTimeout(bridgeRearmCheck, decision.retryInMs);
+          return;
+        }
+        setTimeout(() => {
+          if (shuttingDown) return;
+          log("桥自动重启…");
+          startBridge();
+        }, decision.delayMs);
+      })();
     });
     return bridge;
   }
   if (!(await portAlive(PORTS.bridge))) {
     startBridge();
     for (let i = 0; i < 20 && !(await httpOk(`http://127.0.0.1:${PORTS.bridge}/health`)); i++) await new Promise((r) => setTimeout(r, 500));
+  } else {
+    log(`8794 已有桥在服务(非本运行面所起),接管看护:每 ${Math.round(BRIDGE_REARM_MS / 1000)}s 探测一次,消失即重拉`);
+    setTimeout(bridgeRearmCheck, BRIDGE_REARM_MS);
   }
   log(await httpOk(`http://127.0.0.1:${PORTS.bridge}/health`) ? `桥就绪 :${PORTS.bridge}` : `桥未就绪(继续,pi 可用其它 provider)`);
 

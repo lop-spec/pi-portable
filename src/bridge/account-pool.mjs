@@ -318,6 +318,8 @@ export function createAccountPool(options) {
         pinned: pin === member.id,
         cooldownMinLeft: until > now() ? Math.ceil((until - now()) / 60_000) : 0,
         tokenExpDays,
+        // primary 走下游请求自带的 Authorization(客户端自己刷新),文件里的 token 过期与否不影响它。
+        identity: member.writable ? "pool" : "downstream",
       };
     });
   }
