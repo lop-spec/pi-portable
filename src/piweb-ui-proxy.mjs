@@ -217,6 +217,11 @@ export class PiWebUiProxy {
     this.sessionCatalogue = [];
     this.sessionCatalogueAt = 0;
     this.runningIds = new Set();
+    this.sessionListCacheFile = path.resolve(options.sessionListCacheFile || path.join(dataRoot, "piweb-session-list-cache.json"));
+    this.bootstrapSessionList = null;
+    this.bootstrapSessionListChecked = false;
+    this.bootstrapSessionListServed = false;
+    this.sessionListRefreshPromise = null;
     this.logFile = path.resolve(options.logFile || path.join(dataRoot, "piweb-ui-proxy.log"));
     const portableHome = String(process.env.PI_PORTABLE_HOME || "").trim();
     const configuredRoot = options.piWebPackageRoot || (portableHome ? path.join(portableHome, "app", "node_modules", "@agegr", "pi-web") : "");
@@ -479,6 +484,24 @@ export class PiWebUiProxy {
     return true;
   }
 
+  composerPreferenceBootstrap(nonceAttribute = "") {
+    const settingsFile = path.join(this.dataRoot, ".pi", "agent", "settings.json");
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+      const provider = String(settings.defaultProvider || "");
+      const modelId = String(settings.defaultModel || "");
+      if (!provider || !modelId) throw new Error("default model is missing");
+      const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+      const configured = settings.modelThinkingLevels?.[`${provider}/${modelId}`] ?? settings.defaultThinkingLevel ?? "medium";
+      const thinking = levels.has(configured) ? configured : "medium";
+      const model = JSON.stringify({ provider, modelId }).replace(/</gu, "\\u003c");
+      return `<script${nonceAttribute}>try{localStorage.getItem("pi-last-model")||localStorage.setItem("pi-last-model",${JSON.stringify(model)});localStorage.getItem("pi-last-thinking-level")||localStorage.setItem("pi-last-thinking-level",${JSON.stringify(thinking)})}catch(e){console.error("[pi-web] composer preference bootstrap failed:",e)}</script>`;
+    } catch (error) {
+      this.log("composer-preference-bootstrap-skipped", { reason: normalizeError(error?.message || error) });
+      return "";
+    }
+  }
+
   async handleHtmlProxy(request, response) {
     const upstreamResult = await this.fetchBufferedUpstream(request);
     const contentType = String(upstreamResult.headers["content-type"] || "");
@@ -500,7 +523,8 @@ export class PiWebUiProxy {
     if (!html.includes(PIWEB_ARCHIVE_UI_PATH)) {
       const nonce = /<script\b[^>]*\bnonce=["']([^"']+)["']/iu.exec(html)?.[1];
       const nonceAttribute = nonce ? ` nonce="${nonce.replace(/["&<>]/gu, "")}"` : "";
-      const tag = `<script src="${PIWEB_ARCHIVE_UI_PATH}" data-pi-session-archive-bootstrap="${PIWEB_ARCHIVE_VERSION}"${nonceAttribute}></script>`;
+      const preferences = this.composerPreferenceBootstrap(nonceAttribute);
+      const tag = preferences + `<script src="${PIWEB_ARCHIVE_UI_PATH}" data-pi-session-archive-bootstrap="${PIWEB_ARCHIVE_VERSION}"${nonceAttribute}></script>`;
       html = /<head\b[^>]*>/iu.test(html) ? html.replace(/<head\b[^>]*>/iu, (head) => head + tag) : tag + html;
     }
     this.writeBuffered(response, upstreamResult, {
@@ -510,22 +534,41 @@ export class PiWebUiProxy {
     });
   }
 
-  async handleSessionList(request, response, parsedUrl) {
-    const upstreamResult = await this.fetchBufferedUpstream(request);
-    let body;
-    try { body = JSON.parse(upstreamResult.body.toString("utf8")); }
-    catch { this.writeBuffered(response, upstreamResult); return; }
-    if (upstreamResult.status >= 400 || !Array.isArray(body?.sessions)) {
-      this.writeBuffered(response, upstreamResult);
-      return;
+  loadBootstrapSessionList() {
+    if (this.bootstrapSessionListChecked) return this.bootstrapSessionList;
+    this.bootstrapSessionListChecked = true;
+    if (!fs.existsSync(this.sessionListCacheFile)) return null;
+    try {
+      const cached = JSON.parse(fs.readFileSync(this.sessionListCacheFile, "utf8"));
+      if (cached?.version !== 1 || !Array.isArray(cached?.body?.sessions)) throw new Error("unsupported cache schema");
+      this.bootstrapSessionList = cached.body;
+      this.sessionCatalogue = cached.body.sessions;
+      this.sessionCatalogueAt = Number(cached.savedAtMs) || 0;
+      if (Array.isArray(cached.body.runningSessionIds)) this.runningIds = new Set(cached.body.runningSessionIds.map(String));
+      return this.bootstrapSessionList;
+    } catch (error) {
+      this.log("session-list-bootstrap-cache-miss", { reason: normalizeError(error?.message || error) });
+      return null;
     }
-    this.sessionCatalogue = body.sessions;
-    this.sessionCatalogueAt = this.now();
-    if (Array.isArray(body.runningSessionIds)) this.runningIds = new Set(body.runningSessionIds.map(String));
+  }
+
+  saveSessionListCache(body) {
+    try {
+      fs.mkdirSync(path.dirname(this.sessionListCacheFile), { recursive: true });
+      const temporary = `${this.sessionListCacheFile}.tmp-${process.pid}-${crypto.randomUUID()}`;
+      fs.writeFileSync(temporary, JSON.stringify({ version: 1, savedAtMs: this.now(), body }), { flag: "wx" });
+      try { fs.renameSync(temporary, this.sessionListCacheFile); }
+      finally { try { if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true }); } catch {} }
+    } catch (error) {
+      this.log("session-list-bootstrap-cache-write-failed", { reason: normalizeError(error?.message || error) });
+    }
+  }
+
+  sessionListValue(body, parsedUrl) {
     const partition = this.archiveStore.partition(body.sessions);
     const archivedGroupCount = new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size;
     const view = parsedUrl.searchParams.get("archiveView") === "archived" ? "archived" : "active";
-    const value = {
+    return {
       ...body,
       sessions: view === "archived" ? partition.archived : partition.active,
       archive: {
@@ -536,9 +579,56 @@ export class PiWebUiProxy {
         version: PIWEB_ARCHIVE_VERSION,
       },
     };
+  }
+
+  acceptFreshSessionList(body) {
+    this.sessionCatalogue = body.sessions;
+    this.sessionCatalogueAt = this.now();
+    if (Array.isArray(body.runningSessionIds)) this.runningIds = new Set(body.runningSessionIds.map(String));
+    this.saveSessionListCache(body);
+  }
+
+  refreshSessionListInBackground() {
+    if (this.sessionListRefreshPromise) return;
+    const startedAt = this.now();
+    this.sessionListRefreshPromise = this.fetch(`http://127.0.0.1:${this.webPort}/api/sessions`, {
+      cache: "no-store",
+      signal: timeoutSignal(15000),
+    }).then(async (upstream) => {
+      const body = await upstream.json();
+      if (!upstream.ok || !Array.isArray(body?.sessions)) throw new Error(`sessions HTTP ${upstream.status}`);
+      this.acceptFreshSessionList(body);
+      this.log("session-list-bootstrap-refreshed", { elapsedMs: Math.max(0, this.now() - startedAt), count: body.sessions.length });
+    }).catch((error) => {
+      this.log("session-list-bootstrap-refresh-failed", { reason: normalizeError(error?.message || error) });
+    }).finally(() => { this.sessionListRefreshPromise = null; });
+  }
+
+  async handleSessionList(request, response, parsedUrl) {
+    const force = parsedUrl.searchParams.get("force") === "1";
+    const bootstrap = !force && !this.bootstrapSessionListServed ? this.loadBootstrapSessionList() : null;
+    if (bootstrap) {
+      this.bootstrapSessionListServed = true;
+      const value = this.sessionListValue(bootstrap, parsedUrl);
+      this.jsonResponse(response, 200, value, { "x-pi-session-list": "bootstrap-cache" });
+      this.log("session-list-bootstrap-served", { ageMs: this.sessionCatalogueAt ? Math.max(0, this.now() - this.sessionCatalogueAt) : null, count: bootstrap.sessions.length });
+      this.refreshSessionListInBackground();
+      return;
+    }
+
+    const upstreamResult = await this.fetchBufferedUpstream(request);
+    let body;
+    try { body = JSON.parse(upstreamResult.body.toString("utf8")); }
+    catch { this.writeBuffered(response, upstreamResult); return; }
+    if (upstreamResult.status >= 400 || !Array.isArray(body?.sessions)) {
+      this.writeBuffered(response, upstreamResult);
+      return;
+    }
+    this.acceptFreshSessionList(body);
+    const value = this.sessionListValue(body, parsedUrl);
     this.writeBuffered(response, upstreamResult, {
       body: Buffer.from(JSON.stringify(value)),
-      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-pi-session-list": "fresh" },
       changed: true,
     });
   }

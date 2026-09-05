@@ -7,7 +7,7 @@
 //
 // 用法: node patch-piweb-interactions.mjs [--pkg <包目录>] [--backup <备份目录>] [--check]
 // 约束: 仅 0.8.11；所有锚点先完整校验，任一不符则零写入；幂等可重入。
-// 顺序: patch-piweb-fold -> patch-piweb-draft-persist -> 本脚本。
+// 顺序: patch-piweb-fold -> patch-piweb-draft-persist -> patch-piweb-drop-auto-thinking -> 本脚本。
 // 回滚: --revert 恢复备份中的引用/原 chunk，生成的新 chunk 保留为无引用孤儿；重启 pi-web。
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -17,8 +17,9 @@ import { fileURLToPath } from "node:url";
 export const MARK = "__pwPasteAndScrollV2";
 export const FOLLOWUP_MARK = "__pwFollowupModeV1";
 export const FOLLOWUP_RELOAD_MARK = "__pwFollowupReloadV1";
-export const PATCH_REVISION = "r5";
+export const PATCH_REVISION = "r6";
 export const COMPOSER_MARK = "__pwComposerControlsV1";
+export const COMPOSER_PREFERENCES_MARK = "__pwComposerPreferencesV1";
 
 /**
  * 将浏览器 Clipboard/DataTransfer 归一化为一次粘贴计划。
@@ -413,9 +414,38 @@ export function applyFollowupModeUi(src, label = "bundle") {
   };
 }
 
+export function applyComposerPreferences(src, label = "bundle") {
+  if (src.includes(COMPOSER_PREFERENCES_MARK)) return { out: src, applied: false };
+  const initial = requireOne(src, /(\[[\w$]+,[\w$]+\]=\(0,([\w$]+)\.useState\)\(null\),)(\[[\w$]+,[\w$]+\])=\(0,\2\.useState\)\(null\),(\[[\w$]+,[\w$]+\])=\(0,\2\.useState\)\("(?:default|full)"\),(\[[\w$]+,[\w$]+\])=\(0,\2\.useState\)\("medium"\)/g, `${label}: initial composer preferences`);
+  const modelChange = requireOne(src, /if\(([\w$]+)\)\{let ([\w$]+)=\{provider:([\w$]+),modelId:([\w$]+)\};null===/g, `${label}: model preference change`);
+  const thinkingChange = requireOne(src, /async ([\w$]+)=>\{if\(([\w$]+)\(\1\),([\w$]+)&&!([\w$]+)\.current&&/g, `${label}: thinking preference change`);
+
+  const modelInitial = `${initial[3]}=(0,${initial[2]}.useState)(()=>{try{let e=JSON.parse(localStorage.getItem("pi-last-model")||"null");` +
+    `return e&&"string"==typeof e.provider&&"string"==typeof e.modelId?e:null}catch(e){return console.error("[pi-web] last model preference read failed:",e),null}})`;
+  const thinkingInitial = `${initial[5]}=(0,${initial[2]}.useState)(()=>{try{let e=localStorage.getItem("pi-last-thinking-level");` +
+    `return["off","minimal","low","medium","high","xhigh","max"].includes(e)?e:"medium"}catch(e){return console.error("[pi-web] last thinking preference read failed:",e),"medium"}})`;
+  const initialReplacement = `${initial[1]}${modelInitial},${initial[4]}=(0,${initial[2]}.useState)("full"),${thinkingInitial}`;
+  const modelReplacement = `try{localStorage.setItem("pi-last-model",JSON.stringify({provider:${modelChange[3]},modelId:${modelChange[4]}}))}` +
+    `catch(pwError){console.error("[pi-web] last model preference write failed:",pwError)}` + modelChange[0];
+  const thinkingReplacement = `async ${thinkingChange[1]}=>{try{localStorage.setItem("pi-last-thinking-level",${thinkingChange[1]})}` +
+    `catch(pwError){console.error("[pi-web] last thinking preference write failed:",pwError)}` + thinkingChange[0].slice(`async ${thinkingChange[1]}=>{`.length);
+
+  const edits = [
+    { start: initial.index, end: initial.index + initial[0].length, text: initialReplacement },
+    { start: modelChange.index, end: modelChange.index + modelChange[0].length, text: modelReplacement },
+    { start: thinkingChange.index, end: thinkingChange.index + thinkingChange[0].length, text: thinkingReplacement },
+  ].sort((a, b) => b.start - a.start);
+  let out = src;
+  for (const edit of edits) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
+  out += `\n;typeof window<"u"&&(window.${COMPOSER_PREFERENCES_MARK}=!0);`;
+  return { out, applied: true };
+}
+
 export function applyComposerControls(src, label = "bundle") {
+  const preferences = applyComposerPreferences(src, label);
+  src = preferences.out;
   const fullMark = "__pwFullToolDefaultV1";
-  let defaultApplied = false;
+  let defaultApplied = preferences.applied;
   if (!src.includes(fullMark)) {
     const preference = requireOne(src, /function\(([\w$]+)=([\w$]+)\(\)\)\{if\(!\1\)return"default";try\{let ([\w$]+)=\1\.getItem\(([\w$]+)\);return\(0,([\w$]+)\.([\w$]+)\)\(\3\)\?\3:"default"\}catch\{return"default"\}\}\(\)/g, `${label}: saved tool default`);
     src = src.slice(0, preference.index) + `function(){/*${fullMark}*/return"full"}()` + src.slice(preference.index + preference[0].length);
@@ -632,7 +662,7 @@ function main() {
   if (!fs.existsSync(currentChunk)) die("当前 page chunk 不存在: " + currentChunk);
   const source = fs.readFileSync(currentChunk, "utf8");
 
-  if (source.includes(MARK) && source.includes(FOLLOWUP_MARK) && source.includes(FOLLOWUP_RELOAD_MARK) && source.includes(COMPOSER_MARK) && source.includes("__pwFullToolDefaultV1")) {
+  if (source.includes(MARK) && source.includes(FOLLOWUP_MARK) && source.includes(FOLLOWUP_RELOAD_MARK) && source.includes(COMPOSER_MARK) && source.includes(COMPOSER_PREFERENCES_MARK) && source.includes("__pwFullToolDefaultV1")) {
     console.log(JSON.stringify({ status: "already-patched", pkg: PKG, chunk: path.basename(currentChunk) }));
     process.exit(0);
   }

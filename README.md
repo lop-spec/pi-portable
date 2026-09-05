@@ -66,7 +66,9 @@ launcher 只应用以下补丁：
 
 - 历史过程折叠，但工具卡保持可见；
 - 输入草稿持久化；
+- 首屏先用上次成功的会话目录快照即时绘制，后台再刷新原生目录，避免冷启动扫描数百个 JSONL 时卡住加载页；
 - 文件粘贴、回到底部和显式 follow-up 入口；
+- 新对话首帧直接使用最终的紧凑工具栏布局；模型、thinking 和 TIER 从上次显式选择同步初始化，不再先画 Pi 默认值再跳变；
 - 模型按钮实时刷新 Pi 原生目录，并把显式选择持久化为全局默认；
 - 移除字面 `auto` 并显示实际 thinking 档位；
 - 展示模型 reasoning summary；
@@ -106,6 +108,7 @@ pi-portable-launcher.exe
 ```bash
 node tests/launcher-portable-node-contract.mjs
 node --test tests/piweb-ui-proxy.mjs tests/hard-restart-contract.mjs
+# piweb-ui-proxy.mjs 会一并加载冷启动会话目录快照合同
 node --test tests/account-pool-contract.mjs tests/account-usage-contract.mjs
 node --test tests/codex-model-catalog-contract.mjs tests/live-model-catalog-contract.mjs
 node --test tests/codex-overload-retry.mjs

@@ -10,7 +10,9 @@ import {
   MARK,
   applyFollowupModeUi,
   applyComposerControls,
+  applyComposerPreferences,
   COMPOSER_MARK,
+  COMPOSER_PREFERENCES_MARK,
   applyPiWebInteractions,
   formatAtMentions,
   getClipboardPastePlan,
@@ -53,6 +55,7 @@ function fixtureBundle() {
     "function t6({options:e,value:t,onChange:n,onClear:o,emptyLabel:s,selectedLabel:l,disabled:a=!1,busy:d=!1,isAutoSelection:c=!1,ariaLabel:u,variant:h=\"toolbar\",placement:p=\"up\"}){let C=t2(),R=!1,N=a||d,$=e,D=l??(t?t.modelId:s??\"Select model\");let B=\"field\"===h?{}:{display:\"flex\",alignItems:\"center\",justifyContent:C?\"flex-start\":void 0,gap:6,width:C?\"100%\":void 0,maxWidth:C?\"100%\":220,height:32,padding:C?\"8px 10px\":\"8px 12px\",overflow:\"hidden\",border:\"none\",borderRadius:9,background:R?\"var(--bg-hover)\":\"none\",color:\"var(--text-muted)\",cursor:N?\"not-allowed\":\"pointer\",fontSize:12,opacity:N?.5:1,transition:\"background 0.12s, color 0.12s\"};return(0,r.jsxs)(\"div\",{style:{position:\"relative\",width:\"field\"===h||C?\"100%\":void 0,minWidth:0,flex:\"toolbar\"===h&&C?\"1 1 auto\":void 0},children:[(0,r.jsxs)(\"button\",{\"aria-label\":u,\"aria-haspopup\":\"listbox\",\"aria-expanded\":R,\"aria-busy\":d||void 0,disabled:N,title:d?\"Switching model\":N?D:$.length>0||o?\"Change model\":\"No available models\",children:[(0,r.jsx)(\"svg\",{}),(0,r.jsx)(\"span\",{style:{flex:1,minWidth:0,overflow:\"hidden\",textOverflow:\"ellipsis\",whiteSpace:\"nowrap\"},children:D}),\"field\"===h&&(0,r.jsx)(\"svg\",{})]})]})}",
     "let nb=(0,i.forwardRef)(function({onSend:e,onAbort:t,onSteer:n,onFollowUp:o,isStreaming:s,model:l,isAutoModelSelection:a,modelNames:d,modelList:c,modelError:u,modelScopeWarnings:h,onModelChange:p,modelSwitching:g,onCompact:f,onAbortCompaction:m,isCompacting:x,compactError:v,compactResult:b,toolPreset:k,onToolPresetChange:w,thinkingLevel:j,onThinkingLevelChange:S,availableThinkingLevels:C,thinkingLevelMap:M,retryInfo:R,queuedMessages:I,inputHistory:W=[],onRecallQueue:E,slashCommands:P,slashCommandsLoading:N,onLoadSlashCommands:$,onBuiltinCommand:z,soundEnabled:F,onSoundToggle:A,onAudioUnlock:D,onPromptWithStreamingBehavior:B,draftKey:O,cwd:H},U){let _,q,{t:Y}=fake(),Z=!1,X=\"\",es=[],eX={current:X},eQ={current:es},ty=[];eX.current=X,eQ.current=es,(0,i.useImperativeHandle)(U,()=>({}));return(0,r.jsxs)(\"div\",{children:[(ty.length>0||l||u)&&p&&(0,r.jsx)(t6,{options:ty,value:l,onChange:p,disabled:s,busy:g,isAutoSelection:a})]})})",
     'let preference=function(e=nU()){if(!e)return"default";try{let t=e.getItem(nH);return(0,nO.sn)(t)?t:"default"}catch{return"default"}}();',
+    'function session(){let [newModel,setNewModel]=(0,i.useState)(null),[defaultModel,setDefaultModel]=(0,i.useState)(null),[corePreset,setCorePreset]=(0,i.useState)("full"),[thinking,setThinking]=(0,i.useState)("medium");let handleModel=(0,i.useCallback)(async(e,t)=>{if(x){let n={provider:e,modelId:t};null===th.current&&noop()}},[x]),handleThinking=(0,i.useCallback)(async e=>{if(setThinking(e),x&&!e0.current&&noop(),"auto"===e)return},[x])}',
     'function controls(){let [preset,setPreset]=(0,i.useState)("default");let audio=()=>{let e=localStorage.getItem("pi-sound-enabled");return null===e||"true"===e};return(0,r.jsxs)("div",{style:{marginLeft:Z?0:"auto"},children:[!s&&w&&(0,r.jsxs)("div",{ref:eF,style:{position:"relative"},children:[(0,r.jsxs)("button",{onClick:()=>!s&&et(e=>!e),disabled:s,title:Y("chat.changeToolPreset")})]}),void 0!==A&&(0,r.jsx)("button",{onClick:A,title:F?Y("chat.disableSound"):Y("chat.enableSound")})]})}',
     "function fakeHook(){let e={state:{extensionStatuses:[]}};void 0!==e.state.extensionStatuses&&eq(e.state.extensionStatuses??[]);let t9=(0,i.useCallback)(async e=>{if(!e.startsWith(\"/\"))return{handled:!1};let t=e.match(/^\\/([^\\s]+)(?:\\s+([\\s\\S]*))?$/);if(!t)return{handled:!1};let[,n,r=\"\"]=t,i=r.trim(),o=e0.current??await tW(),s=e=>(e.handled&&noop(),e);try{switch(n){case\"reload\":if(!o)return s({handled:!0,error:\"No active session to reload\"});return await nB(o,{type:\"reload\"}),s({handled:!0});case\"clone\":return s({handled:!0});default:return{handled:!1}}}catch(e){return s({handled:!0,error:String(e)})}},[])}",
   ].join("");
@@ -63,7 +66,12 @@ test("composer places model at right and removes tool/sound controls with full/m
   const result = applyComposerControls(source);
   assert.ok(result.applied);
   assert.ok(result.out.includes(COMPOSER_MARK));
+  assert.ok(result.out.includes(COMPOSER_PREFERENCES_MARK));
   assert.match(result.out, /__pwFullToolDefaultV1\*\/return"full"/);
+  assert.match(result.out, /useState\)\(\(\)=>\{try\{let e=JSON\.parse\(localStorage\.getItem\("pi-last-model"\)/);
+  assert.match(result.out, /localStorage\.getItem\("pi-last-thinking-level"\)/);
+  assert.match(result.out, /localStorage\.setItem\("pi-last-model"/);
+  assert.match(result.out, /localStorage\.setItem\("pi-last-thinking-level"/);
   assert.doesNotMatch(result.out, /getItem\(nH\)/);
   assert.match(result.out, /marginLeft:Z\?0:"auto"\},children:\[\(ty\.length/);
   assert.match(result.out, /useState\)\("full"\)/);
@@ -127,6 +135,16 @@ function createFakeFollowupRuntime({ initialEntries = [], sendError = null } = {
     },
   };
 }
+
+test("composer preference patch is independently idempotent", () => {
+  const source = fixtureBundle();
+  const result = applyComposerPreferences(source);
+  assert.equal(result.applied, true);
+  assert.ok(result.out.includes(COMPOSER_PREFERENCES_MARK));
+  assert.equal(applyComposerPreferences(result.out).out, result.out);
+  const nativeDefault = source.replace('[corePreset,setCorePreset]=(0,i.useState)("full")', '[corePreset,setCorePreset]=(0,i.useState)("default")');
+  assert.match(applyComposerPreferences(nativeDefault).out, /\[corePreset,setCorePreset\]=\(0,i\.useState\)\("full"\)/);
+});
 
 test("pure text remains a native browser paste", () => {
   const plan = getClipboardPastePlan(clipboard({ text: "hello world" }));
@@ -389,7 +407,7 @@ test("launcher, CI contract suite, and release stage all carry the patch", async
     readFile(new URL("../src/launcher.mjs", import.meta.url), "utf8"),
     readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8"),
   ]);
-  assert.match(launcher, /"patch-piweb-interactions\.mjs"/);
+  assert.match(launcher, /"patch-piweb-drop-auto-thinking\.mjs", "patch-piweb-interactions\.mjs"/, "thinking defaults must be materialized before synchronous preference initialization");
   assert.match(workflow, /node --test tests\/patch-piweb-interactions-contract\.mjs/);
   assert.match(workflow, /Copy-Item tools\/patch-piweb-interactions\.mjs stage\/tools\/patch-piweb-interactions\.mjs/);
 });

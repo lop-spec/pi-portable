@@ -4,8 +4,16 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { PiWebUiProxy, PIWEB_ARCHIVE_UI_PATH, SessionArchiveStore } from "../src/piweb-ui-proxy.mjs";
+import "./piweb-session-bootstrap-cache-contract.mjs";
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-ui-proxy-test-"));
+fs.mkdirSync(path.join(temp, ".pi", "agent"), { recursive: true });
+fs.writeFileSync(path.join(temp, ".pi", "agent", "settings.json"), JSON.stringify({
+  defaultProvider: "openai-codex",
+  defaultModel: "gpt-5.6-sol",
+  defaultThinkingLevel: "medium",
+  modelThinkingLevels: { "openai-codex/gpt-5.6-sol": "max" },
+}));
 const listen = (server, port = 0) => new Promise((resolve, reject) => {
   server.once("error", reject);
   server.listen(port, "127.0.0.1", () => resolve(server.address().port));
@@ -89,6 +97,10 @@ try {
 
   const html = await (await fetch(`http://127.0.0.1:${publicPort}/`, { headers: { accept: "text/html" } })).text();
   assert.ok(html.includes(PIWEB_ARCHIVE_UI_PATH));
+  assert.ok(html.includes('localStorage.getItem("pi-last-model")'));
+  assert.ok(html.includes('openai-codex'));
+  assert.ok(html.includes('pi-last-thinking-level'));
+  assert.ok(html.includes('"max"'));
 
   const sessions = path.join(temp, "sessions", "project");
   fs.mkdirSync(sessions, { recursive: true });
