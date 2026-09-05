@@ -1,16 +1,20 @@
 // 刷新指定 homes 根下各槽位（primary 除外）的 codex auth.json 访问令牌，复用桥内 account-pool 的刷新逻辑。
-// 出口沿用 pi 数据根 egress.json（CONNECT 代理）或直连。凭据只写回原文件，不打印。
-// 用法：node refresh-homes-auth.mjs [homesRoot]   默认 C:/Users/lop/Documents/claude/vscodium/homes
+// 出口沿用当前便携数据根（CONNECT 代理）或直连。凭据只写回原文件，不打印。
+// 用法：node refresh-homes-auth.mjs [homesRoot]
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import tls from "node:tls";
 import { createAccountPool } from "../src/bridge/account-pool.mjs";
+import { readBridgeEgress, resolveBridgeRuntime } from "./bridge-runtime-paths.mjs";
 
-const homesRoot = process.argv[2] || "C:/Users/lop/Documents/claude/vscodium/homes";
-const DATA = process.env.PI_PORTABLE_DATA || "C:/Users/lop/AppData/Local/pi-web/portable/data";
-let egress = {};
-try { egress = JSON.parse(fs.readFileSync(path.join(DATA, "egress.json"), "utf8")); } catch { /* 直连 */ }
+const runtime = resolveBridgeRuntime(import.meta.url);
+const homesInput = process.argv[2] || runtime.accountHomes;
+if (!homesInput) throw new Error("未找到账号 homes；请传入路径或设置 CODEX_ACCOUNT_HOMES");
+const homesRoot = path.resolve(homesInput);
+const DATA = runtime.data;
+if (!fs.existsSync(homesRoot)) throw new Error(`账号 homes 不存在：${homesRoot}`);
+const egress = readBridgeEgress(DATA);
 
 function connect(host) {
   if (egress.mode !== "proxy") {

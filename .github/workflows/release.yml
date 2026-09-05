@@ -33,6 +33,7 @@ jobs:
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node --test tests/log-rotate-contract.mjs
+          node --test tests/bridge-tools-portability-contract.mjs
           node --test tests/piweb-ui-proxy.mjs
           node --test tests/account-pool-contract.mjs
           node --test tests/account-usage-contract.mjs

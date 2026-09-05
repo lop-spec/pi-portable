@@ -5,10 +5,12 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { spawn, execFileSync } from "node:child_process";
+import { commandReferencesPath, readBridgeEgress, resolveBridgeRuntime } from "./bridge-runtime-paths.mjs";
 
-const HOME = path.resolve(path.dirname(new URL(import.meta.url).pathname.slice(1)), "..");
-const DATA = process.env.PI_PORTABLE_DATA || "C:/Users/lop/AppData/Local/pi-web/portable/data";
-const PORT = Number(process.env.PI_BRIDGE_PORT || 8794);
+const runtime = resolveBridgeRuntime(import.meta.url);
+const HOME = runtime.portableRoot;
+const DATA = runtime.data;
+const PORT = Number(process.env.PI_BRIDGE_PORT || process.env.CODEX_PROXY_PORT || 8794);
 const BRIDGE = path.join(HOME, "src", "bridge", "codex-responses-proxy.mjs");
 const killStale = process.argv.includes("--kill-stale");
 
@@ -29,7 +31,7 @@ function listenerPids() {
 for (const pid of listenerPids()) {
   const cmd = ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`);
   const isBridge = /codex-responses-proxy\.mjs/i.test(cmd);
-  const isPortable = /pi-portable[\\/]src[\\/]bridge/i.test(cmd);
+  const isPortable = commandReferencesPath(cmd, BRIDGE);
   if (isPortable) { console.log(`8794 已是 pi-portable 桥 pid ${pid}，不动`); process.exit(0); }
   if (!isBridge) { console.log(`pid ${pid} 占用 ${PORT} 但不是桥，放弃：${cmd.slice(0, 120)}`); process.exit(1); }
   if (!killStale) { console.log(`pid ${pid} 是旧桥（${cmd.slice(0, 120)}），加 --kill-stale 才结束`); process.exit(1); }
@@ -37,9 +39,9 @@ for (const pid of listenerPids()) {
   console.log(`已结束旧桥 pid ${pid}`);
 }
 
-let egress = {};
-try { egress = JSON.parse(fs.readFileSync(path.join(DATA, "egress.json"), "utf8")); } catch { /* 直连 */ }
+const egress = readBridgeEgress(DATA);
 const env = { ...process.env, PI_PORTABLE_DATA: DATA, PI_PORTABLE_HOME: HOME, CODEX_PROXY_PORT: String(PORT) };
+if (runtime.accountHomes) env.CODEX_ACCOUNT_HOMES = runtime.accountHomes;
 if (egress.mode === "proxy") { env.CODEX_UPSTREAM_PROXY_HOST = egress.host || "127.0.0.1"; env.CODEX_UPSTREAM_PROXY_PORT = String(egress.port); }
 else delete env.CODEX_UPSTREAM_PROXY_PORT;
 
