@@ -63,6 +63,25 @@ test("native Codex provider retains old sessions and exposes fixed plus future m
   assert.equal(result.settings.modelThinkingLevels["openai-codex/gpt-5.6-terra"], "max");
 });
 
+test("provider wildcards cannot leak older Codex models into the managed selector", () => {
+  const settings = legacySettings();
+  settings.enabledModels = [
+    "*/*:max",
+    "openai-*/gpt-*",
+    "codex-bridge/*",
+    "openai-codex/*",
+    "anthropic/claude-sonnet-4-5",
+    "google/*:high",
+  ];
+  const result = buildLiveModelConfiguration(legacyModels(), settings);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.settings.enabledModels, [
+    "anthropic/claude-sonnet-4-5",
+    "google/*:high",
+    ...LIVE_CODEX_MODEL_PATTERNS,
+  ]);
+});
+
 test("subsequent launcher runs preserve a user-selected global default and transport", () => {
   const first = buildLiveModelConfiguration(legacyModels(), legacySettings());
   first.settings.defaultModel = "gpt-5.6-terra";

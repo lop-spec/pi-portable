@@ -42,6 +42,24 @@ function uniqueStrings(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))];
 }
 
+function enabledPatternMaySelectCodex(pattern) {
+  if (typeof pattern !== "string") return false;
+  const slash = pattern.indexOf("/");
+  if (slash <= 0) return false;
+  const providerPattern = pattern.slice(0, slash);
+  if (providerPattern === LEGACY_CODEX_PROVIDER || providerPattern === LIVE_CODEX_PROVIDER) return true;
+  // enabledModels is a positive-only minimatch list. A wildcard provider such
+  // as `*/*:max` cannot preserve other providers while excluding Codex, so it
+  // must be removed to keep the model selector bounded to the managed list.
+  return providerPattern.includes("*")
+    || providerPattern.includes("?")
+    || providerPattern.includes("[")
+    || providerPattern.includes("{")
+    || providerPattern.includes("@(")
+    || providerPattern.includes("+(")
+    || providerPattern.includes("!(");
+}
+
 /** Pure migration used by both the launcher and contract tests. */
 export function buildLiveModelConfiguration(modelsInput, settingsInput) {
   const models = clone(isRecord(modelsInput) ? modelsInput : {});
@@ -78,7 +96,7 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput) {
 
   const previousPatterns = Array.isArray(settings.enabledModels) ? settings.enabledModels : [];
   const unrelatedPatterns = previousPatterns.filter((pattern) => (
-    typeof pattern === "string" && !pattern.startsWith(`${LEGACY_CODEX_PROVIDER}/`)
+    typeof pattern === "string" && !enabledPatternMaySelectCodex(pattern)
   ));
   settings.enabledModels = uniqueStrings([...unrelatedPatterns, ...LIVE_CODEX_MODEL_PATTERNS]);
 
