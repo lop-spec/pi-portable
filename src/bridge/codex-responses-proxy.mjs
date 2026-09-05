@@ -25,6 +25,7 @@ const PORTABLE_DATA = process.env.PI_PORTABLE_DATA
 fs.mkdirSync(PORTABLE_DATA, { recursive: true });
 
 import { compressUpstreamBody, rewriteCodexRequestBody } from "./codex-cache-policy.mjs";
+import { SUMMARIZATION_BODY_SIGNATURE, applySummarizationEffort, resolveSummaryEffort } from "./summarization-effort.mjs";
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
 import { createModelFallbackPlan, requestWithOverloadRetry, RETRYABLE_UPSTREAM_STATUS } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
@@ -44,7 +45,9 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 // (协议文本移入 pi AGENTS.md 管理块,桥部署不再作废会话前缀)、response memo 精确重放、
 // history 快路 reasoning 改写、tier 兜底——三样从未在真实流量里起作用,却是本周两起静默
 // 缺陷(强制 max、注入失效)的温床。
-const POLICY_VERSION = "gpt56-slim-v8.1.0";
+const POLICY_VERSION = "gpt56-slim-v8.2.0";
+// pi 压缩摘要请求单独的推理档位（默认 low；CODEX_SUMMARY_EFFORT=off 关闭）。判定只看 input[0]，无状态。
+const SUMMARY_EFFORT = resolveSummaryEffort(process.env.CODEX_SUMMARY_EFFORT);
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
 const numberEnv = (name, fallback) => {
   const value = Number(process.env[name]);
@@ -424,15 +427,34 @@ async function handleResponses(req, res) {
   ({ body, headers: fwdHeaders } = rewritten);
   // 兼容剥离：ChatGPT codex 上游不认 max_output_tokens（"Unsupported parameter"，2026-08-28 实测），
   // pi/pi-web 等 responses 方言客户端会带上。桥统一剥掉，客户端保持原生不打补丁。
-  if (!rewritten.meta.parseFailed && body.includes('"max_output_tokens"')) {
+  // 摘要档位隔离：pi 的压缩摘要请求把固定系统提示放在 input[0]，只对它改 reasoning.effort；
+  // 不记会话/账号/上一请求，普通轮次原样。判定与剥离共用同一次解析，避免第二次 JSON.parse。
+  const wantsCompat = body.includes('"max_output_tokens"');
+  const maybeSummary = SUMMARY_EFFORT !== "off" && body.includes(SUMMARIZATION_BODY_SIGNATURE);
+  let summaryOverride = null;
+  if (!rewritten.meta.parseFailed && (wantsCompat || maybeSummary)) {
     try {
       const compat = JSON.parse(body.toString("utf8"));
+      let changed = false;
       if (compat.max_output_tokens !== undefined) {
         delete compat.max_output_tokens;
-        body = Buffer.from(JSON.stringify(compat));
+        changed = true;
         log(`兼容剥离：max_output_tokens originator=${req.headers.originator || "-"}`);
       }
-    } catch { /* 非明文 JSON：保持原样 */ }
+      if (maybeSummary) {
+        const outcome = applySummarizationEffort(compat, { effort: SUMMARY_EFFORT });
+        if (outcome.applied) {
+          changed = true;
+          summaryOverride = outcome;
+          log(`摘要请求 reasoning：${outcome.from}→${outcome.to} originator=${req.headers.originator || "-"}`);
+        } else if (outcome.reason !== "not-summarization") {
+          log(`摘要请求 reasoning 未改：${outcome.reason} originator=${req.headers.originator || "-"}`);
+        }
+      }
+      if (changed) body = Buffer.from(JSON.stringify(compat));
+    } catch (error) {
+      log(`兼容/摘要解析失败，fail-open 原样透传：${String(error?.message || error).slice(0, 80)} originator=${req.headers.originator || "-"}`);
+    }
   }
   if (rewritten.meta.cacheApplied) {
     const c = rewritten.meta.cache;
@@ -641,6 +663,7 @@ async function handleResponses(req, res) {
         modelFallback: Boolean(meta.modelFallback),
         requestedTier: meta.requestedTier || "",
         upstreamTier: usage.serviceTier || "",
+        reasoningOverride: summaryOverride ? `summary:${summaryOverride.from}->${summaryOverride.to}` : "",
       };
       log(`流吞吐：model=${record.requestedModel || "?"}${record.modelFallback ? `→${record.upstreamModel}` : ""} account=${record.upstreamAccount || "?"} attempts=${record.upstreamAttempts} egress=${record.egressKey || "?"}:${record.egressPort} tier=${record.requestedTier || "-"}→${record.upstreamTier || "?"} ttfb=${record.ttfbMs}ms stream=${streamMs}ms outTok=${usage.outputTokens ?? "-"} reas=${usage.reasoningTokens ?? "-"} tok/s=${tokPerSec ?? "-"}`);
       // priority 额度是否被授予只能从吞吐判(2026-09-02 实测:同分钟 A/B priority 47-57 vs default 27
@@ -677,6 +700,7 @@ const server = http.createServer(async (req, res) => {
       ok: true, port: PORT, policyVersion: POLICY_VERSION,
       explicitBreakpoint: EXPLICIT_BREAKPOINT,
       forceReasoningEffort: "off",
+      summaryEffort: SUMMARY_EFFORT,
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
       accountHomes: ACCOUNT_HOMES || null,
       accounts: accountPool ? accountPool.snapshot() : [],
@@ -788,6 +812,7 @@ server.listen(PORT, HOST, () => {
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
   log(`推理强度：透传会话请求值（桥不改写）`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
+  log(`摘要推理档位：${SUMMARY_EFFORT}（只对 input[0] 为 pi 压缩摘要提示的请求生效，普通轮次原样透传）`);
   log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);
   log(STATUS_RETRY_ENABLED
     ? `上游 5xx 退避重试：状态码 ${[...RETRYABLE_UPSTREAM_STATUS].join("/")} 与过载共用同一重试预算(429/401 归账号池层)`
