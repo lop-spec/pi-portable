@@ -8,9 +8,10 @@ import http from "node:http";
 import { once } from "node:events";
 import { OLD_DOC_RULES, NEW_DOC_RULES, patchPrompt, patchInstalledPrompt, resolveSdk } from "../tools/patch-pi-native-policy.mjs";
 import { checkRuntime, evaluateRuntime } from "../tools/piweb-rules-live-check.mjs";
-const expected = { version: "pretool-only-v4", rulesSha256: "fixture-sha", agents: "fixture agents" };
+const version = fs.readFileSync(new URL("../src/lop-pretool.ts", import.meta.url), "utf8").match(/LOP_PRETOOL_RUNTIME_VERSION\s*=\s*"([^"]+)"/)[1];
+const expected = { version, rulesSha256: "fixture-sha", agents: "fixture agents" };
 const state = { systemPrompt: NEW_DOC_RULES.join("\n") + "\nfixture agents" };
-const commands = [{ name: "pretool-status", source: "extension", description: "version=pretool-only-v4 policy=allow-or-block rulesSha256=fixture-sha rules=loaded" }];
+const commands = [{ name: "pretool-status", source: "extension", description: `version=${version} policy=allow-or-block rulesSha256=fixture-sha rules=loaded` }];
 const old = "prefix\n" + OLD_DOC_RULES.join("\n") + "\nsuffix";
 
 test("narrow patch preserves surrounding prompt and is idempotent", () => {

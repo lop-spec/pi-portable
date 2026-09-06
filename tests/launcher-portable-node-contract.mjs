@@ -32,7 +32,7 @@ assert.doesNotMatch(source, /process\.env\.PI_HEADLESS = "1"/, "受管启动标�
 assert.match(source, /仅显式 PI_HEADLESS=1 才进入无头模式/u, "标记降级为仅禁自启弹窗时必须留下原因日志");
 assert.match(source, /--app=\$\{url\}[\s\S]*windowsHide: false/, "用户明确进入时浏览器 GUI 不得被 Windows 隐藏");
 assert.match(source, /function syncManagedExtension\(relativeSource, nodeExe\)/, "启动器必须同步受管扩展而非只同步追问扩展");
-assert.match(source, /\["lop-pretool.ts", "extensions\/lop-followup.ts"\]/, "安全扩展与默认关闭的追问扩展均受管");
+assert.match(source, /\["pretool\/native-import.cjs", "lop-pretool.ts", "extensions\/lop-followup.ts"\]/, "原生加载器先于安全扩展同步，默认关闭的追问扩展仍受管");
 assert.match(source, /受管扩展源缺失,未安装/u, "扩展同步失败必须留下无条件启动日志");
 assert.match(source, /patch-pi-native-policy\.mjs/, "升级后必须重做幂等提示词补丁");
 assert.match(source, /piweb-rules-live-check\.mjs/, "启动后必须核对运行态而非只校验文件");

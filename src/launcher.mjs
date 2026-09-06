@@ -122,7 +122,7 @@ function configurePortableBash() {
 
 function syncManagedExtension(relativeSource, nodeExe) {
   const source = path.join(HOME, "src", relativeSource);
-  const extensionDir = path.join(DATA, ".pi", "agent", "extensions");
+  const extensionDir = path.join(DATA, ".pi", "agent", relativeSource === "pretool/native-import.cjs" ? "data" : "extensions");
   const target = path.join(extensionDir, path.basename(relativeSource));
   if (!fs.existsSync(source)) return { status: "source-missing", source, target };
 
@@ -384,7 +384,7 @@ async function main() {
     const shellPath = configurePortableBash();
     if (shellPath) log(`Bash 已配置:${shellPath}`);
   } catch (e) { log(`Bash 配置失败:${e.message}`); }
-  for (const relativeSource of ["lop-pretool.ts", "extensions/lop-followup.ts"]) {
+  for (const relativeSource of ["pretool/native-import.cjs", "lop-pretool.ts", "extensions/lop-followup.ts"]) {
     try {
       const extension = syncManagedExtension(relativeSource, nodeExe);
       if (extension.status === "source-missing") log(`受管扩展源缺失,未安装:${extension.source}`);

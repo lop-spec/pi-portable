@@ -12,7 +12,7 @@ const REPO_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const AGENT_HOME = process.env.PI_CODING_AGENT_DIR || path.join(process.env.USERPROFILE || process.env.HOME, ".pi", "agent");
 const CLI_EXT = path.join(AGENT_HOME, "extensions");
 const BACKUP = path.join(REPO_SRC, "../tools/backup.mjs");
-const RESIDENT = ["lop-pretool.ts", "extensions/lop-followup.ts"];
+const RESIDENT = ["pretool/native-import.cjs", "lop-pretool.ts", "extensions/lop-followup.ts"];
 const RESIDENT_DIRS = ["browser-agent"];
 const RETIRED = ["lop-chain.ts", "lop-swarm"];
 const check = process.argv.includes("--check");
@@ -21,12 +21,13 @@ let changed = 0, same = 0;
 fs.mkdirSync(CLI_EXT, { recursive: true });
 for (const rel of RESIDENT) {
   const from = path.join(REPO_SRC, rel);
-  const to = path.join(CLI_EXT, path.basename(rel));
+  const to = path.join(rel === "pretool/native-import.cjs" ? path.join(AGENT_HOME, "data") : CLI_EXT, path.basename(rel));
   if (!fs.existsSync(from)) { console.error(`[sync-cli-home] 仓库源缺失: ${from}`); process.exitCode = 1; continue; }
   const src = fs.readFileSync(from);
   if (fs.existsSync(to) && Buffer.compare(src, fs.readFileSync(to)) === 0) { same++; console.log(`[sync-cli-home] 一致: ${path.basename(rel)}`); continue; }
   if (check) { changed++; console.log(`[sync-cli-home] 待更新: ${path.basename(rel)}`); continue; }
   if (fs.existsSync(to)) execFileSync(process.execPath, [BACKUP, to, "--label", "sync-cli-home"], { windowsHide: true, timeout: 15000, stdio: "pipe" });
+  fs.mkdirSync(path.dirname(to), { recursive: true });
   fs.writeFileSync(to, src);
   if (!fs.readFileSync(to).equals(src)) throw new Error(`读回不一致: ${to}`);
   changed++;

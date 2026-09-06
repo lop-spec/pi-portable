@@ -5,9 +5,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v4";
+export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v5";
 const AGENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RULE_DATA = path.join(AGENT_DIR, "data");
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(RULE_DATA, "rules-pretool.mjs");
@@ -37,8 +38,12 @@ export default async function (pi: ExtensionAPI) {
   let unavailable = "";
   try {
     rulesSha256 = crypto.createHash("sha256").update(fs.readFileSync(PRETOOL_MJS)).digest("hex");
-    // Reload sees the new module without reusing an old ESM cache entry; unchanged bytes share one import.
-    pre = await import(`${pathToFileURL(PRETOOL_MJS).href}?sha256=${rulesSha256}`);
+    // Jiti rewrites import() and can reuse the old path despite a new query string.
+    // A tiny static CJS helper, loaded by native require, avoids VM/eval/experimental loaders.
+    const sourceHelper = path.join(path.dirname(fileURLToPath(import.meta.url)), "pretool/native-import.cjs");
+    const importNative = createRequire(import.meta.url)(fs.existsSync(sourceHelper) ? sourceHelper : path.join(RULE_DATA, "native-import.cjs"));
+    pre = await importNative(`${pathToFileURL(PRETOOL_MJS).href}?sha256=${rulesSha256}`);
+    if (crypto.createHash("sha256").update(fs.readFileSync(PRETOOL_MJS)).digest("hex") !== rulesSha256) throw new Error("rules-changed-during-load; reload required");
     if (typeof pre.checkPreTool !== "function") throw new Error("rules-module-missing-checkPreTool");
   } catch (error) {
     unavailable = oneLine(error);

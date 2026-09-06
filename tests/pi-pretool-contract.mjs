@@ -10,7 +10,7 @@ import { withSilentWindowsProcessEnv } from "../src/windows-process-env.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const extensionFile = process.env.PI_PRETOOL_EXTENSION || path.join(root, "src/lop-pretool.ts");
 const source = fs.readFileSync(extensionFile, "utf8");
-assert.match(source, /pretool-only-v4/);
+assert.match(source, /pretool-only-v5/);
 assert.doesNotMatch(source, /Object\.assign\(event\.input|\.fixup\(|sendUserMessage\(|sendMessage\(|registerTool\(/);
 assert.match(source, /structuredClone\(event\.input/);
 if (process.argv.includes("--static")) {
@@ -72,6 +72,8 @@ try {
     const loaded = await loadExtensions([extensionFile], cwd);
     assert.deepEqual(loaded.errors, []);
     check(loaded.extensions.length === 1, "real extension loaded");
+    const identity = loaded.extensions[0].commands.get("pretool-status")?.description || "";
+    check(identity.includes("rules=loaded"), "rules must actually load, not pass tests through fail-open: " + identity);
     const sm = SessionManager.inMemory(cwd);
     return new ExtensionRunner(loaded.extensions, loaded.runtime, cwd, sm, {});
   }
@@ -172,6 +174,10 @@ try {
     check((await ra.emitToolCall(event))?.block, "stale backup does not authorize edit");
   }
   console.log(JSON.stringify({ ok: true, assertions, concurrentCalls: concurrent, semanticCases: semantics.length, networkCalls: 0, scope: "real Pi tool pipeline" }));
+} catch (error) {
+  const logfile = path.join(temp, "pretool.log");
+  if (fs.existsSync(logfile)) console.error(fs.readFileSync(logfile, "utf8").split(/\r?\n/).slice(-12).join("\n"));
+  throw error;
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in oldEnv)) delete process.env[key];
   Object.assign(process.env, oldEnv);
