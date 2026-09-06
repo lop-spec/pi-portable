@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { INTERVAL_MS, RESET_LIMIT_MS, eligibleAccounts, refreshQuota, explicitPending, stateBusy, checkIdle,
-  dispatchBatch, taskPrompt, readSession, listSessionFiles, buildTasks, acquireLock, requestJson, reconcileReceipts, stockBacktestsAllowed } from '../src/quota-idle-scheduler.mjs';
+  dispatchBatch, taskPrompt, readSession, listSessionFiles, buildTasks, acquireLock, requestJson, reconcileReceipts, stockBacktestsAllowed, SCHEDULED_MODEL } from '../src/quota-idle-scheduler.mjs';
 const now = Date.parse('2026-09-07T00:00:00Z');
 const account = { id: 'a', remainingPercent: 1, resetAt: new Date(now + 3600_000).toISOString(), fetchedAt: new Date(now).toISOString(), stale: false, allowed: true, cooldownMinLeft: 0, error: null };
 const quota = a => ({ ok: true, enabled: true, accounts: [a] });
@@ -12,13 +12,13 @@ const noop = () => {};
 const source = { id: 'source', file: 'source.jsonl', first: '原始要求', users: ['原始要求', '后续更正'], revision: 'r1', last: '最近进度' };
 const tasks = ['eastmoney-backtest', 'douyin-backtest'].map((key, i) => ({ key, title: `回测${i}`, cwd: 'C:/work', source }));
 const idle = { isStreaming: false, isPromptRunning: false, isBashRunning: false, isCompacting: false, pendingMessageCount: 0, queuedMessages: { steering: [], followUp: [] }, extensionStatuses: [] };
-function fakeApi({ failMode = false, timeoutPrompt = false, failCreate = false } = {}) {
+function fakeApi({ failMode = false, timeoutPrompt = false, failCreate = false, wrongModel = false, wrongThinking = false } = {}) {
   const calls = []; let count = 0;
   const api = async (route, body) => {
     calls.push({ route, body });
-    if (route === '/api/agent/new') { if (failCreate) throw Error('timeout'); return { success: true, sessionId: `new-${++count}` }; }
+    if (route === '/api/agent/new') { if (failCreate) throw Error('timeout'); return { success: true, sessionId: `new-${++count}`, model: { provider: SCHEDULED_MODEL.provider, modelId: wrongModel ? 'default-model' : SCHEDULED_MODEL.modelId }, thinkingLevel: SCHEDULED_MODEL.thinkingLevel }; }
     if (body?.type === 'get_commands') return { data: { commands: [{ name: 'lop-followup', source: 'extension' }] } };
-    if (body?.type === 'get_state') return { data: { ...idle, extensionStatuses: failMode ? [] : [{ key: 'lop-followup', text: '自动追问 · 目标 · 达标 · 待发送' }] } };
+    if (body?.type === 'get_state') return { data: { ...idle, model: { provider: SCHEDULED_MODEL.provider, id: SCHEDULED_MODEL.modelId }, thinkingLevel: wrongThinking ? 'high' : SCHEDULED_MODEL.thinkingLevel, extensionStatuses: failMode ? [] : [{ key: 'lop-followup', text: '自动追问 · 目标 · 达标 · 待发送' }] } };
     if (timeoutPrompt && body?.message?.startsWith('额度调度任务：')) throw Error('timeout');
     return { success: true };
   };
@@ -73,6 +73,8 @@ test('two independent new sessions: ensure, name, discover command, arm, readbac
     guard: async owned => { guards.push([...owned]); return []; } });
   assert.deepEqual(sent, ['new-1', 'new-2']); assert.ok(saves >= 10);
   assert.equal(calls.filter(c => c.route === '/api/agent/new').length, 2);
+  for (const c of calls.filter(c => c.route === '/api/agent/new')) assert.deepEqual(c.body, { cwd: 'C:/work', type: 'ensure_session', provider: 'openai-codex', modelId: 'gpt-6-astra', thinkingLevel: 'medium' });
+  assert.equal(calls.some(c => c.body?.type === 'set_model'), false, 'selection must be explicit in new-session request, without a separate set_model command');
   for (const id of sent) {
     const commands = calls.filter(c => c.route === `/api/agent/${id}`).map(c => c.body);
     assert.deepEqual(commands.map(c => c.type), ['set_session_name', 'get_commands', 'prompt', 'get_state', 'prompt']);
@@ -83,6 +85,15 @@ test('two independent new sessions: ensure, name, discover command, arm, readbac
   const count = calls.length;
   assert.deepEqual(await dispatchBatch({ tasks, api, state, save: noop, log: noop, now: () => now }), []);
   assert.equal(calls.length, count, 'duplicate tick must perform no mutation');
+});
+
+test('wrong model or reasoning readback blocks dispatch instead of silently using defaults', async () => {
+  for (const options of [{ wrongModel: true }, { wrongThinking: true }]) {
+    const { api, calls } = fakeApi(options), state = { records: [] };
+    await dispatchBatch({ tasks, api, state, save: noop, log: noop, now: () => now });
+    assert.equal(calls.filter(c => c.body?.message?.startsWith('额度调度任务：')).length, 0);
+    assert.ok(state.records.every(r => r.status === 'failed' && /Astra\/medium/u.test(r.reason)));
+  }
 });
 
 test('mode activation failure never sends a model task', async () => {

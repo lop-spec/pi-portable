@@ -9,6 +9,7 @@ import { appendLineRotating } from './log-rotate.mjs';
 
 export const INTERVAL_MS = 30 * 60_000;
 export const RESET_LIMIT_MS = 24 * 60 * 60_000;
+export const SCHEDULED_MODEL = Object.freeze({ provider: 'openai-codex', modelId: 'gpt-6-astra', thinkingLevel: 'medium' });
 export const FIXED_TASKS = [
   { key: 'eastmoney-backtest', title: '东方财富智能回测', directory: '东方财富智能回测分析', match: /东方财富.*(?:回测|选股)/u },
   { key: 'douyin-backtest', title: '抖音选股智能回测', directory: '抖音短线体系回测', match: /抖音.*(?:回测|选股)/u },
@@ -253,15 +254,17 @@ export async function dispatchBatch({ tasks, api, state, save, log, now = Date.n
     const record = { key, revisionKey, taskKey: task.key, title: task.title, at: now(), status: 'creating' };
     state.records.push(record); save(); // write-ahead receipt BEFORE any mutating HTTP request
     try {
-      const created = await api('/api/agent/new', { cwd: task.cwd, type: 'ensure_session' });
+      const created = await api('/api/agent/new', { cwd: task.cwd, type: 'ensure_session', ...SCHEDULED_MODEL });
       if (!created.sessionId) throw Error('new session response missing id');
       record.sessionId = created.sessionId; record.status = 'created'; owned.add(record.sessionId); save();
+      if (created.model?.provider !== SCHEDULED_MODEL.provider || created.model?.modelId !== SCHEDULED_MODEL.modelId || created.thinkingLevel !== SCHEDULED_MODEL.thinkingLevel) throw Error('new session did not select Astra/medium');
       const route = `/api/agent/${encodeURIComponent(record.sessionId)}`;
       await api(route, { type: 'set_session_name', name: `${task.title} · 额度续做 ${new Date(record.at).toISOString().slice(0, 16)}` });
       const commands = await api(route, { type: 'get_commands' });
       if (!commands.data?.commands?.some(c => c.name === 'lop-followup' && c.source === 'extension')) throw Error('lop-followup extension not loaded');
       await api(route, { type: 'prompt', message: '/lop-followup target' });
       const readback = await api(route, { type: 'get_state' });
+      if (readback.data?.model?.provider !== SCHEDULED_MODEL.provider || readback.data?.model?.id !== SCHEDULED_MODEL.modelId || readback.data?.thinkingLevel !== SCHEDULED_MODEL.thinkingLevel) throw Error('session model/thinking changed; expected Astra/medium');
       if (!(readback.data?.extensionStatuses || []).some(s => s.key === 'lop-followup' && /达标/u.test(s.text) && /待发送/u.test(s.text))) throw Error('target mode not armed');
       record.status = 'armed'; save();
       const external = await guard(owned);
@@ -272,7 +275,7 @@ export async function dispatchBatch({ tasks, api, state, save, log, now = Date.n
       record.status = 'sending'; save();
       await api(route, { type: 'prompt', message: taskPrompt(task, key) });
       record.status = 'accepted'; save(); sent.push(record.sessionId);
-      log('task-accepted', { task: task.title, sessionId: record.sessionId, key });
+      log('task-accepted', { task: task.title, sessionId: record.sessionId, key, ...SCHEDULED_MODEL });
     } catch (error) {
       record.status = record.status === 'sending' ? 'uncertain' : 'failed'; record.reason = error.message; save();
       log('task-failed', { task: task.title, sessionId: record.sessionId, status: record.status, reason: error.message });
@@ -310,7 +313,7 @@ export async function runScheduler({ dataRoot, apiBase = 'http://127.0.0.1:30140
   };
   const release = acquireLock(root, log); if (!release) return { skipped: 'overlap' };
   try {
-    log('tick', { dryRun, pid: process.pid, hostname: os.hostname(), stockBacktests: stockBacktestsAllowed() });
+    log('tick', { dryRun, pid: process.pid, hostname: os.hostname(), stockBacktests: stockBacktestsAllowed(), ...SCHEDULED_MODEL });
     const { snapshot, attemptAt } = await refreshQuota(route => requestJson(usageBase, route), { log, now });
     const accounts = eligibleAccounts(snapshot, now(), attemptAt);
     if (!accounts.length) { log('skip', { reason: 'no-account-with-remaining-quota-reset-under-24h' }); return { skipped: 'quota' }; }
