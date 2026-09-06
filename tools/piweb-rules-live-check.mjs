@@ -1,50 +1,56 @@
-// pi-web 规则生效复验:开一个最小会话,让模型原文引用它当前加载的全局规则里
-// 「慢查询」和「数据库治理」两行,读回后判断是否已是精简版(不再引用已归档的 rules/db-*.md)。
-// 用法: node tools/piweb-rules-live-check.mjs   (环境 PIWEB_BASE 可覆盖,默认 30140)
-const BASE = process.env.PIWEB_BASE || "http://127.0.0.1:30140";
+// Read back actual SDK state and loaded extension identity; never prompt a model.
+// --session <existing-id> --restore may cold-restore that session using get_state only.
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { NEW_DOC_RULES } from "./patch-pi-native-policy.mjs";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+const normalize = (text) => text.replace(/\r\n/g, "\n").trim();
 
-async function api(p, body) {
-  const res = await fetch(BASE + p, body
-    ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
-    : {});
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return { raw: text.slice(0, 300), status: res.status }; }
+export function evaluateRuntime(state, commands, expected) {
+  const prompt = normalize(state.systemPrompt || "");
+  const identity = commands.filter((c) => c.source === "extension" && /^pretool-status(?::\d+)?$/.test(c.name));
+  const description = identity.length === 1 ? identity[0].description || "" : "";
+  const checks = {
+    documentPolicy: NEW_DOC_RULES.every((s) => prompt.includes(s)) && !prompt.includes("Always read pi .md files completely"),
+    pretoolVersion: description.includes(`version=${expected.version} policy=allow-or-block`),
+    rulesHash: description.includes(`rulesSha256=${expected.rulesSha256} rules=loaded`),
+    agentsText: prompt.includes(normalize(expected.agents)),
+  };
+  const reasons = Object.entries(checks).filter(([, ok]) => !ok).map(([key]) => key);
+  return { ok: reasons.length === 0, status: reasons.length ? "pending-runtime-activation" : "verified", checks, reasons, modelCalls: 0 };
 }
-
-const message = [
-  "不要调用任何工具。只做一件事:把你当前加载的全局规则(AGENTS.md)里「按需准确性资料」一节中,",
-  "以「慢查询」开头和以「数据库治理」开头的两行逐字原文抄出来,不加任何解释。",
-].join("");
-
-const t0 = Date.now();
-const created = await api("/api/agent/new", {
-  type: "prompt",
-  cwd: process.env.TEMP || "C:\\Windows\\Temp",
-  message,
-  provider: "codex-bridge",
-  modelId: "gpt-5.6-sol",
-  thinkingLevel: "low",
-});
-const sessionId = created?.sessionId || "";
-let failed = sessionId ? "" : "create: " + JSON.stringify(created).slice(0, 200);
-if (sessionId) {
-  let done = false;
-  for (let i = 0; i < 180; i += 1) {
-    await new Promise((r) => setTimeout(r, 1000));
-    try {
-      const run = await api("/api/agent/running");
-      if (!run.runningSessionIds?.includes(sessionId)) { done = true; break; }
-    } catch { /* 暂时不可达继续轮询 */ }
+export async function checkRuntime({ base = process.env.PIWEB_BASE || "http://127.0.0.1:30140", sessionId, restore = false,
+  agentDir = process.env.PI_CODING_AGENT_DIR || path.join(process.env.PI_PORTABLE_DATA || ".", ".pi/agent") } = {}) {
+  async function api(route, body) {
+    const response = await fetch(base + route, { signal: AbortSignal.timeout(10000), ...(body ? {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    } : {}) });
+    if (!response.ok) throw new Error(`${route}: HTTP ${response.status}`);
+    const json = await response.json();
+    if (json.error || json.success === false) throw new Error(`${route}: ${json.error || "failed"}`);
+    return json;
   }
-  if (!done) failed = "timeout 180s";
+  if (!sessionId) sessionId = (await api("/api/agent/running")).runningSessionIds?.[0];
+  if (!sessionId) return { ok: false, status: "unverified", reasons: ["no-loaded-session; first session logs runtime policy; rerun with --session <id> --restore"], modelCalls: 0 };
+  let state = (await api(`/api/agent/${encodeURIComponent(sessionId)}`)).state;
+  if (!state && restore) state = (await api(`/api/agent/${encodeURIComponent(sessionId)}`, { type: "get_state" })).data;
+  if (!state) return { ok: false, status: "unverified", sessionId, reasons: ["session-not-loaded; use --restore explicitly"], modelCalls: 0 };
+  const reply = await api(`/api/agent/${encodeURIComponent(sessionId)}`, { type: "get_commands" });
+  const commands = reply.data?.commands || [];
+  const source = fs.readFileSync(path.join(root, "src/lop-pretool.ts"), "utf8");
+  const version = source.match(/LOP_PRETOOL_RUNTIME_VERSION\s*=\s*"([^"]+)"/)?.[1];
+  if (!version) throw new Error("Expected extension version missing in deployment source");
+  const expected = { version, rulesSha256: sha(fs.readFileSync(path.join(agentDir, "data/rules-pretool.mjs"))), agents: fs.readFileSync(path.join(agentDir, "AGENTS.md"), "utf8") };
+  return { ...evaluateRuntime(state, commands, expected), sessionId, version, rulesSha256: expected.rulesSha256 };
 }
-let answer = "";
-if (sessionId) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const at = process.argv.indexOf("--session");
   try {
-    const j = await api("/api/agent/" + sessionId, { type: "get_last_assistant_text" });
-    answer = typeof j?.data === "string" ? j.data : String(j?.data?.text || "");
-  } catch (e) { failed = failed || "read: " + String(e).slice(0, 100); }
+    const result = await checkRuntime({ sessionId: at >= 0 ? process.argv[at + 1] : process.env.PI_SESSION_ID, restore: process.argv.includes("--restore") });
+    console.log(JSON.stringify(result));
+    process.exitCode = result.ok ? 0 : 1;
+  } catch (error) { console.error(JSON.stringify({ ok: false, status: "unverified", reason: error.message, modelCalls: 0 })); process.exitCode = 1; }
 }
-const slim = answer.includes("db-readonly-analysis.md") && !answer.includes("db-sql-impact-analysis")
-  && answer.includes("db-maintenance-and-release.md") && !answer.includes("db-maintenance-scripts");
-console.log(JSON.stringify({ LIVE_RESULT: true, ok: !failed && slim, slim, failed, sessionId, seconds: Math.round((Date.now() - t0) / 1000), answer: answer.slice(0, 600) }));

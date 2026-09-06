@@ -1,24 +1,21 @@
-// Pi 工具前确定性兼容与安全层。只在 tool_call 前运行 rules-pretool.mjs：
-// 可机械修复的 Windows/Git Bash 形态原地改写；不可修复或修复失败时阻断并返回正确形态。
-// 不注入提示、不调用模型、不读写目标/验收状态，也不改变 retry、compaction 或 Stop。
-// 私有规则单一真值固定在本扩展同级 agent/data；缺失时 fail-open 并留一行日志。
+// Pi 工具前安全检查：只允许或拒绝，不改写参数、不生成脚本、不代做备份。
+// 普通执行走 Pi 原生工具；不注入消息、不调用模型、不改变结果、Stop、retry 或 compaction。
+// 私有规则的单一真值在 agent/data；沿用缺失/异常时 fail-open，并无条件记录原因。
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v3";
-
-const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const AGENT_DIR = path.resolve(MODULE_DIR, "..");
+export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v4";
+const AGENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RULE_DATA = path.join(AGENT_DIR, "data");
-const RUNTIME_DATA = process.env.PI_PORTABLE_DATA || RULE_DATA;
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(RULE_DATA, "rules-pretool.mjs");
-const LOG = process.env.PI_PRETOOL_LOG || process.env.PI_CHAIN_LOG || path.join(RUNTIME_DATA, "lop-pretool.log");
+const LOG = process.env.PI_PRETOOL_LOG || path.join(process.env.PI_PORTABLE_DATA || RULE_DATA, "lop-pretool.log");
+const oneLine = (value: unknown) => String(value).replace(/[\r\n]/g, " ").slice(0, 200);
 
 function log(line: string) {
   try {
-    const rendered = `[${new Date().toISOString()}] ${line}\n`;
     let bytes = 0;
     try { bytes = fs.statSync(LOG).size; } catch {}
     if (bytes > 10 * 1024 * 1024) {
@@ -28,64 +25,59 @@ function log(line: string) {
       fs.renameSync(LOG, `${LOG}.1`);
     }
     fs.mkdirSync(path.dirname(LOG), { recursive: true });
-    fs.appendFileSync(LOG, rendered, "utf8");
+    fs.appendFileSync(LOG, `[${new Date().toISOString()}] ${line}\n`, "utf8");
   } catch (error) {
-    console.error(`[lop-pretool-log] ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[lop-pretool-log] ${oneLine(error)}`);
   }
 }
 
-export default function (pi: ExtensionAPI) {
-  log(`PRETOOL_ONLY loaded version=${LOP_PRETOOL_RUNTIME_VERSION} rules=${fs.existsSync(PRETOOL_MJS) ? "present" : "absent"}`);
+export default async function (pi: ExtensionAPI) {
+  let pre: any;
+  let rulesSha256 = "unavailable";
+  let unavailable = "";
+  try {
+    rulesSha256 = crypto.createHash("sha256").update(fs.readFileSync(PRETOOL_MJS)).digest("hex");
+    // Reload sees the new module without reusing an old ESM cache entry; unchanged bytes share one import.
+    pre = await import(`${pathToFileURL(PRETOOL_MJS).href}?sha256=${rulesSha256}`);
+    if (typeof pre.checkPreTool !== "function") throw new Error("rules-module-missing-checkPreTool");
+  } catch (error) {
+    unavailable = oneLine(error);
+    log(`S7 FAIL_OPEN rules-unavailable reason=${unavailable}`);
+  }
+  const identity = `version=${LOP_PRETOOL_RUNTIME_VERSION} policy=allow-or-block rulesSha256=${rulesSha256} rules=${unavailable ? "unavailable" : "loaded"}`;
+  log(`PRETOOL_ONLY loaded ${identity}`);
+  // get_commands exposes the loaded identity without a model request, a new tool, or per-turn polling.
+  pi.registerCommand("pretool-status", {
+    description: identity,
+    handler: async (_args, ctx) => { ctx.ui.notify(identity, unavailable ? "warning" : "info"); },
+  });
+
+  pi.on("session_start", (_event, ctx) => {
+    const prompt = ctx.getSystemPrompt();
+    const pending = prompt.includes("Always read pi .md files completely") || !prompt.includes("Full-file reading and exhaustive link traversal are not required");
+    log(`RUNTIME_POLICY session=${oneLine(ctx.sessionManager.getSessionId())} ${identity} prompt=${pending ? "pending-activation-or-custom-prompt" : "on-demand"} promptSha256=${crypto.createHash("sha256").update(prompt).digest("hex")}`);
+  });
 
   pi.on("tool_call", async (event: any, ctx: any) => {
-    if (!fs.existsSync(PRETOOL_MJS)) {
-      log(`S7 FAIL_OPEN rules-missing path=${PRETOOL_MJS}`);
-      return;
-    }
+    const call = `session=${oneLine(ctx.sessionManager.getSessionId() || "ephemeral")} call=${oneLine(event.toolCallId || "unknown")} tool=${oneLine(event.toolName)}`;
+    if (unavailable) { log(`S7 FAIL_OPEN ${call} reason=${unavailable}`); return; }
     try {
-      const pre: any = await import(pathToFileURL(PRETOOL_MJS).href);
-      const result = pre.checkPreTool({
-        session_id: String(ctx?.sessionManager?.getSessionId?.() || ""),
-        transcript_path: String(ctx?.sessionManager?.getSessionFile?.() || ""),
-        tool_name: String(event?.toolName || ""),
-        tool_input: event?.input ?? {},
+      const hits = pre.checkPreTool({
+        session_id: ctx.sessionManager.getSessionId() || "",
+        transcript_path: ctx.sessionManager.getSessionFile() || "",
+        tool_name: event.toolName,
+        // Rule predicates must not be able to mutate the real execution arguments.
+        tool_input: structuredClone(event.input ?? {}),
       });
-      const hits = Array.isArray(result) ? result : result?.hits || [];
-      if (!hits.length) return;
-
-      const allFixable = hits.every((h: any) => typeof h.fixup === "function");
-      if (allFixable) {
-        let input = { ...(event?.input ?? {}) };
-        let failure = "";
-        const notes: string[] = [];
-        for (const h of hits) {
-          try {
-            const r = h.fixup(input);
-            if (!r?.input) { failure = `${h.id}:修复器未返回输入`; break; }
-            input = r.input;
-            notes.push(`${h.id} → ${r.note}`);
-          } catch (e) {
-            failure = `${h.id}:${String(e).slice(0, 120)}`;
-            break;
-          }
-        }
-        if (failure) {
-          log(`S7 FIXUP_BLOCK tool=${event?.toolName} ${failure}`);
-          return { block: true, reason: `lop 工具兼容修复失败，已阻止原始错误命令执行：${failure}` };
-        }
-        Object.assign(event.input, input);
-        log(`S7 FIXUP tool=${event?.toolName} ${notes.join("; ").slice(0, 200)}`);
-        return;
-      }
-
-      log(`S7 BLOCK tool=${event?.toolName} hits=${hits.map((h: any) => h.id || h.rule || "?").join(",")}`);
+      if (hits === null || (Array.isArray(hits) && hits.length === 0)) return;
+      if (!Array.isArray(hits)) throw new Error("invalid-rule-result");
+      log(`S7 BLOCK ${call} hits=${hits.map((h: any) => oneLine(h.id)).join(",")}`);
       return {
         block: true,
-        reason: `lop 规则红线:${hits.map((h: any) => `${h.reason || h.id || "blocked"}${h.fix ? `;正确形态:${h.fix}` : ""}`).join(" | ").slice(0, 500)}`,
+        reason: `lop 安全检查拒绝执行（未改写命令）:${hits.map((h: any) => `${h.reason || h.id}${h.fix ? `;${h.fix}` : ""}`).join(" | ").slice(0, 700)}`,
       };
-    } catch (e) {
-      // 失败路径必留痕:门本身坏掉不得挡住用户执行。
-      log(`S7 FAIL_OPEN ${String(e).slice(0, 120)}`);
+    } catch (error) {
+      log(`S7 FAIL_OPEN ${call} reason=${oneLine(error)}`);
     }
   });
 }

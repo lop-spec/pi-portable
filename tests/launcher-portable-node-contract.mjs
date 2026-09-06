@@ -31,8 +31,12 @@ assert.match(source, /process\.env\.PI_AUTO_WINDOW = "0"/, "受管启动标记�
 assert.doesNotMatch(source, /process\.env\.PI_HEADLESS = "1"/, "受管启动标记不得把人工双击也强制成无头模式");
 assert.match(source, /仅显式 PI_HEADLESS=1 才进入无头模式/u, "标记降级为仅禁自启弹窗时必须留下原因日志");
 assert.match(source, /--app=\$\{url\}[\s\S]*windowsHide: false/, "用户明确进入时浏览器 GUI 不得被 Windows 隐藏");
-assert.match(source, /function syncManagedFollowupExtension\(\)/, "启动器必须同步用户主动开启的自动追问扩展");
-assert.match(source, /自动追问扩展源缺失,未安装/u, "扩展同步失败必须留下无条件启动日志");
+assert.match(source, /function syncManagedExtension\(relativeSource, nodeExe\)/, "启动器必须同步受管扩展而非只同步追问扩展");
+assert.match(source, /\["lop-pretool.ts", "extensions\/lop-followup.ts"\]/, "安全扩展与默认关闭的追问扩展均受管");
+assert.match(source, /受管扩展源缺失,未安装/u, "扩展同步失败必须留下无条件启动日志");
+assert.match(source, /patch-pi-native-policy\.mjs/, "升级后必须重做幂等提示词补丁");
+assert.match(source, /piweb-rules-live-check\.mjs/, "启动后必须核对运行态而非只校验文件");
+assert.match(source, /runtime=not-verified/, "磁盘更新不得冒充运行态完成");
 assert.equal(fs.existsSync(path.join(root, "src", "extensions", "lop-followup.ts")), true, "发行源码层必须包含默认关闭的自动追问扩展");
 assert.doesNotMatch(source, /syncRulesSnapshot|refreshRulesSnapshot/u, "启动器不得继续生成已退役规则快照");
 assert.doesNotMatch(source, /patch-piweb-hide-recovered|patch-piweb-hide-hidden-extension-messages/u, "启动器不得重新应用隐藏控制消息的 UI 补丁");

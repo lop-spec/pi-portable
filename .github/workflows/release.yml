@@ -47,7 +47,10 @@ jobs:
           node --test tests/piweb-service-tier-contract.mjs
           node --test tests/codex-overload-retry.mjs
           node tests/bridge-5xx-retry-e2e.mjs
-          node tests/pi-pretool-contract.mjs
+          node tests/pi-pretool-contract.mjs --static
+          if ($LASTEXITCODE -ne 0) { throw "pretool source contract failed" }
+          node --test tests/pi-native-policy-contract.mjs
+          if ($LASTEXITCODE -ne 0) { throw "native policy contracts failed" }
           node --test tests/tray-contract.mjs
           node --test tests/hard-restart-contract.mjs
           node --test tests/patch-piweb-fold-contract.mjs
@@ -114,6 +117,12 @@ jobs:
           Pop-Location
           if (-not (Test-Path stage/app/node_modules/@agegr/pi-web/package.json)) { throw "pi-web not installed" }
 
+      - name: Verify real Pi tool isolation (no model calls)
+        shell: pwsh
+        run: |
+          node tests/pi-pretool-contract.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Pi tool isolation/semantics regression" }
+
       - name: Verify hidden Git Bash native children
         shell: pwsh
         run: |
@@ -140,6 +149,9 @@ jobs:
           Copy-Item tools/patch-piweb-live-models.mjs stage/tools/patch-piweb-live-models.mjs
           Copy-Item tools/patch-piweb-service-tier.mjs stage/tools/patch-piweb-service-tier.mjs
           Copy-Item tools/backup.mjs stage/tools/backup.mjs
+          Copy-Item tools/patch-pi-native-policy.mjs stage/tools/patch-pi-native-policy.mjs
+          Copy-Item tools/piweb-rules-live-check.mjs stage/tools/piweb-rules-live-check.mjs
+          Copy-Item tools/sync-cli-home.mjs stage/tools/sync-cli-home.mjs
           Copy-Item tools/patch-piweb-conversation-nodes.mjs stage/tools/patch-piweb-conversation-nodes.mjs
           Copy-Item LICENSE stage/LICENSE
           Copy-Item README.md stage/README.md

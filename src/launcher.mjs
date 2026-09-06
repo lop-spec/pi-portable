@@ -120,10 +120,10 @@ function configurePortableBash() {
   return settings.shellPath;
 }
 
-function syncManagedFollowupExtension() {
-  const source = path.join(HOME, "src", "extensions", "lop-followup.ts");
+function syncManagedExtension(relativeSource, nodeExe) {
+  const source = path.join(HOME, "src", relativeSource);
   const extensionDir = path.join(DATA, ".pi", "agent", "extensions");
-  const target = path.join(extensionDir, "lop-followup.ts");
+  const target = path.join(extensionDir, path.basename(relativeSource));
   if (!fs.existsSync(source)) return { status: "source-missing", source, target };
 
   const wanted = fs.readFileSync(source, "utf8");
@@ -133,17 +133,21 @@ function syncManagedFollowupExtension() {
   fs.mkdirSync(extensionDir, { recursive: true });
   let backup = null;
   if (current) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const historyDir = path.join(extensionDir, "_历史版本");
-    fs.mkdirSync(historyDir, { recursive: true });
-    backup = path.join(historyDir, `lop-followup.${stamp}.ts`);
-    fs.copyFileSync(target, backup);
+    const result = spawnSync(nodeExe, [path.join(HOME, "tools", "backup.mjs"), target, "--label", "managed-extension"], { windowsHide: true, encoding: "utf8", timeout: 15000 });
+    if (result.status !== 0) throw new Error(`扩展备份失败，未修改:${target}: ${result.stderr || result.stdout}`);
+    backup = "verified-sha256";
   }
 
-  const tmp = `${target}.portable.tmp`;
-  fs.writeFileSync(tmp, wanted, "utf8");
-  fs.renameSync(tmp, target);
-  if (fs.readFileSync(target, "utf8") !== wanted) throw new Error(`自动追问扩展读回不一致:${target}`);
+  const temporary = fs.mkdtempSync(path.join(extensionDir, ".managed-extension-"));
+  const tmp = path.join(temporary, "staged.ts");
+  try {
+    fs.writeFileSync(tmp, wanted, { encoding: "utf8", flag: "wx" });
+    fs.renameSync(tmp, target);
+    if (fs.readFileSync(target, "utf8") !== wanted) throw new Error(`受管扩展读回不一致:${target}`);
+  } finally {
+    if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    fs.rmdirSync(temporary);
+  }
   return { status: current ? "updated" : "installed", source, target, backup };
 }
 
@@ -380,11 +384,13 @@ async function main() {
     const shellPath = configurePortableBash();
     if (shellPath) log(`Bash 已配置:${shellPath}`);
   } catch (e) { log(`Bash 配置失败:${e.message}`); }
-  try {
-    const extension = syncManagedFollowupExtension();
-    if (extension.status === "source-missing") log(`自动追问扩展源缺失,未安装:${extension.source}`);
-    else log(`自动追问扩展:${extension.status} (${extension.target})`);
-  } catch (e) { log(`自动追问扩展同步失败:${e.message}`); }
+  for (const relativeSource of ["lop-pretool.ts", "extensions/lop-followup.ts"]) {
+    try {
+      const extension = syncManagedExtension(relativeSource, nodeExe);
+      if (extension.status === "source-missing") log(`受管扩展源缺失,未安装:${extension.source}`);
+      else log(`受管扩展:${extension.status} (${extension.target}) runtime=not-verified`);
+    } catch (e) { log(`受管扩展同步失败:${relativeSource}:${e.message}`); }
+  }
 
   // 3 出口自适应
   const egress = await detectEgress(DATA);
@@ -488,7 +494,7 @@ async function main() {
   // recovery、扩展消息或工具卡的补丁，模型上下文及工具过程对用户保持可见。
   // chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-interactions.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-service-tier.mjs", "patch-piweb-conversation-nodes.mjs"]) {
+  for (const patchName of ["patch-pi-native-policy.mjs", "patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-interactions.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-service-tier.mjs", "patch-piweb-conversation-nodes.mjs"]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });
@@ -542,6 +548,11 @@ async function main() {
     shutdown(3);
   }
   log(`pi-web 内部运行面就绪 :${PORTS.webInternal}`);
+  const runtimeCheck = spawnSync(nodeExe, [path.join(HOME, "tools", "piweb-rules-live-check.mjs")], {
+    windowsHide: true, encoding: "utf8", timeout: 20000,
+    env: { ...webEnv, PIWEB_BASE: `http://127.0.0.1:${PORTS.webInternal}` },
+  });
+  log(`运行态验收:${runtimeCheck.status === 0 ? "verified" : "未验证/未生效"} ${(runtimeCheck.stdout || runtimeCheck.stderr || runtimeCheck.error?.message || "无输出").trim().slice(0, 700)}`);
 
   // 6 会话归档 UI 透明代理：只处理归档/额度展示，其余请求字节流透传；不读取 prompt、
   // 不跟踪任务、不注入恢复消息，也不改变模型 Stop。自身崩溃仍由 launcher 熔断守护。
