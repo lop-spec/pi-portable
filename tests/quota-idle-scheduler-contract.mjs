@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { INTERVAL_MS, RESET_LIMIT_MS, eligibleAccounts, refreshQuota, explicitPending, stateBusy, checkIdle,
-  dispatchBatch, taskPrompt, readSession, listSessionFiles, buildTasks, acquireLock, requestJson, reconcileReceipts } from '../src/quota-idle-scheduler.mjs';
+  dispatchBatch, taskPrompt, readSession, listSessionFiles, buildTasks, acquireLock, requestJson, reconcileReceipts, stockBacktestsAllowed } from '../src/quota-idle-scheduler.mjs';
 const now = Date.parse('2026-09-07T00:00:00Z');
 const account = { id: 'a', remainingPercent: 1, resetAt: new Date(now + 3600_000).toISOString(), fetchedAt: new Date(now).toISOString(), stale: false, allowed: true, cooldownMinLeft: 0, error: null };
 const quota = a => ({ ok: true, enabled: true, accounts: [a] });
@@ -24,6 +24,12 @@ function fakeApi({ failMode = false, timeoutPrompt = false, failCreate = false }
   };
   return { api, calls };
 }
+
+test('stock host is exclusively the peer; local/unknown hosts never opt in', () => {
+  assert.equal(stockBacktestsAllowed('DESKTOP-3EGB4LB'), true);
+  assert.equal(stockBacktestsAllowed('YANGYONG'), false);
+  assert.equal(stockBacktestsAllowed('other'), false);
+});
 
 test('quota uses strict 0<reset<24h and remaining>0 on the SAME fresh account', () => {
   assert.equal(eligibleAccounts(quota(account), now, now).length, 1);
@@ -132,9 +138,13 @@ test('fixed projects automatic discovery, recent 30-minute boundary, completed/b
   add('项目B', '- [ ] P1 修复B', now - INTERVAL_MS - 1);
   add('项目C', '- [ ] P0 修复C\n已确认达标', now - 1000);
   add('项目D', '- [ ] P0 修复D', now - 1000, 'aborted');
-  const sessions = listSessionFiles(root, noop); const result = buildTasks(sessions, now, noop);
+  const sessions = listSessionFiles(root, noop); const result = buildTasks(sessions, now, noop, { includeBacktests: true });
   assert.equal(result.length, 3); assert.equal(result[2].text, '修复A');
   assert.ok(result[0].cwd.includes('东方财富')); assert.ok(result[1].cwd.includes('抖音'));
+  add('普通项目', '- [ ] P0 股票智能回测待执行', now - 1000);
+  const local = buildTasks(listSessionFiles(root, noop), now, noop, { includeBacktests: false });
+  assert.equal(local.length, 1); assert.equal(local[0].text, '修复A');
+  assert.deepEqual(buildTasks([], now, noop, { includeBacktests: false }), [], 'local needs no stock project');
 });
 
 test('crash reconciliation distinguishes pre-send from ambiguous send; never silently loses a receipt', () => {

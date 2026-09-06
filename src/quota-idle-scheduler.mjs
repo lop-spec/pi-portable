@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { appendLineRotating } from './log-rotate.mjs';
@@ -12,6 +13,9 @@ export const FIXED_TASKS = [
   { key: 'eastmoney-backtest', title: '东方财富智能回测', directory: '东方财富智能回测分析', match: /东方财富.*(?:回测|选股)/u },
   { key: 'douyin-backtest', title: '抖音选股智能回测', directory: '抖音短线体系回测', match: /抖音.*(?:回测|选股)/u },
 ];
+// Stocks belong to the project host only. Local/unknown hosts run recent P0/P1 work only.
+export const stockBacktestsAllowed = (hostname = os.hostname()) => hostname.toLowerCase() === 'desktop-3egb4lb';
+const stockText = text => /(?:股票|选股|东方财富|抖音).*回测|回测.*(?:股票|选股|东方财富|抖音)/u.test(text);
 const hash = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 24);
 const textOf = (m) => typeof m?.content === 'string' ? m.content : (m?.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -146,12 +150,14 @@ function referencedPending(s, log) {
   return found;
 }
 
-export function buildTasks(sessions, now, log) {
+export function buildTasks(sessions, now, log, { includeBacktests = stockBacktestsAllowed() } = {}) {
   const tasks = [], fixedSources = new Set();
   for (const fixed of FIXED_TASKS) {
     // No cross-project scheduler discussion: the task must mention only this backtest.
     const candidates = sessions.filter(s => (fixed.match.test(s.first) && !FIXED_TASKS.some(f => f.key !== fixed.key && f.match.test(s.first)))
       || path.basename(s.cwd).startsWith(fixed.directory));
+    for (const c of candidates) fixedSources.add(c.id);
+    if (!includeBacktests) { log('fixed-task-excluded', { task: fixed.title, reason: 'stock-backtests-project-host-only' }); continue; }
     const source = candidates[0];
     if (!source) throw Error(`fixed task source missing: ${fixed.title}`);
     const s = readSession(source);
@@ -168,7 +174,6 @@ export function buildTasks(sessions, now, log) {
       if (dirs.length === 1) cwd = path.join(source.cwd, dirs[0].name);
     }
     if (!cwd) throw Error(`fixed project directory missing or ambiguous: ${fixed.title}`);
-    for (const c of candidates) fixedSources.add(c.id);
     tasks.push({ ...fixed, cwd, source: s });
   }
   const recent = new Map();
@@ -180,6 +185,9 @@ export function buildTasks(sessions, now, log) {
     const pending = [...explicitPending(s.last), ...referencedPending(s, log)];
     if (!pending.length) log('recent-task-skipped', { sessionId: s.id, reason: 'no-explicit-incomplete-P0-P1' });
     for (const item of pending) {
+      if (!includeBacktests && (stockText(item.text) || stockText(s.first) || stockText(s.cwd))) {
+        log('recent-task-skipped', { sessionId: s.id, reason: 'stock-backtests-project-host-only' }); continue;
+      }
       const key = 'recent-' + hash(norm(s.cwd) + '\n' + item.text.replace(/\s+/gu, ' ').trim());
       const task = { key, title: `${item.priority} ${item.text}`, cwd: s.cwd, source: s, ...item };
       if (!recent.has(key) || recent.get(key).source.activityAt < s.activityAt) recent.set(key, task);
@@ -302,7 +310,7 @@ export async function runScheduler({ dataRoot, apiBase = 'http://127.0.0.1:30140
   };
   const release = acquireLock(root, log); if (!release) return { skipped: 'overlap' };
   try {
-    log('tick', { dryRun, pid: process.pid });
+    log('tick', { dryRun, pid: process.pid, hostname: os.hostname(), stockBacktests: stockBacktestsAllowed() });
     const { snapshot, attemptAt } = await refreshQuota(route => requestJson(usageBase, route), { log, now });
     const accounts = eligibleAccounts(snapshot, now(), attemptAt);
     if (!accounts.length) { log('skip', { reason: 'no-account-with-remaining-quota-reset-under-24h' }); return { skipped: 'quota' }; }
