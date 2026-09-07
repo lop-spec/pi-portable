@@ -25,6 +25,13 @@ test('pins the official main SHA and declares source-integrated runtime identity
   assert.deepEqual(pkg.piPortable, { upstreamRef: upstream.ref, sourceOverlay: 1 });
 });
 
+test('native CLI explicitly keeps its Next.js child hidden on Windows', () => {
+  const cli = integrated.get('bin/pi-web.js');
+  assert.match(cli, /const child = spawn\(process.execPath, \[nextBin, \.\.\.nextArgs\], \{\s+windowsHide: true,/);
+  assert.match(cli, /wireChildProcessLifecycle\(child\)/);
+  assert.match(cli, /if \(openBrowser && !browserOpened/);
+});
+
 test('source integration is deterministic and keeps client directives first', () => {
   const repeated = integrate(read);
   assert.deepEqual(repeated, integrated);

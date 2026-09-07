@@ -32,6 +32,7 @@ export function integrate(getFile) {
     set(name, source.startsWith(directive) ? directive + text + source.slice(directive.length) : text + source);
   };
   const input = 'components/ChatInput.tsx', hook = 'hooks/useAgentSession.ts', chat = 'components/ChatWindow.tsx', sidebar = 'components/SessionSidebar.tsx';
+  change('bin/pi-web.js', 'const child = spawn(process.execPath, [nextBin, ...nextArgs], {', 'const child = spawn(process.execPath, [nextBin, ...nextArgs], {\n  windowsHide: true,');
   const runtime = [getClipboardPastePlan, normalizeClipboardImages, formatAtMentions, uploadClipboardFiles, filterSessionsForWorktree, conversationMessageText, toConversationNodeLine, conversationUserQuestion, collectConversationNodeRecords].map(fn => `export ${fn.toString()}`).join('\n\n');
   set('lib/pi-portable-runtime.js', `${runtime}\n\nexport function readPreference(key, fallback = null) {\n  if (typeof window === 'undefined') return fallback;\n  try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); }\n  catch (error) { console.error('[pi-web] preference read failed:', key, error); return fallback; }\n}\nexport function rememberPreference(key, value) {\n  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch (error) { console.error('[pi-web] preference write failed:', key, error); }\n}\n`);
   set('components/PortableControls.tsx', template('PortableControls.tsx'));
