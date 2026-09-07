@@ -46,7 +46,8 @@ export async function checkRuntime({ base = process.env.PIWEB_BASE || "http://12
   const expected = { version, rulesSha256: sha(fs.readFileSync(path.join(agentDir, "data/rules-pretool.mjs"))), agents: fs.readFileSync(path.join(agentDir, "AGENTS.md"), "utf8") };
   return { ...evaluateRuntime(state, commands, expected), sessionId, version, rulesSha256: expected.rulesSha256 };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Portable tools may be reached through a directory junction. Node resolves the module URL, not argv.
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
   const at = process.argv.indexOf("--session");
   try {
     const result = await checkRuntime({ sessionId: at >= 0 ? process.argv[at + 1] : process.env.PI_SESSION_ID, restore: process.argv.includes("--restore") });

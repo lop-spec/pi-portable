@@ -6,6 +6,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
 import { once } from "node:events";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+const execute = promisify(execFile);
 import { OLD_DOC_RULES, NEW_DOC_RULES, patchPrompt, patchInstalledPrompt, resolveSdk } from "../tools/patch-pi-native-policy.mjs";
 import { checkRuntime, evaluateRuntime } from "../tools/piweb-rules-live-check.mjs";
 const version = fs.readFileSync(new URL("../src/lop-pretool.ts", import.meta.url), "utf8").match(/LOP_PRETOOL_RUNTIME_VERSION\s*=\s*"([^"]+)"/)[1];
@@ -57,6 +61,47 @@ test("runtime verification cannot be satisfied by updated disk alone", () => {
   assert.equal(evaluateRuntime(state, commands, { ...expected, rulesSha256: "new-rules" }).ok, false);
   assert.equal(evaluateRuntime(state, commands, { ...expected, agents: "changed rules" }).ok, false);
   assert.equal(evaluateRuntime(state, commands, { ...expected, version: "new-version" }).ok, false);
+});
+test("CLI entrypoints run through portable directory junctions and cannot silently exit zero", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-policy-junction-"));
+  const linked = path.join(temp, "portable");
+  const sdk = path.join(temp, "sdk");
+  const core = path.join(sdk, "dist/core/system-prompt.js");
+  const server = http.createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ running: false }));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  try {
+    fs.symlinkSync(fileURLToPath(new URL("../", import.meta.url)), linked, process.platform === "win32" ? "junction" : "dir");
+    fs.mkdirSync(path.dirname(core), { recursive: true });
+    fs.writeFileSync(core, old);
+    async function cli(name, args) {
+      try {
+        const result = await execute(process.execPath, [path.join(linked, "tools", name), ...args], {
+          windowsHide: true, timeout: 10000, env: { ...process.env, PIWEB_BASE: `http://127.0.0.1:${server.address().port}` },
+        });
+        return { ...result, code: 0 };
+      } catch (error) {
+        if (typeof error.code !== "number") throw error;
+        return error;
+      }
+    }
+    const pending = await cli("patch-pi-native-policy.mjs", ["--sdk", sdk, "--check"]);
+    assert.equal(pending.code, 1, "junction --check must not silently skip pending patch");
+    assert.equal(JSON.parse(pending.stdout).status, "pending");
+    assert.equal(fs.readFileSync(core, "utf8"), old);
+    const applied = await cli("patch-pi-native-policy.mjs", ["--sdk", sdk]);
+    assert.equal(applied.code, 0);
+    assert.equal(JSON.parse(applied.stdout).status, "patched");
+    assert.equal(fs.readFileSync(core, "utf8"), patchPrompt(old));
+    const unloaded = await cli("piweb-rules-live-check.mjs", ["--session", "fixture"]);
+    assert.equal(unloaded.code, 1, "junction live check must not silently report success");
+    assert.equal(JSON.parse(unloaded.stdout).status, "unverified");
+  } finally {
+    server.closeAllConnections(); await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 test("live checker uses read-only commands, no prompt/new-session/model calls", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-live-policy-"));
