@@ -62,6 +62,13 @@ test("runtime verification cannot be satisfied by updated disk alone", () => {
   assert.equal(evaluateRuntime(state, commands, { ...expected, agents: "changed rules" }).ok, false);
   assert.equal(evaluateRuntime(state, commands, { ...expected, version: "new-version" }).ok, false);
 });
+test("CLI detection preserves library imports from Node stdin", async () => {
+  const pending = execute(process.execPath, ["--input-type=module", "-"], { windowsHide: true, timeout: 10000 });
+  pending.child.stdin.end(["patch-pi-native-policy.mjs", "piweb-rules-live-check.mjs"].map(name =>
+    `await import(${JSON.stringify(new URL(`../tools/${name}`, import.meta.url).href)});`
+  ).join("\n") + '\nconsole.log("import-ok");\n');
+  assert.equal((await pending).stdout.trim(), "import-ok");
+});
 test("CLI entrypoints run through portable directory junctions and cannot silently exit zero", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-policy-junction-"));
   const linked = path.join(temp, "portable");

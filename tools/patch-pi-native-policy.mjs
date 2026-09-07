@@ -61,7 +61,7 @@ export function patchInstalledPrompt(sdk, { check = false } = {}) {
   return { status: edits.length ? (check ? "pending" : "patched") : "already-patched", sdk, changed: edits.length, checked: files.length, runtime: "not-verified" };
 }
 // Portable tools may be reached through a directory junction. Node resolves the module URL, not argv.
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
+if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const i = process.argv.indexOf("--pkg"), j = process.argv.indexOf("--sdk");
     const sdk = j >= 0 ? process.argv[j + 1] : resolveSdk(i >= 0 ? process.argv[i + 1] : path.join(process.env.PI_PORTABLE_HOME || ".", "app/node_modules/@agegr/pi-web"));
