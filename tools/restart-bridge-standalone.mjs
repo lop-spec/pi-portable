@@ -1,6 +1,7 @@
 // 独立拉起 pi-portable 桥（8794）：launcher 熔断后或端口被旧桥抢占时的止血工具。
 // 复刻 launcher 的桥环境（PI_PORTABLE_DATA / CODEX_PROXY_PORT / 出口代理），静默、分离、stderr 落盘。
-// 用法：node restart-bridge-standalone.mjs [--kill-stale]   （--kill-stale 结束占着 8794 的旧 codex-responses-proxy.mjs 进程）
+// 用法：node restart-bridge-standalone.mjs [--restart-idle|--kill-stale]
+// 只经桥自身的原子 idle 端点退出；旧版无端点、活跃请求或非桥占用均拒绝，绝不强杀。
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
@@ -13,6 +14,7 @@ const DATA = runtime.data;
 const PORT = Number(process.env.PI_BRIDGE_PORT || process.env.CODEX_PROXY_PORT || 8794);
 const BRIDGE = path.join(HOME, "src", "bridge", "codex-responses-proxy.mjs");
 const killStale = process.argv.includes("--kill-stale");
+const restartIdle = process.argv.includes("--restart-idle");
 
 function health() {
   return new Promise((resolve) => {
@@ -32,11 +34,30 @@ for (const pid of listenerPids()) {
   const cmd = ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`);
   const isBridge = /codex-responses-proxy\.mjs/i.test(cmd);
   const isPortable = commandReferencesPath(cmd, BRIDGE);
-  if (isPortable) { console.log(`8794 已是 pi-portable 桥 pid ${pid}，不动`); process.exit(0); }
+  if (isPortable && !restartIdle) { console.log(`${PORT} 已是 pi-portable 桥 pid ${pid}，不动`); process.exit(0); }
   if (!isBridge) { console.log(`pid ${pid} 占用 ${PORT} 但不是桥，放弃：${cmd.slice(0, 120)}`); process.exit(1); }
-  if (!killStale) { console.log(`pid ${pid} 是旧桥（${cmd.slice(0, 120)}），加 --kill-stale 才结束`); process.exit(1); }
-  ps(`Stop-Process -Id ${pid} -Force`);
-  console.log(`已结束旧桥 pid ${pid}`);
+  if (!killStale && !restartIdle) { console.log(`pid ${pid} 是旧桥；未指定切换，不动`); process.exit(1); }
+  const current = await health();
+  if (current?.lifecycle?.version !== "idle-shutdown-v1" || current.pid !== Number(pid)) {
+    console.error(`shutdown refused reason=unsupported-idle-protocol port=${PORT} pid=${pid}; 保留现有进程`);
+    process.exit(1);
+  }
+  const reply = await fetch(`http://127.0.0.1:${PORT}/admin/shutdown-if-idle`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal: AbortSignal.timeout(3000),
+  });
+  const result = await reply.json();
+  if (!reply.ok || !result.ok) {
+    console.error(`shutdown refused status=${reply.status} active=${result.activeRequests ?? "unknown"}; 保留现有进程`);
+    process.exit(1);
+  }
+  console.log(`桥已接受空闲退出 pid=${pid}；无强杀`);
+  for (let i = 0; i < 20; i++) {
+    const h = await health();
+    if (!h) break;
+    if (h.pid !== Number(pid)) { console.log(`launcher 已接管 pid=${h.pid}`); process.exit(0); }
+    if (i === 19) { console.error("shutdown pending; 不启动竞争实例、不强杀"); process.exit(1); }
+    await new Promise(r => setTimeout(r, 100));
+  }
 }
 
 const egress = readBridgeEgress(DATA);

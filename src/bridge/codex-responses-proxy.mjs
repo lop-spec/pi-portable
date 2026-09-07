@@ -32,6 +32,8 @@ import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
 import { createAccountUsageMonitor, readAccountUsageIdentity } from "./account-usage.mjs";
 import { codexModelsUpstreamPath, DEFAULT_CODEX_MODELS_CLIENT_VERSION, modelCatalogResponseHeaders } from "./codex-model-catalog.mjs";
 import { appendLineRotating } from "../log-rotate.mjs";
+import { TRANSPORT_ERROR_VERSION, upstreamConnectionError } from "./transport-errors.mjs";
+import { createRequestLifecycle } from "./request-lifecycle.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
 const HOST = "127.0.0.1";
@@ -596,7 +598,7 @@ async function handleResponses(req, res) {
       errorKind: String(e?.code || e?.message || "unknown").slice(0, 60),
     });
     res.writeHead(502, { "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ error: { message: "上游连接失败" } }));
+    return res.end(JSON.stringify(upstreamConnectionError(e)));
   }
   const upRes = selected.response;
   activeUpRes = upRes;
@@ -690,6 +692,13 @@ async function handleResponses(req, res) {
   upRes.resume();
 }
 
+const lifecycle = createRequestLifecycle({
+  log,
+  stop: () => {
+    accountUsageMonitor?.stop();
+    server.close(() => process.exit(0));
+  },
+});
 const server = http.createServer(async (req, res) => {
   const url = (req.url || "").split("?")[0];
   // 进来的每一条都记：客户端打哪个路径、带什么 originator，是排障的第一手事实。
@@ -698,7 +707,9 @@ const server = http.createServer(async (req, res) => {
   if (url === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({
-      ok: true, port: PORT, policyVersion: POLICY_VERSION,
+      ok: true, port: PORT, pid: process.pid, policyVersion: POLICY_VERSION,
+      transportErrorVersion: TRANSPORT_ERROR_VERSION,
+      lifecycle: lifecycle.snapshot(),
       explicitBreakpoint: EXPLICIT_BREAKPOINT,
       forceReasoningEffort: "off",
       summaryEffort: SUMMARY_EFFORT,
@@ -723,6 +734,10 @@ const server = http.createServer(async (req, res) => {
       egress: currentEgress(),
       metricsFile: METRICS_FILE,
     }));
+  }
+
+  if (url === "/admin/shutdown-if-idle" && req.method === "POST") {
+    return lifecycle.shutdownIfIdle(req, res);
   }
 
   // 账号池控制面（仅本机回环，即时切号/看池状态，无需下游登录头）。
@@ -770,6 +785,7 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify(responseBody));
   }
 
+  if (!lifecycle.admit(res)) return;
   const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   if (!bearer) {
     res.writeHead(401, { "Content-Type": "application/json" });
@@ -790,7 +806,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       log("models 转发失败：" + String(e.message).slice(0, 80));
       res.writeHead(502, { "Content-Type": "application/json" });
-      return res.end(JSON.stringify({ error: { message: "models 转发失败" } }));
+      return res.end(JSON.stringify(upstreamConnectionError(e)));
     }
   }
 

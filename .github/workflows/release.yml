@@ -41,6 +41,8 @@ jobs:
           node tests/windows-launcher-contract.mjs
           node --test tests/log-rotate-contract.mjs
           node --test tests/bridge-tools-portability-contract.mjs
+          node --test tests/bridge-stop-contract.mjs
+          node tests/bridge-idle-e2e.mjs
           node --test tests/piweb-ui-proxy.mjs
           node --test tests/account-pool-contract.mjs
           node --test tests/account-usage-contract.mjs
@@ -174,6 +176,9 @@ jobs:
         run: |
           node tests/pi-pretool-contract.mjs
           if ($LASTEXITCODE -ne 0) { throw "Pi tool isolation/semantics regression" }
+          $env:PI_WEB_PKG = (Resolve-Path stage/app/node_modules/@agegr/pi-web/package.json).Path
+          node tests/pi-stop-retry-sdk.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Pi native stop/retry regression" }
 
       - name: Verify hidden Git Bash native children
         if: ${{ !inputs.app_only }}
