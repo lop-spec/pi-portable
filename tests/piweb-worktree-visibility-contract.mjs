@@ -44,8 +44,11 @@ function createHarness(payload, options = {}) {
   vm.runInNewContext(source, {
     window,
     document,
+    location,
+    localStorage: { getItem() { return null; }, setItem() {} },
     sessionStorage: { getItem() { return null; } },
     MutationObserver,
+    ResizeObserver: class ResizeObserver { observe() {} disconnect() {} },
     Request,
     Response,
     Headers,

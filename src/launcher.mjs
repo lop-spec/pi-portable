@@ -62,6 +62,14 @@ function resolvePiWebEntry() {
   let pkg;
   try { pkg = JSON.parse(fs.readFileSync(packageFile, "utf8")); }
   catch (e) { throw new Error(`pi-web 包清单不可读(${packageFile}):${e.message}`); }
+  const sourceIntegrated = pkg.piPortable?.sourceOverlay === 1;
+  if (pkg.version !== "0.8.11") {
+    const expected = JSON.parse(fs.readFileSync(path.join(HOME, "assets", "piweb-upstream.json"), "utf8"));
+    if (!sourceIntegrated || pkg.version !== expected.version || pkg.piPortable?.upstreamRef !== expected.ref) {
+      throw new Error(`pi-web ${pkg.version} 未通过源码集成校验；拒绝套用旧版补丁或降级启动`);
+    }
+    log(`pi-web 源码集成已验证: ${pkg.version} @ ${pkg.piPortable.upstreamRef}; 不再运行旧版产物补丁`);
+  }
   const declaredBin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.["pi-web"];
   const candidates = [
     declaredBin && path.resolve(packageRoot, declaredBin),
@@ -69,7 +77,7 @@ function resolvePiWebEntry() {
   ].filter(Boolean);
   const entry = candidates.find((candidate) => fs.existsSync(candidate));
   if (!entry) throw new Error(`pi-web JS 入口缺失(版本 ${pkg.version || "未知"}):${candidates.join(",")}`);
-  return { entry, version: pkg.version || "未知" };
+  return { entry, version: pkg.version || "未知", sourceIntegrated };
 }
 
 function portableizeModelAuth() {
@@ -486,7 +494,7 @@ async function main() {
     ...bashPreludeEnv,
   };
   const webLog = path.join(DATA, "pi-web.log");
-  const { entry: webEntry, version: webVersion } = resolvePiWebEntry();
+  const { entry: webEntry, version: webVersion, sourceIntegrated } = resolvePiWebEntry();
   // 起 pi-web 前先把产物补丁钉在位:npm 升级/异机重装会还原 .next 产物,脚本均幂等
   // (已打 => already-patched 零写入;版本/锚点不符 => exit≠0 零写入)。失败只告警,按现有产物继续。
   // 顺序硬约束:fold 在前,draft-persist 其次,interactions 再按当前 chunk 寻锚;
@@ -494,7 +502,7 @@ async function main() {
   // recovery、扩展消息或工具卡的补丁，模型上下文及工具过程对用户保持可见。
   // chunk 名指纹含当前 hash，乱序会污染 PWA 缓存。
   const piWebPkgRoot = path.join(HOME, "app", "node_modules", "@agegr", "pi-web");
-  for (const patchName of ["patch-pi-native-policy.mjs", "patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-interactions.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-service-tier.mjs", "patch-piweb-conversation-nodes.mjs"]) {
+  for (const patchName of ["patch-pi-native-policy.mjs", ...(sourceIntegrated ? [] : ["patch-piweb-fold.mjs", "patch-piweb-draft-persist.mjs", "patch-piweb-drop-auto-thinking.mjs", "patch-piweb-interactions.mjs", "patch-piweb-show-thinking.mjs", "patch-piweb-worktree-sessions.mjs", "patch-piweb-live-models.mjs", "patch-piweb-service-tier.mjs", "patch-piweb-conversation-nodes.mjs"])]) {
     const patchScript = path.join(HOME, "tools", patchName);
     if (!fs.existsSync(patchScript)) { log(`pi-web 补丁脚本缺失,跳过:tools\\${patchName}`); continue; }
     const r = spawnSync(nodeExe, [patchScript, "--pkg", piWebPkgRoot], { windowsHide: true, timeout: 120000, encoding: "utf8" });

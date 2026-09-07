@@ -1,3 +1,98 @@
+// Shared, event-driven geometry for the three portal controls. Never poll the
+// transcript or mutate React-owned children. A single frame serves all clients.
+(() => {
+  "use strict";
+  if (window.__piUiLayout) return;
+  const clients = new Set();
+  const anchors = new Set();
+  const selector = '.sidebar-container,[data-pi-archive-slot],.model-selector.is-toolbar,[role="dialog"],[aria-modal="true"]';
+  const owned = '#pi-session-archive-control-host,#pi-account-usage-host,#pi-account-usage-panel,#pi-service-tier-button,#pi-service-tier-panel,[data-pi-session-archive-toast]';
+  let frame = 0, rebind = true, modal = false;
+  const resize = new ResizeObserver(() => schedule());
+  function visibleRect(element) {
+    if (!element?.isConnected) return null;
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    for (let parent = element; parent; parent = parent.parentElement) {
+      if (parent.hidden || parent.classList.contains('sidebar-closed')) return null;
+      const style = getComputedStyle(parent);
+      if (style.visibility === 'hidden' || style.display === 'none') return null;
+    }
+    const view = viewport();
+    if (rect.bottom <= view.top || rect.top >= view.bottom || rect.right <= view.left || rect.left >= view.right) return null;
+    return rect;
+  }
+  function viewport() {
+    const view = window.visualViewport;
+    const left = view?.offsetLeft || 0, top = view?.offsetTop || 0;
+    const width = view?.width || innerWidth, height = view?.height || innerHeight;
+    return { left, top, width, height, right: left + width, bottom: top + height };
+  }
+  function placePanel(panel, anchor, preferredHeight = 360) {
+    const view = viewport(), gap = 8;
+    const above = Math.max(0, anchor.top - view.top - gap * 2);
+    const below = Math.max(0, view.bottom - anchor.bottom - gap * 2);
+    const up = above >= Math.min(preferredHeight, 180) || above >= below;
+    const height = Math.min(preferredHeight, up ? above : below);
+    const width = Math.min(parseFloat(getComputedStyle(panel).width) || 280, view.width - gap * 2);
+    panel.style.maxWidth = `${Math.max(0, view.width - gap * 2)}px`;
+    panel.style.maxHeight = `${height}px`;
+    panel.style.left = `${Math.max(view.left + gap, Math.min(anchor.right - width, view.right - width - gap))}px`;
+    panel.style.right = 'auto';
+    panel.style.bottom = up ? `${innerHeight - anchor.top + gap}px` : 'auto';
+    panel.style.top = up ? 'auto' : `${anchor.bottom + gap}px`;
+  }
+  function schedule(discover = false) {
+    rebind ||= discover;
+    if (frame || document.visibilityState === 'hidden') return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (rebind) {
+        rebind = false;
+        resize.disconnect(); anchors.clear(); modal = false;
+        for (const element of document.querySelectorAll(selector)) {
+          if (element.closest(owned)) continue;
+          if (element.matches('[role="dialog"],[aria-modal="true"]') && visibleRect(element)) modal = true;
+          for (let node = element, depth = 0; node && depth < 5; node = node.parentElement, depth++) {
+            if (!anchors.has(node)) { anchors.add(node); resize.observe(node); }
+          }
+        }
+        if (document.body) resize.observe(document.body);
+      }
+      for (const client of clients) client();
+    });
+  }
+  const observer = new MutationObserver(records => {
+    for (const record of records) {
+      const target = record.target;
+      if (!(target instanceof Element) || target.closest(owned)) continue;
+      if (record.type === 'attributes') {
+        if (target === document.documentElement || anchors.has(target)) { schedule(true); return; }
+      } else if ([...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element && !node.matches(owned) && (node.matches(selector) || node.querySelector(selector)))) {
+        schedule(true); return;
+      }
+    }
+  });
+  window.__piUiLayout = {
+    subscribe(client) { clients.add(client); schedule(true); },
+    schedule, visibleRect, viewport, placePanel,
+    get blocked() { return modal; },
+    open(id) { document.dispatchEvent(new CustomEvent('pi-ui:popover-open', { detail: id })); },
+  };
+  function start() {
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open', 'aria-modal', 'lang'] });
+    window.addEventListener('resize', () => schedule(), { passive: true });
+    window.visualViewport?.addEventListener('resize', () => schedule(), { passive: true });
+    window.visualViewport?.addEventListener('scroll', () => schedule(), { passive: true });
+    document.addEventListener('scroll', event => {
+      if (event.target === document || anchors.has(event.target)) schedule();
+    }, { capture: true, passive: true });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') schedule(true); });
+    schedule(true);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+})();
+
 (() => {
   "use strict";
 
@@ -249,6 +344,13 @@
     )) || null;
   }
 
+  function requestNativeRefresh() {
+    const button = nativeRefreshButton();
+    if (button) button.click();
+    else if (document.querySelector('[data-pi-archive-slot]')) document.dispatchEvent(new Event('pi-web:refresh-sessions'));
+    else console.error('[pi-web archive] session refresh control unavailable');
+  }
+
   function nativeNewSessionButton() {
     return [...document.querySelectorAll("button")].find((button) => {
       if (button.dataset.piSessionArchiveControl) return false;
@@ -279,7 +381,7 @@
   function requestListRefresh(baselineSerial, expectedView, attempt = 0) {
     if (state.view !== expectedView) return;
     if (state.listRequestSerial > baselineSerial && state.lastRequestedListView === expectedView) return;
-    nativeRefreshButton()?.click();
+    requestNativeRefresh();
     const delays = [120, 240, 480, 800];
     setTimeout(() => {
       if (state.view !== expectedView) return;
@@ -291,12 +393,17 @@
 
   function ensureControl() {
     const refresh = nativeRefreshButton();
-    if (!refresh) return;
+    const slot = document.querySelector('[data-pi-archive-slot]');
+    if (!refresh && !slot) {
+      const previous = document.getElementById('pi-session-archive-control-host');
+      if (previous) previous.hidden = true;
+      return;
+    }
     let host = document.getElementById("pi-session-archive-control-host");
     if (!host) {
       host = document.createElement("div");
       host.id = "pi-session-archive-control-host";
-      host.style.cssText = "position:fixed;z-index:2147483000;width:max-content;height:32px;pointer-events:auto";
+      host.style.cssText = "position:fixed;z-index:210;width:max-content;height:32px;pointer-events:auto";
       document.documentElement.appendChild(host);
     }
     let control = host.querySelector("button[data-pi-session-archive-control]");
@@ -317,8 +424,8 @@
     const text = words();
     const archivedView = state.view === "archived";
     const label = archivedView ? text.showActive : text.showArchived(state.archivedCount);
-    control.title = label;
-    control.setAttribute("aria-label", label);
+    if (control.title !== label) control.title = label;
+    if (control.getAttribute("aria-label") !== label) control.setAttribute("aria-label", label);
     control.setAttribute("aria-pressed", String(archivedView));
     control.style.cssText = [
       "display:flex", "align-items:center", "justify-content:center", "gap:5px", "height:32px",
@@ -334,7 +441,16 @@
       : state.archivedCount > 0 ? `<span>${state.archivedCount}</span>` : "";
     const markup = icon("archive") + suffix;
     if (control.innerHTML !== markup) control.innerHTML = markup;
-    const refreshRect = refresh.getBoundingClientRect();
+    const refreshRect = window.__piUiLayout.visibleRect(slot || refresh);
+    host.hidden = !refreshRect || window.__piUiLayout.blocked;
+    if (host.hidden) return;
+    if (slot) {
+      host.style.top = `${refreshRect.top}px`;
+      host.style.left = `${refreshRect.left}px`;
+      control.style.width = `${refreshRect.width}px`;
+      control.style.padding = '0 4px';
+      return;
+    }
     const createRect = nativeNewSessionButton()?.getBoundingClientRect();
     const controlWidth = control.getBoundingClientRect().width || 32;
     const betweenGap = createRect ? refreshRect.left - createRect.right - 16 : 0;
@@ -348,15 +464,16 @@
   function decorateActions() {
     const text = words();
     const restoring = state.view === "archived";
-    const buttons = [...document.querySelectorAll("button")];
+    const buttons = document.querySelector('.sidebar-container')?.querySelectorAll('button') || [];
     for (const button of buttons) {
       const title = button.getAttribute("title") || "";
       if (!button.dataset.piSessionArchiveAction && !oldDeleteTitles.has(title)) continue;
       button.dataset.piSessionArchiveAction = "true";
       const label = restoring ? text.actionRestore : text.actionArchive;
       if (button.title !== label) button.title = label;
-      button.setAttribute("aria-label", label);
-      button.dataset.piSessionArchiveMode = restoring ? "restore" : "archive";
+      if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
+      const mode = restoring ? "restore" : "archive";
+      if (button.dataset.piSessionArchiveMode !== mode) button.dataset.piSessionArchiveMode = mode;
     }
   }
 
@@ -406,7 +523,7 @@
       cleanupTimer: 0,
       animation: null,
       wasSelected: row.style.background.includes("--bg-selected") || row.style.borderLeftColor.includes("--accent"),
-      nextRow: row.nextElementSibling || row.previousElementSibling || null,
+      nextRow: adjacentSessionRow(row),
       handedOff: false,
     };
     state.optimisticActions.add(pending);
@@ -418,7 +535,7 @@
     pending.animation = row.animate([
       { opacity: computed.opacity || "1", transform: computed.transform === "none" ? "translateX(0)" : computed.transform, height: `${rowHeight}px` },
       { opacity: "0", transform: "translateX(-6px)", height: "0px" },
-    ], { duration: 180, easing: "cubic-bezier(.4, 0, .2, 1)", fill: "forwards" });
+    ], { duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 180, easing: "cubic-bezier(.4, 0, .2, 1)", fill: "forwards" });
     pending.hideTimer = setTimeout(() => {
       row.dataset.piSessionArchiveHidden = "true";
       row.style.display = "none";
@@ -436,7 +553,17 @@
     return pending;
   }
 
+  function adjacentSessionRow(row) {
+    if (row.dataset.piSessionId) {
+      const rows = [...document.querySelectorAll('.sidebar-container [data-pi-session-id]')];
+      const at = rows.indexOf(row);
+      return rows[at + 1] || rows[at - 1] || null;
+    }
+    return row.nextElementSibling || row.previousElementSibling || null;
+  }
+
   function sessionIdFromRow(row) {
+    if (row?.dataset.piSessionId) return row.dataset.piSessionId;
     const fiberKey = row ? Object.keys(row).find((key) => key.startsWith("__reactFiber$")) : "";
     let fiber = fiberKey ? row[fiberKey] : null;
     for (let depth = 0; fiber && depth < 12; depth += 1, fiber = fiber.return) {
@@ -478,7 +605,7 @@
   }
 
   function scheduleHandoffRefresh() {
-    setTimeout(() => nativeRefreshButton()?.click(), 1400);
+    setTimeout(requestNativeRefresh, 1400);
   }
 
   async function performDirectAction(pending, sessionId) {
@@ -496,7 +623,7 @@
       state.archivedCount = Math.max(0, state.archivedCount + (action === "archive" ? 1 : -1));
       scheduleDecorate();
       if (pending.handedOff) scheduleHandoffRefresh();
-      else setTimeout(() => nativeRefreshButton()?.click(), 220);
+      else setTimeout(requestNativeRefresh, 220);
     } catch (error) {
       const message = `${words().requestFailed}：${String(error?.message || error || "network error")}`;
       console.error("[pi-web archive]", message);
@@ -560,10 +687,22 @@
     requestAnimationFrame(decorate);
   }
 
-  const observer = new MutationObserver(scheduleDecorate);
+  let sidebar = null;
+  const observer = new MutationObserver(records => {
+    // Our own title changes settle after one frame; transcript tokens never
+    // reach this observer. New native rows and translated titles still do.
+    if (records.some(record => record.type === 'childList' || oldDeleteTitles.has(record.target.title))) scheduleDecorate();
+  });
   const start = () => {
     enableImmediateActions();
-    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["title", "lang"] });
+    window.__piUiLayout.subscribe(() => {
+      const next = document.querySelector('.sidebar-container');
+      if (next !== sidebar) {
+        observer.disconnect(); sidebar = next;
+        if (sidebar) observer.observe(sidebar, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] });
+      }
+      scheduleDecorate();
+    });
     scheduleDecorate();
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
@@ -600,6 +739,8 @@
     list: null,
     title: null,
     freshness: null,
+    listSignature: "",
+    receivedAt: 0,
   };
 
   const labels = {
@@ -749,30 +890,30 @@
 
   function positionUi() {
     if (!state.host || !state.panel) return;
-    if (state.data && state.renderedLocale && state.renderedLocale !== locale()) {
+    if (state.renderedLocale && state.renderedLocale !== locale()) {
       render();
       return;
     }
     const anchor = findAnchor();
-    if (!anchor) {
+    if (!anchor || window.__piUiLayout.blocked) {
       state.host.style.visibility = "hidden";
       state.panel.style.visibility = "hidden";
+      if (state.open) setOpen(false);
       return;
     }
     const left = Math.max(8, anchor.left - (document.getElementById("pi-service-tier-button") ? 74 : 38));
     state.host.style.left = `${left}px`;
     state.host.style.top = `${anchor.top}px`;
     state.host.style.visibility = "visible";
-    state.panel.style.right = `${Math.max(8, window.innerWidth - anchor.right)}px`;
-    state.panel.style.bottom = `${Math.max(8, window.innerHeight - anchor.top + 8)}px`;
-    state.panel.style.maxHeight = `${Math.min(360, Math.max(180, anchor.top - 20))}px`;
+    if (state.open) window.__piUiLayout.placePanel(state.panel, anchor);
     state.panel.style.visibility = state.open ? "visible" : "hidden";
   }
 
   function relativeReset(resetAt) {
     const text = words();
     const left = Date.parse(String(resetAt || "")) - Date.now();
-    if (!Number.isFinite(left) || left <= 0) return text.soon;
+    if (!Number.isFinite(left)) return "—";
+    if (left <= 0) return text.soon;
     const minutes = Math.max(1, Math.ceil(left / 60_000));
     if (minutes < 60) return text.minutes(minutes);
     const hours = Math.floor(minutes / 60);
@@ -780,12 +921,17 @@
     return text.days(Math.floor(hours / 24), hours % 24);
   }
 
-  function exactReset(resetAt) {
+  let dateLocale = '', dateFormat, fullDateFormat;
+  function exactReset(resetAt, full = false) {
     const milliseconds = Date.parse(String(resetAt || ""));
     if (!Number.isFinite(milliseconds)) return "—";
-    return new Intl.DateTimeFormat(locale(), {
-      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
-    }).format(new Date(milliseconds));
+    const currentLocale = locale();
+    if (dateLocale !== currentLocale) {
+      dateLocale = currentLocale;
+      dateFormat = new Intl.DateTimeFormat(dateLocale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+      fullDateFormat = new Intl.DateTimeFormat(dateLocale, { dateStyle: 'short', timeStyle: 'medium', hour12: false });
+    }
+    return (full ? fullDateFormat : dateFormat).format(milliseconds);
   }
 
   function appendText(parent, className, text, title = "") {
@@ -861,7 +1007,7 @@
     appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
     const reset = appendText(meta, "", account.resetAt ? exactReset(account.resetAt) : `${text.resetAt} —`);
     if (account.resetAt) {
-      const full = new Date(account.resetAt).toLocaleString(locale(), { hour12: false });
+      const full = exactReset(account.resetAt, true);
       reset.title = `${text.resetAt} ${full} · ${relativeReset(account.resetAt)}`;
     }
     row.appendChild(meta);
@@ -912,24 +1058,44 @@
     state.button.title = text.button;
     state.button.setAttribute("aria-label", text.button);
     state.panel.setAttribute("aria-label", text.title);
-    state.list.replaceChildren();
     state.panel.setAttribute("aria-busy", String(state.loading));
 
     const accounts = Array.isArray(state.data?.accounts) ? state.data.accounts : [];
-    if (!state.data && state.loading) emptyState(text.loading);
-    else if (!state.data && state.error) emptyState(text.unavailable, text.retrying);
-    else if (!state.data?.enabled || accounts.length === 0) emptyState(text.empty);
-    else for (const account of accounts) state.list.appendChild(accountRow(account));
+    // Keep cached rows (and keyboard focus) through loading transitions. Closed
+    // panels never construct account DOM or date formatters.
+    if (state.open) {
+      const signature = JSON.stringify([state.renderedLocale, state.data?.enabled, accounts.map(({ ageMs, ...account }) => account), state.switchingId, state.switchFailedId, !state.data && [state.loading, state.error]]);
+      if (signature !== state.listSignature) {
+        state.listSignature = signature;
+        const focusedId = state.list.contains(document.activeElement) ? document.activeElement.closest('[data-account-id]')?.dataset.accountId : null;
+        state.list.replaceChildren();
+        if (!state.data && state.loading) emptyState(text.loading);
+        else if (!state.data && state.error) emptyState(text.unavailable, text.retrying);
+        else if (!state.data?.enabled || accounts.length === 0) emptyState(text.empty);
+        else {
+          const rows = document.createDocumentFragment();
+          for (const account of accounts) rows.appendChild(accountRow(account));
+          state.list.appendChild(rows);
+        }
+        if (focusedId) {
+          const row = [...state.list.children].find(item => item.dataset.accountId === focusedId);
+          const action = row?.querySelector('button:not(:disabled)');
+          (action || state.panel).focus({ preventScroll: true });
+        }
+      }
+    }
 
     const ages = accounts.map((account) => Number(account.ageMs)).filter(Number.isFinite);
-    const oldestAge = ages.length ? Math.max(...ages) : 0;
+    const oldestAge = (ages.length ? Math.max(...ages) : 0) + (state.receivedAt ? Date.now() - state.receivedAt : 0);
     const minutes = Math.max(0, Math.floor(oldestAge / 60_000));
     state.freshness.textContent = state.switchingId
       ? text.switchingAccount
       : state.switchError ? text.switchFailed
         : state.loading ? text.updating
-          : minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes);
-    state.freshness.title = state.switchError || "";
+          : state.error ? text.unavailable
+            : !state.data || accounts.length === 0 ? '—'
+              : minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes);
+    state.freshness.title = state.switchError || state.error || "";
     state.freshness.dataset.stale = String(Boolean(state.switchError || state.error || accounts.some((account) => account.stale)));
     state.button.dataset.state = state.error && !state.data ? "error" : accounts.some((account) => account.remainingPercent != null && account.remainingPercent <= 20) ? "low" : "ready";
     positionUi();
@@ -950,6 +1116,7 @@
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !Array.isArray(data.accounts)) throw new Error(data.error || `HTTP ${response.status}`);
       state.data = data;
+      state.receivedAt = Date.now();
       state.error = "";
     } catch (error) {
       state.error = String(error?.message || error || "request failed").slice(0, 120);
@@ -965,6 +1132,13 @@
     state.open = Boolean(open);
     state.button.setAttribute("aria-expanded", String(state.open));
     state.panel.dataset.open = String(state.open);
+    if (state.open) {
+      window.__piUiLayout.open('account');
+      render();
+      state.panel.focus({ preventScroll: true });
+    } else {
+      state.panel.style.visibility = 'hidden';
+    }
     positionUi();
     if (!state.open) return;
     document.documentElement.dataset.piAccountUsageOpenLatencyMs = (performance.now() - startedAt).toFixed(2);
@@ -976,7 +1150,7 @@
     const style = document.createElement("style");
     style.dataset.piAccountUsageStyle = "true";
     style.textContent = `
-      #pi-account-usage-host{position:fixed;z-index:2147482500;width:32px;height:32px;pointer-events:none}
+      #pi-account-usage-host{position:fixed;z-index:210;width:32px;height:32px;pointer-events:none}
       #pi-account-usage-button{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer;pointer-events:auto;transition:background 140ms ease-out,color 140ms ease-out,transform 140ms ease-out}
       #pi-account-usage-button:hover,#pi-account-usage-button[aria-expanded='true']{background:var(--bg-hover);color:var(--text)}
       #pi-account-usage-button:active{transform:scale(.96)}
@@ -984,7 +1158,7 @@
       #pi-account-usage-button::after{position:absolute;top:5px;right:5px;width:4px;height:4px;border-radius:50%;background:transparent;content:''}
       #pi-account-usage-button[data-state='low']::after{background:#d97706}
       #pi-account-usage-button[data-state='error']::after{background:#dc2626}
-      #pi-account-usage-panel{position:fixed;z-index:2147482499;width:280px;max-width:calc(100vw - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px rgba(0,0,0,.12);opacity:0;transform:translateY(4px) scale(.99);transform-origin:bottom right;pointer-events:none;visibility:hidden;transition:opacity 150ms ease-out,transform 150ms ease-out,visibility 0s linear 150ms;font:13px/1.35 'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',system-ui,sans-serif}
+      #pi-account-usage-panel{position:fixed;z-index:220;width:280px;max-width:calc(100vw - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px rgba(0,0,0,.12);opacity:0;transform:translateY(4px) scale(.99);transform-origin:bottom right;pointer-events:none;visibility:hidden;transition:opacity 150ms ease-out,transform 150ms ease-out,visibility 0s linear 150ms;font:13px/1.35 'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',system-ui,sans-serif}
       #pi-account-usage-panel[data-open='true']{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;visibility:visible;transition-delay:0s}
       .pi-account-usage-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;height:29px;padding:0 7px;border-bottom:1px solid var(--border);background:var(--bg)}
       .pi-account-usage-title{font-size:13px;font-weight:650;color:var(--text)}
@@ -993,13 +1167,13 @@
       .pi-account-usage-row{padding:3px 7px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
       .pi-account-usage-row:first-child{border-top:0}
       .pi-account-usage-row[data-active='true']{background:color-mix(in srgb,var(--accent) 3%,var(--bg))}
-      .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0;height:20px}
+      .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0;min-height:24px}
       .pi-account-usage-identity{display:flex;align-items:center;gap:5px;min-width:0}
       .pi-account-usage-dot{width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:var(--text-dim)}
       .pi-account-usage-dot[data-state='active']{background:var(--accent)}
       .pi-account-usage-dot[data-state='error']{background:#dc2626}
       .pi-account-usage-email{min-width:0;overflow:hidden;color:var(--text);font-size:13px;font-weight:600;line-height:18px;text-overflow:ellipsis;white-space:nowrap}
-      .pi-account-usage-switch{min-width:36px;height:20px;padding:0 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font:inherit;font-size:11px;font-weight:600;line-height:18px;cursor:pointer;transition:background 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out}
+      .pi-account-usage-switch{min-width:36px;height:24px;padding:0 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font:inherit;font-size:11px;font-weight:600;line-height:18px;cursor:pointer;transition:background 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out}
       .pi-account-usage-switch:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent) 6%,var(--bg));color:var(--accent)}
       .pi-account-usage-switch:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
       .pi-account-usage-switch:disabled{cursor:default;opacity:.72}
@@ -1009,13 +1183,15 @@
       .pi-account-usage-meter>span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width 180ms ease-out}
       .pi-account-usage-meter>span[data-level='low']{background:#d97706}
       .pi-account-usage-meter>span[data-level='critical']{background:#dc2626}
-      .pi-account-usage-meta{display:flex;align-items:center;min-width:0;overflow:hidden;color:var(--text-muted);font-size:11px;line-height:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
-      .pi-account-usage-meta>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+      .pi-account-usage-meta{display:flex;flex-wrap:wrap;align-items:center;gap:2px 0;min-width:0;color:var(--text-muted);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}
+      .pi-account-usage-meta>span{min-width:0;white-space:normal;overflow-wrap:anywhere}
       .pi-account-usage-meta>.pi-account-usage-remaining-compact{flex:0 0 auto;color:var(--text);font-weight:650}
       .pi-account-usage-meta>span+span::before{margin:0 4px;color:var(--text-dim);content:'·'}
       .pi-account-usage-empty{display:flex;min-height:58px;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px;color:var(--text-muted);text-align:center}
       .pi-account-usage-empty-title{font-size:13px;font-weight:600;color:var(--text-muted)}
       .pi-account-usage-empty-note{font-size:11px;color:var(--text-dim)}
+      #pi-account-usage-panel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+      @media(pointer:coarse){.pi-account-usage-switch{min-height:44px;min-width:44px}.pi-account-usage-top{min-height:44px}}
       @media(max-width:480px){#pi-account-usage-panel{width:min(280px,calc(100vw - 16px))}}
       @media(prefers-reduced-motion:reduce){#pi-account-usage-button,#pi-account-usage-panel,.pi-account-usage-meter>span{transition:none!important}}
     `;
@@ -1040,6 +1216,7 @@
     panel.id = "pi-account-usage-panel";
     panel.dataset.open = "false";
     panel.setAttribute("role", "dialog");
+    panel.tabIndex = -1;
     const header = document.createElement("header");
     header.className = "pi-account-usage-header";
     const title = appendText(header, "pi-account-usage-title", words().title);
@@ -1061,6 +1238,7 @@
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       const startedAt = performance.now();
+      event.preventDefault();
       state.suppressClick = true;
       setTimeout(() => { state.suppressClick = false; }, 500);
       setOpen(!state.open, startedAt);
@@ -1076,13 +1254,17 @@
       if (!state.open || event.composedPath().includes(button) || event.composedPath().includes(panel)) return;
       setOpen(false);
     }, true);
+    document.addEventListener('pi-ui:popover-open', event => { if (event.detail !== 'account' && state.open) setOpen(false); });
+    document.addEventListener('focusin', event => {
+      if (state.open && !panel.contains(event.target) && event.target !== button) setOpen(false);
+    });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || !state.open) return;
       event.preventDefault();
       setOpen(false);
       button.focus({ preventScroll: true });
     }, true);
-    window.addEventListener("resize", positionUi, { passive: true });
+    window.__piUiLayout.subscribe(positionUi);
     render();
     void refresh(false);
   }
@@ -1090,10 +1272,10 @@
   const start = () => {
     createUi();
     positionUi();
-    setInterval(positionUi, 1000);
     setInterval(() => {
-      if (document.visibilityState === "visible" && Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
-      if (state.open) render();
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
+      else if (state.open) render();
     }, BROWSER_REFRESH_MS);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
@@ -1152,16 +1334,20 @@
     return fetchNative(input, init);
   };
 
+  function closePanel(focus = false) {
+    panel.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    if (focus) button.focus({ preventScroll: true });
+  }
   function position() {
-    const anchor = [...document.querySelectorAll(".model-selector.is-toolbar")].find(e => e.getBoundingClientRect().width > 0);
+    const anchor = [...document.querySelectorAll(".model-selector.is-toolbar")].find(e => window.__piUiLayout.visibleRect(e));
     if (!button) return;
-    button.hidden = !anchor;
-    if (!anchor) { panel.hidden = true; return; }
+    button.hidden = !anchor || window.__piUiLayout.blocked;
+    if (button.hidden) { closePanel(); return; }
     const rect = anchor.getBoundingClientRect();
     button.style.left = `${Math.max(8, rect.left - 36)}px`;
     button.style.top = `${rect.top}px`;
-    panel.style.right = `${Math.max(8, innerWidth - rect.right)}px`;
-    panel.style.bottom = `${Math.max(8, innerHeight - rect.top + 8)}px`;
+    if (!panel.hidden) window.__piUiLayout.placePanel(panel, rect, 330);
   }
   function render() {
     const choice = choices.find(([value]) => value === selected);
@@ -1173,10 +1359,11 @@
   function start() {
     const style = document.createElement("style");
     style.textContent = `
-      #pi-service-tier-button{position:fixed;z-index:2147482500;width:32px;height:32px;padding:7px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}
+      #pi-service-tier-button{position:fixed;z-index:210;width:32px;height:32px;padding:7px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}
       #pi-service-tier-button:hover,#pi-service-tier-button[aria-expanded=true]{background:var(--bg-hover);color:var(--text)}
       #pi-service-tier-button[data-tier=priority]{color:var(--accent)}
-      #pi-service-tier-panel{position:fixed;z-index:2147482501;width:250px;max-width:calc(100vw - 16px);padding:6px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px #0002;font:12px/1.5 system-ui}
+      #pi-service-tier-button:focus-visible,#pi-service-tier-panel button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+      #pi-service-tier-panel{position:fixed;z-index:220;overflow:auto;overscroll-behavior:contain;width:250px;max-width:calc(100vw - 16px);padding:6px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px #0002;font:12px/1.5 system-ui}
       #pi-service-tier-panel button{display:block;width:100%;padding:8px;border:0;border-radius:6px;text-align:left;background:transparent;color:inherit;cursor:pointer;font:inherit}
       #pi-service-tier-panel button:hover,#pi-service-tier-panel button[aria-checked=true]{background:var(--bg-hover)}
       #pi-service-tier-panel button[aria-checked=true]{color:var(--accent)}
@@ -1189,6 +1376,7 @@
     button.id = "pi-service-tier-button";
     button.type = "button";
     button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-controls", "pi-service-tier-panel");
     button.setAttribute("aria-expanded", "false");
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "aria-hidden": "true" })) svg.setAttribute(key, value);
@@ -1204,11 +1392,13 @@
     }
     const ultra = document.createElement("button"); ultra.type = "button"; ultra.disabled = true; ultra.textContent = "Ultrafast · 待上游确认支持"; ultra.title = "不能把未知的 ultrafast 参数伪装成 Fast"; panel.appendChild(ultra);
     note = document.createElement("p"); note.textContent = "下次发送时生效，不改变正在生成的请求。"; panel.appendChild(note);
-    button.onclick = () => { panel.hidden = !panel.hidden; button.setAttribute("aria-expanded", String(!panel.hidden)); position(); if (!panel.hidden) panel.querySelector('[aria-checked="true"]')?.focus(); };
+    button.onclick = () => { panel.hidden = !panel.hidden; button.setAttribute("aria-expanded", String(!panel.hidden)); if (!panel.hidden) window.__piUiLayout.open('tier'); position(); if (!panel.hidden) panel.querySelector('[aria-checked="true"]')?.focus(); };
+    document.addEventListener('pi-ui:popover-open', event => { if (event.detail !== 'tier') closePanel(); });
+    document.addEventListener('focusin', event => { if (!panel.hidden && !panel.contains(event.target) && event.target !== button) closePanel(); });
     document.addEventListener("pointerdown", event => { if (!panel.contains(event.target) && !button.contains(event.target)) { panel.hidden = true; button.setAttribute("aria-expanded", "false"); } });
     document.addEventListener("keydown", event => { if (panel.hidden) return; if (event.key === "Escape") { panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = [...panel.querySelectorAll("button[data-tier]")]; const at = items.indexOf(document.activeElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length].focus(); } });
     document.documentElement.append(button, panel); render(); position();
-    window.addEventListener("resize", position, { passive: true }); setInterval(position, 1000);
+    window.__piUiLayout.subscribe(position);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
 })();

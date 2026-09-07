@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Web UI regression fixture</title>
+<style>
+:root{--bg:#fff;--bg-panel:#f4f4f5;--bg-hover:#eee;--bg-selected:#e5edff;--border:#ddd;--text:#171717;--text-muted:#616978;--text-dim:#6b7280;--accent:#2563eb}
+*{box-sizing:border-box}body{margin:0;font:13px system-ui;background:var(--bg);color:var(--text)}button{font:inherit}button:focus{outline:none}button:focus-visible{outline:2px solid var(--accent)}
+.sidebar-container{position:fixed;left:0;top:0;bottom:0;width:260px;background:var(--bg-panel);overflow:hidden}.sidebar-closed{width:0}
+.sidebar-inner{width:260px} .sidebar-header{display:flex;justify-content:space-between;align-items:center;padding:12px 10px}.native-actions{display:flex;gap:6px}.native-actions button{height:32px;min-width:32px}
+.model-selector.is-toolbar{position:fixed;left:70%;top:65%;width:32px;height:32px}.model-selector button{width:32px;height:32px}#transcript{position:fixed;left:280px;top:150px;width:20px;height:20px;overflow:hidden}#outside{position:fixed;left:300px;top:90px}
+</style>
+<script>
+window.metrics={queries:0,rects:0,formatters:0,dateStrings:0,rows:0,callbacks:0};
+window.intervals=[];window.requests=[];window.clockOffset=0;window.failUsage=false;window.usageAge=0;
+const actualNow=Date.now.bind(Date);Date.now=()=>actualNow()+clockOffset;
+const actualInterval=window.setInterval;window.setInterval=(fn,ms,...args)=>{intervals.push({fn,ms});return actualInterval(fn,ms,...args)};
+const query=Document.prototype.querySelectorAll;Document.prototype.querySelectorAll=function(...args){metrics.queries++;return query.apply(this,args)};
+const rect=Element.prototype.getBoundingClientRect;Element.prototype.getBoundingClientRect=function(...args){metrics.rects++;return rect.apply(this,args)};
+const formatter=Intl.DateTimeFormat;Intl.DateTimeFormat=new Proxy(formatter,{construct(target,args){metrics.formatters++;return Reflect.construct(target,args)}});
+const dateString=Date.prototype.toLocaleString;Date.prototype.toLocaleString=function(...args){metrics.dateStrings++;return dateString.apply(this,args)};
+const append=Node.prototype.appendChild;Node.prototype.appendChild=function(node){if(node.className==='pi-account-usage-row')metrics.rows++;return append.call(this,node)};
+const Observer=MutationObserver;window.MutationObserver=class extends Observer{constructor(fn){super((...args)=>{metrics.callbacks++;fn(...args)})}};
+window.accounts=Array.from({length:24},(_,i)=>({id:'acct'+i,email:'a-long-account-'+i+'@example.invalid',active:i===0,remainingPercent:76.25,usedPercent:23.75,resetCredits:123456,resetAt:'2026-09-08T12:30:00Z',ageMs:0}));
+window.fetch=async function(input,init){const url=new URL(input instanceof Request?input.url:String(input),location.href);requests.push({url:url.pathname,method:init?.method||'GET',body:init?.body});await new Promise(r=>setTimeout(r,10));if(url.pathname==='/__pi_account_usage')return new Response(JSON.stringify(failUsage?{error:'fixture offline'}:{enabled:true,accounts:accounts.map(a=>({...a,ageMs:usageAge}))}),{status:failUsage?503:200});if(url.pathname==='/__pi_account_select'){const id=JSON.parse(init.body).id;accounts=accounts.map(a=>({...a,active:a.id===id}));return Response.json({ok:true,accounts})}return Response.json({ok:true,archive:{archivedCount:18},sessions:[]})};
+window.resetMetrics=()=>Object.keys(metrics).forEach(k=>metrics[k]=0);
+window.pause=ms=>new Promise(r=>setTimeout(r,ms));
+</script></head><body>
+<aside class="sidebar-container"><div class="sidebar-inner"><div class="sidebar-header"><button title="Pi Web">Pi Web</button><div class="native-actions"><button title="新建会话">新建</button><button title="刷新">↻</button></div></div><div id="sessions"></div></div></aside>
+<button id="outside">Outside focus target</button><div id="transcript">stream text</div><div class="model-selector is-toolbar"><button title="当前模型：fixture">◎</button></div>
+<script>
+for(let i=0;i<30;i++){const row=document.createElement('div');row.style.cssText='height:54px;display:flex';const label=document.createElement('span');label.textContent='Fixture session '+i;const action=document.createElement('button');action.title='删除（按住 Shift 点击可跳过确认）';action.textContent='Delete';row.append(label,action);row['__reactFiber$fixture']={memoizedProps:{session:{id:'fixture-'+i}}};document.querySelector('#sessions').appendChild(row)}
+for(let i=0;i<1000;i++){const button=document.createElement('button');button.textContent='transcript tool '+i;document.querySelector('#transcript').appendChild(button)}
+</script>
+<script src="/__pi_archive_ui.js"></script>
+</body></html>
