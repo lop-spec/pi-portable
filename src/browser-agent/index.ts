@@ -77,7 +77,7 @@ export default function browserAgentExtension(pi: ExtensionAPI) {
     name: "browser",
     label: "Headless Browser",
     description: [
-      "Operate a dedicated-profile, headless Edge/Chrome instance over loopback CDP with Playwright.",
+      "Operate a dedicated-profile, headless Thorium (fallback Edge/Chrome) instance over loopback CDP with Playwright.",
       "Actions: open/goto/snapshot/text/eval/click/type/press/wait/screenshot/tabs/select_tab/new_tab/close_tab/close.",
       "Prefer text (full innerText) or eval (JSON expression) for reading; snapshot lists interactive refs; screenshot is the visual fallback only.",
       "For click/type targets prefer a ref returned by snapshot; otherwise provide selector, role+name, or targetText.",

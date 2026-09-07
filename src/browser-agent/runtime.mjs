@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveThoriumExecutable } from "../thorium-browser.mjs";
 
 const REF_ATTRIBUTE = "data-pi-browser-ref";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -70,6 +71,9 @@ export async function resolveBrowserExecutable(explicitPath = process.env.PI_BRO
     throw new Error(`PI_BROWSER_EXECUTABLE does not exist: ${explicitPath}`);
   }
 
+  const thorium = resolveThoriumExecutable();
+  if (thorium) return thorium;
+  console.error("[browser] Thorium not installed; falling back to Edge/Chrome with the isolated profile unchanged.");
   const programFiles = process.env.ProgramFiles || "C:\\Program Files";
   const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const localAppData = process.env.LOCALAPPDATA;
@@ -92,7 +96,7 @@ export async function resolveBrowserExecutable(explicitPath = process.env.PI_BRO
     if (executable) return executable;
   }
 
-  throw new Error("No supported Edge/Chrome executable found. Set PI_BROWSER_EXECUTABLE to an absolute path.");
+  throw new Error("No supported Thorium/Edge/Chrome executable found. Set PI_BROWSER_EXECUTABLE to an absolute path.");
 }
 
 export async function resolvePlaywrightModule(explicitPath = process.env.PI_BROWSER_PLAYWRIGHT) {

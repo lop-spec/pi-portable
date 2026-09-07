@@ -13,6 +13,7 @@ import { withSilentWindowsProcessEnv } from "./windows-process-env.mjs";
 import { appendLineRotating } from "./log-rotate.mjs";
 import { BRIDGE_REARM_MS, createBridgeGuard, describeBridgeExit } from "./bridge-guard.mjs";
 import { configureLiveModelCatalog } from "./live-model-catalog.mjs";
+import { resolveThoriumExecutable, dailyThoriumArgs } from "./thorium-browser.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -631,6 +632,9 @@ async function main() {
 }
 
 function chromePath() {
+  const thorium = resolveThoriumExecutable({ portableHome: HOME });
+  if (thorium) return thorium;
+  log("Thorium 未安装,回退现有 Chrome/Edge;不会改动对端浏览器资料");
   for (const p of [
     "C:/Program Files/Google/Chrome/Application/chrome.exe",
     "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
@@ -654,7 +658,17 @@ let windowProc = null;
 async function openWindow() {
   const url = `http://127.0.0.1:${PORTS.web}/`;
   const cmd = browserCmd();
-  if (!cmd) { log("未找到 Chrome/Edge,用默认浏览器打开"); spawnSync("cmd.exe", ["/c", "start", "", url], { windowsHide: true }); return; }
+  if (!cmd) { log("未找到 Thorium/Chrome/Edge,用默认浏览器打开"); spawnSync("cmd.exe", ["/c", "start", "", url], { windowsHide: true }); return; }
+  if (path.basename(cmd[0]).toLowerCase() === "thorium.exe") {
+    // User-owned daily browser: never add it to Pi's child/kill ledger.
+    // A singleton handoff exits immediately; that must not shut down Pi Web.
+    const args = [...dailyThoriumArgs(), ...cmd.slice(1), `--app=${url}`, "--no-first-run"];
+    const win = spawn(cmd[0], args, { stdio: "ignore", windowsHide: false, detached: true });
+    win.on("error", (error) => log(`Thorium 开窗失败:${error.message}`));
+    win.unref();
+    log("Thorium 日常资料开窗请求已发送;CDP 仅本机 :9222;浏览器不归 Pi 退出清理");
+    return;
+  }
   // --user-data-dir 独立配置 → 独立应用身份,任务栏图标取 pi-web 自带 favicon/manifest 图标
   const profile = path.join(DATA, "browser-profile");
   // 这是用户明确进入的 GUI；windowsHide:true 会让 Edge 进程存在但主窗口不可见。
