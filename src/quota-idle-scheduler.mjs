@@ -6,14 +6,11 @@ import os from 'node:os';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { appendLineRotating } from './log-rotate.mjs';
+import { GOALS_FILENAME, loadLongGoals } from './long-goals.mjs';
 
 export const INTERVAL_MS = 30 * 60_000;
 export const RESET_LIMIT_MS = 24 * 60 * 60_000;
 export const SCHEDULED_MODEL = Object.freeze({ provider: 'openai-codex', modelId: 'gpt-6-astra', thinkingLevel: 'medium' });
-export const FIXED_TASKS = [
-  { key: 'eastmoney-backtest', title: '东方财富智能回测', directory: '东方财富智能回测分析', match: /东方财富.*(?:回测|选股)/u },
-  { key: 'douyin-backtest', title: '抖音选股智能回测', directory: '抖音短线体系回测', match: /抖音.*(?:回测|选股)/u },
-];
 // Stocks belong to the project host only. Local/unknown hosts run recent P0/P1 work only.
 export const stockBacktestsAllowed = (hostname = os.hostname()) => hostname.toLowerCase() === 'desktop-3egb4lb';
 const stockText = text => /(?:股票|选股|东方财富|抖音).*回测|回测.*(?:股票|选股|东方财富|抖音)/u.test(text);
@@ -151,31 +148,26 @@ function referencedPending(s, log) {
   return found;
 }
 
-export function buildTasks(sessions, now, log, { includeBacktests = stockBacktestsAllowed() } = {}) {
+export function buildTasks(sessions, now, log, { includeBacktests = stockBacktestsAllowed(), longGoals = [] } = {}) {
   const tasks = [], fixedSources = new Set();
-  for (const fixed of FIXED_TASKS) {
-    // No cross-project scheduler discussion: the task must mention only this backtest.
-    const candidates = sessions.filter(s => (fixed.match.test(s.first) && !FIXED_TASKS.some(f => f.key !== fixed.key && f.match.test(s.first)))
-      || path.basename(s.cwd).startsWith(fixed.directory));
+  for (const goal of longGoals) {
+    const candidates = sessions.filter(s => s.id === goal.sourceId || s.first.startsWith(`额度调度任务：${goal.key}\n`));
     for (const c of candidates) fixedSources.add(c.id);
-    if (!includeBacktests) { log('fixed-task-excluded', { task: fixed.title, reason: 'stock-backtests-project-host-only' }); continue; }
-    const source = candidates[0];
-    if (!source) throw Error(`fixed task source missing: ${fixed.title}`);
-    const s = readSession(source);
-    const authority = candidates.find(c => !c.first.startsWith('额度调度任务：'));
-    if (authority && authority.id !== source.id) {
-      const original = readSession(authority);
-      s.first = original.first;
-      s.users = [...original.users, ...s.users.filter(u => !u.startsWith('额度调度任务：'))];
-    }
-    let cwd;
-    for (const candidate of candidates) if (path.basename(candidate.cwd).startsWith(fixed.directory) && fs.existsSync(candidate.cwd)) { cwd = candidate.cwd; break; }
-    if (!cwd && fs.existsSync(source.cwd)) {
-      const dirs = fs.readdirSync(source.cwd, { withFileTypes: true }).filter(d => d.isDirectory() && d.name.startsWith(fixed.directory));
-      if (dirs.length === 1) cwd = path.join(source.cwd, dirs[0].name);
-    }
-    if (!cwd) throw Error(`fixed project directory missing or ambiguous: ${fixed.title}`);
-    tasks.push({ ...fixed, cwd, source: s });
+    if (!includeBacktests && stockText(goal.title + goal.objective)) { log('fixed-task-excluded', { task: goal.title, reason: 'stock-backtests-project-host-only' }); continue; }
+    try {
+      if (!fs.statSync(goal.cwd).isDirectory()) throw Error('project directory is not a directory');
+      const latest = candidates[0];
+      const s = latest ? readSession(latest) : { id: '无（新长目标）', file: '无', first: '', users: [], last: '', revision: '' };
+      const original = sessions.find(c => c.id === goal.sourceId);
+      if (goal.sourceId && !original) throw Error(`source session missing: ${goal.sourceId}`);
+      if (original && original.id !== latest?.id) {
+        const authority = readSession(original); s.first = authority.first;
+        s.users = [...authority.users, ...s.users.filter(u => !u.startsWith('额度调度任务：'))];
+      }
+      const instruction = `长目标清单当前要求（优先于旧会话）：${goal.objective}\n验收标准：${goal.acceptance}`;
+      s.users = [...s.users, instruction];
+      tasks.push({ key: goal.key, title: goal.title, cwd: goal.cwd, source: s });
+    } catch (error) { log('long-goal-skipped', { task: goal.title, reason: error.message }); }
   }
   const recent = new Map();
   for (const meta of sessions) {
@@ -314,6 +306,7 @@ export async function runScheduler({ dataRoot, apiBase = 'http://127.0.0.1:30140
   const release = acquireLock(root, log); if (!release) return { skipped: 'overlap' };
   try {
     log('tick', { dryRun, pid: process.pid, hostname: os.hostname(), stockBacktests: stockBacktestsAllowed(), ...SCHEDULED_MODEL });
+    const longGoals = loadLongGoals(path.join(dataRoot, GOALS_FILENAME), log);
     const { snapshot, attemptAt } = await refreshQuota(route => requestJson(usageBase, route), { log, now });
     const accounts = eligibleAccounts(snapshot, now(), attemptAt);
     if (!accounts.length) { log('skip', { reason: 'no-account-with-remaining-quota-reset-under-24h' }); return { skipped: 'quota' }; }
@@ -321,7 +314,7 @@ export async function runScheduler({ dataRoot, apiBase = 'http://127.0.0.1:30140
     const sessions = listSessionFiles(agentDir, log), api = (route, body) => requestJson(apiBase, route, body);
     const busy = await checkIdle(api, sessions);
     if (busy.length) { log('skip', { reason: 'pi-web-busy', busy }); return { skipped: 'busy', busy }; }
-    const tasks = buildTasks(sessions, now(), log);
+    const tasks = buildTasks(sessions, now(), log, { longGoals });
     log('batch-planned', { tasks: tasks.map(t => ({ key: t.key, title: t.title, cwd: t.cwd, source: t.source.id })) });
     if (dryRun) return { dryRun: true, tasks: tasks.map(t => ({ key: t.key, title: t.title, cwd: t.cwd })), modelCalls: 0 };
     const stateFile = path.join(root, 'receipts.json');

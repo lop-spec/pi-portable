@@ -149,13 +149,21 @@ test('fixed projects automatic discovery, recent 30-minute boundary, completed/b
   add('项目B', '- [ ] P1 修复B', now - INTERVAL_MS - 1);
   add('项目C', '- [ ] P0 修复C\n已确认达标', now - 1000);
   add('项目D', '- [ ] P0 修复D', now - 1000, 'aborted');
-  const sessions = listSessionFiles(root, noop); const result = buildTasks(sessions, now, noop, { includeBacktests: true });
+  const sessions = listSessionFiles(root, noop); const longGoals = [
+    { key: 'eastmoney-backtest', title: '东方财富智能回测', cwd: path.join(root, '东方财富智能回测分析-test'), sourceId: 's1', objective: '继续回测', acceptance: '原标准' },
+    { key: 'douyin-backtest', title: '抖音选股智能回测', cwd: path.join(root, '抖音短线体系回测-test'), sourceId: 's2', objective: '继续回测', acceptance: '原标准' },
+  ];
+  const result = buildTasks(sessions, now, noop, { includeBacktests: true, longGoals });
   assert.equal(result.length, 3); assert.equal(result[2].text, '修复A');
   assert.ok(result[0].cwd.includes('东方财富')); assert.ok(result[1].cwd.includes('抖音'));
   add('普通项目', '- [ ] P0 股票智能回测待执行', now - 1000);
   const local = buildTasks(listSessionFiles(root, noop), now, noop, { includeBacktests: false });
   assert.equal(local.length, 1); assert.equal(local[0].text, '修复A');
   assert.deepEqual(buildTasks([], now, noop, { includeBacktests: false }), [], 'local needs no stock project');
+  const withoutFixed = buildTasks(sessions, now, noop, { includeBacktests: true, longGoals: [] });
+  assert.equal(withoutFixed.length, 1, 'empty md leaves recent P0/P1 unchanged');
+  const broken = buildTasks(sessions, now, noop, { longGoals: [{ key: 'bad', title: '普通目标', cwd: path.join(root, 'missing'), objective: '做事', acceptance: '验证' }] });
+  assert.equal(broken.length, 1, 'bad long goal does not block dynamic tasks');
 });
 
 test('crash reconciliation distinguishes pre-send from ambiguous send; never silently loses a receipt', () => {
