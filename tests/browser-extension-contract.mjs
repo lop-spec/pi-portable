@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {ExtensionBrowserRuntime} from '../src/browser-agent/extension-runtime.mjs';
+const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-extension-contract-'));
+try {
+  const missing=new ExtensionBrowserRuntime({dataRoot:dir});
+  await assert.rejects(missing.ensureStarted(),/token is not configured/);
+  assert.equal(missing.child,null);
+  assert.match(await fs.readFile(missing.logFile,'utf8'),/extension-auth-unavailable/);
+  const runtime=new ExtensionBrowserRuntime({dataRoot:dir});
+  const calls=[];
+  runtime.call=async(name,args)=>{calls.push({name,args});return {content:[{type:'text',text:'ok'}]};};
+  await runtime.execute({action:'goto',url:'https://example.com/'});
+  assert.equal(calls.at(-1).name,'browser_navigate');
+  await runtime.execute({action:'text',maxChars:500});
+  assert.match(calls.at(-1).args.function,/slice\(0,500\)/);
+  await runtime.execute({action:'click',ref:'f1e42'});
+  assert.deepEqual(calls.at(-1),{name:'browser_click',args:{ref:'f1e42'}});
+  await runtime.execute({action:'type',ref:'f1e1',value:'hello',submit:true});
+  assert.equal(calls.at(-1).args.text,'hello');
+  await runtime.execute({action:'click',selector:'[data-x="quote"]'});
+  assert(calls.some(x=>x.name==='browser_run_code'&&x.args.code.includes('page.locator(')));
+  await runtime.execute({action:'tabs'});
+  assert.deepEqual(calls.at(-1).args,{action:'list'});
+  await assert.rejects(runtime.execute({action:'goto',url:'javascript:alert(1)'}),/navigation is allowed/);
+  const source=await fs.readFile(new URL('../src/browser-agent/index.ts',import.meta.url),'utf8');
+  assert(source.includes('extension-runtime.mjs'));
+  assert(!source.includes('new BrowserRuntime('));
+  assert(source.includes('Never connect to native remote-debugging ports'));
+  assert(source.includes('await runtime.detach()'));
+  console.log('PASS extension-only routing, missing-auth fail-closed/logging, URL guard, refs/selectors/text/tabs, detach-only shutdown');
+} finally {await fs.rm(dir,{recursive:true,force:true});}

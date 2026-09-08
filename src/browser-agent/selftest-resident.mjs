@@ -38,7 +38,7 @@ async function alive(port) {
   }
 }
 
-const runtime = new BrowserRuntime({ dataRoot });
+const runtime = new BrowserRuntime({ dataRoot, profileDir: path.join(dataRoot, "browser-agent", "resident-test-profile"), launchBrowser: true });
 
 if (phase === "A") {
   assert(RESIDENT, "PI_BROWSER_RESIDENT=0 时无法做常驻自检");

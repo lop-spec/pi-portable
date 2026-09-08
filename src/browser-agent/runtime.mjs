@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { resolveThoriumExecutable } from "../thorium-browser.mjs";
+import { importFreshModule } from "./fresh-module.mjs";
+const { resolveThoriumExecutable, dailyThoriumProfile } = await importFreshModule(new URL("../thorium-browser.mjs", import.meta.url));
 
 const REF_ATTRIBUTE = "data-pi-browser-ref";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -140,12 +141,21 @@ function normalizeNavigationUrl(rawUrl) {
   return parsed.href;
 }
 
-async function readDebugEndpoint(profileDir, timeoutMs = 1500) {
+async function readDebugEndpoint(profileDir, timeoutMs = 1500, fallbackPort) {
   try {
     const portFile = path.join(profileDir, "DevToolsActivePort");
-    const [portText] = (await fs.readFile(portFile, "utf8")).trim().split(/\r?\n/u);
+    const contents = await fs.readFile(portFile, "utf8").catch((error) => {
+      if (error.code === "ENOENT" && fallbackPort) return String(fallbackPort);
+      throw error;
+    });
+    const [portText, socketPath] = contents.trim().split(/\r?\n/u);
     const port = Number(portText);
     if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    // chrome://inspect approval mode intentionally disables /json/version.
+    // Read the WS path from the official profile file and let the browser ask for approval.
+    if (fallbackPort && /^\/devtools\/browser(?:\/[a-zA-Z0-9-]+)?$/.test(socketPath || "")) {
+      return { port, browserWebSocketUrl: `ws://127.0.0.1:${port}${socketPath}`, product: null };
+    }
     const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -281,7 +291,8 @@ export function formatSnapshot(snapshot) {
 export class BrowserRuntime {
   constructor({
     dataRoot,
-    profileDir = path.join(dataRoot, "browser-agent", "profile"),
+    profileDir = dailyThoriumProfile(),
+    launchBrowser = false,
     screenshotDir = path.join(dataRoot, "browser-agent", "screenshots"),
     logFile = path.join(dataRoot, "browser-agent", "browser.log"),
     executablePath,
@@ -290,6 +301,10 @@ export class BrowserRuntime {
     if (!dataRoot) throw new Error("BrowserRuntime requires dataRoot");
     this.dataRoot = dataRoot;
     this.profileDir = profileDir;
+    this.launchBrowser = launchBrowser;
+    if (launchBrowser && path.resolve(profileDir) === path.resolve(dailyThoriumProfile())) {
+      throw new Error("Refusing to launch or take over the daily Thorium profile; attach only.");
+    }
     this.screenshotDir = screenshotDir;
     this.logFile = logFile;
     this.executablePath = executablePath;
@@ -313,8 +328,9 @@ export class BrowserRuntime {
       profileDir: this.profileDir,
       executablePath: this.executablePath ?? null,
       playwrightPath: this.playwrightPath ?? null,
-      headless: true,
-      resident: RESIDENT,
+      headless: this.launchBrowser ? true : null,
+      mode: this.launchBrowser ? "explicit-test-launch" : "daily-attach",
+      resident: !this.launchBrowser || RESIDENT,
     };
   }
 
@@ -347,14 +363,18 @@ export class BrowserRuntime {
 
   async start({ signal, timeoutMs = STARTUP_TIMEOUT_MS } = {}) {
     throwIfAborted(signal);
-    await fs.mkdir(this.profileDir, { recursive: true });
+    let endpoint = await readDebugEndpoint(this.profileDir, 1500, this.launchBrowser ? undefined : 9222);
+    if (!endpoint && !this.launchBrowser) {
+      const reason = "Daily Thorium CDP is unavailable. Enable remote debugging in the existing Thorium (chrome://inspect/#remote-debugging), approve the connection, then retry. No isolated browser was started and no login data was copied.";
+      await this.log("daily-attach-unavailable", { profileDir: this.profileDir, reason });
+      throw new Error(reason);
+    }
+    if (this.launchBrowser) await fs.mkdir(this.profileDir, { recursive: true });
     await fs.mkdir(this.screenshotDir, { recursive: true });
-
     this.playwrightPath = await resolvePlaywrightModule(this.playwrightPath);
-    this.executablePath = await resolveBrowserExecutable(this.executablePath);
+    if (this.launchBrowser) this.executablePath = await resolveBrowserExecutable(this.executablePath);
     const chromium = await loadChromium(this.playwrightPath);
 
-    let endpoint = await readDebugEndpoint(this.profileDir);
     let child = null;
     if (!endpoint) {
       await fs.rm(path.join(this.profileDir, "DevToolsActivePort"), { force: true });
@@ -400,7 +420,7 @@ export class BrowserRuntime {
         resident: RESIDENT,
       });
     } else {
-      await this.log("process-reconnect", { product: endpoint.product, port: endpoint.port, headless: true, resident: RESIDENT });
+      await this.log("process-reconnect", { product: endpoint.product, port: endpoint.port, profileDir: this.profileDir, mode: this.launchBrowser ? "explicit-test-launch" : "daily-attach", resident: !this.launchBrowser || RESIDENT });
     }
 
     try {
@@ -411,11 +431,12 @@ export class BrowserRuntime {
     }
     let browser;
     try {
-      browser = await chromium.connectOverCDP(`http://127.0.0.1:${endpoint.port}`, {
+      browser = await chromium.connectOverCDP(endpoint.browserWebSocketUrl, {
         timeout: Math.min(Math.max(timeoutMs, 1000), 60_000),
       });
     } catch (error) {
       if (child?.pid && child.exitCode === null) await killProcessTreeHidden(child.pid);
+      await this.log("cdp-connect-failed", { profileDir: this.profileDir, port: endpoint.port, reason: String(error.message) });
       throw new Error(`Failed to connect Playwright over loopback CDP: ${error.message}`);
     }
 
@@ -426,6 +447,7 @@ export class BrowserRuntime {
     }
     this.browser = browser;
     this.context = contexts[0];
+    endpoint.product = browser.version();
     this.endpoint = endpoint;
     this.context.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
     browser.on("disconnected", () => {
@@ -443,9 +465,30 @@ export class BrowserRuntime {
     if (!this.context) throw new Error("Headless browser is not connected");
     if (this.page && !this.page.isClosed()) return this.page;
     const pages = this.context.pages().filter((candidate) => !candidate.isClosed());
-    this.page = pages.at(-1) ?? await this.context.newPage();
-    await this.page.setViewportSize(VIEWPORT).catch(() => {});
+    this.page = this.launchBrowser
+      ? pages.at(-1) ?? await this.context.newPage()
+      : await this.createBackgroundPage();
+    if (this.launchBrowser) await this.page.setViewportSize(VIEWPORT).catch(() => {});
     return this.page;
+  }
+
+  async createBackgroundPage() {
+    const session = await this.browser.newBrowserCDPSession();
+    try {
+      const { targetId } = await session.send("Target.createTarget", { url: "about:blank", background: true });
+      for (let attempt = 0; attempt < 100; attempt++) {
+        for (const page of this.context.pages()) {
+          if (page.isClosed()) continue;
+          const pageSession = await this.context.newCDPSession(page);
+          try {
+            const { targetInfo } = await pageSession.send("Target.getTargetInfo");
+            if (targetInfo.targetId === targetId) return page;
+          } finally { await pageSession.detach(); }
+        }
+        await sleep(50);
+      }
+      throw new Error("Timed out waiting for the background Thorium tab");
+    } finally { await session.detach(); }
   }
 
   async currentPage(options) {
@@ -704,16 +747,18 @@ export class BrowserRuntime {
     const pages = this.context.pages().filter((candidate) => !candidate.isClosed());
     if (!Number.isInteger(index) || index < 0 || index >= pages.length) throw new Error(`tabIndex out of range: ${index}`);
     this.page = pages[index];
-    await this.page.bringToFront();
-    await this.page.setViewportSize(VIEWPORT).catch(() => {});
+    if (this.launchBrowser) {
+      await this.page.bringToFront();
+      await this.page.setViewportSize(VIEWPORT).catch(() => {});
+    }
     return this.snapshot({ signal });
   }
 
   async newTab(url, { signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const target = url ? normalizeNavigationUrl(url) : null;
     await this.ensureStarted({ signal, timeoutMs });
-    this.page = await this.context.newPage();
-    await this.page.setViewportSize(VIEWPORT).catch(() => {});
+    this.page = this.launchBrowser ? await this.context.newPage() : await this.createBackgroundPage();
+    if (this.launchBrowser) await this.page.setViewportSize(VIEWPORT).catch(() => {});
     if (target) {
       await this.page.goto(target, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     }
@@ -747,7 +792,7 @@ export class BrowserRuntime {
   async closeInternal() {
     const browser = this.browser;
     const child = this.child;
-    const endpoint = this.endpoint ?? await readDebugEndpoint(this.profileDir);
+    const endpoint = this.endpoint ?? await readDebugEndpoint(this.profileDir, 1500, this.launchBrowser ? undefined : 9222);
     const pid = child?.pid ?? null;
 
     if (!browser && !endpoint && !child) return { closed: true, alreadyClosed: true, profileDir: this.profileDir };

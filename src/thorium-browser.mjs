@@ -2,8 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// One executable resolver for the visible pi-web launcher and isolated CDP tool.
-// Profile selection is deliberately separate: only the GUI may use the daily profile.
+// One executable resolver for the launcher and browser tool.
+// The tool attaches to the daily browser; only explicit self-tests launch a separate profile.
+export function dailyThoriumProfile({ userHome = os.userInfo().homedir } = {}) {
+  return path.join(userHome, "AppData", "Local", "Thorium", "User Data");
+}
 export function resolveThoriumExecutable({ env = process.env, exists = fs.existsSync, portableHome = env.PI_PORTABLE_HOME, userHome = os.userInfo().homedir } = {}) {
   const local = path.join(userHome, "AppData", "Local");
   const roots = [
@@ -23,13 +26,13 @@ export function resolveThoriumExecutable({ env = process.env, exists = fs.exists
 }
 
 export function dailyThoriumArgs({ exists = fs.existsSync, userHome = os.userInfo().homedir } = {}) {
-  // Pi rewrites HOME/USERPROFILE for its sandbox; daily browsing belongs to the real Windows account.
+  // Use Thorium's native default profile, like Windows HTTP/HTTPS associations.
+  // Use the real account home, not Pi's sandbox HOME/USERPROFILE.
   const root = path.join(userHome, "AppData", "Local", "Thorium");
   const extensions = ["auto-close-old-tabs", "authenticator"]
     .map((name) => path.join(root, "Extensions", name))
     .filter((directory) => exists(path.join(directory, "manifest.json")));
   return [
-    `--user-data-dir=${path.join(root, "Daily User Data")}`,
     "--remote-debugging-address=127.0.0.1",
     "--remote-debugging-port=9222",
     "--no-default-browser-check",

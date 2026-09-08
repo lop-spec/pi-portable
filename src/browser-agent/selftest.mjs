@@ -16,6 +16,7 @@ const probeExecutable = path.join(temporaryRoot, "window-probe.exe");
 const runtime = new BrowserRuntime({
   dataRoot,
   profileDir,
+  launchBrowser: true, // Explicit synthetic fixture only; the production tool never launches.
   screenshotDir: evidenceDir,
   logFile: path.join(dataRoot, "browser-agent", "browser.log"),
 });

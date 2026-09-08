@@ -39,6 +39,10 @@ jobs:
           node --test tests/piweb-source-release-contract.mjs
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
+          node tests/browser-background-contract.mjs
+          node tests/browser-extension-contract.mjs
+          node tests/browser-daily-attach.mjs
+          node tests/thorium-browser-contract.mjs
           node --test tests/log-rotate-contract.mjs
           node --test tests/bridge-tools-portability-contract.mjs
           node --test tests/bridge-stop-contract.mjs

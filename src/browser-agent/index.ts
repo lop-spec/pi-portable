@@ -1,217 +1,79 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
+import { importFreshModule } from "./fresh-module.mjs";
 
-import { BrowserRuntime, RESIDENT, formatSnapshot } from "./runtime.mjs";
-
-const ACTIONS = [
-  "open",
-  "goto",
-  "snapshot",
-  "text",
-  "eval",
-  "click",
-  "type",
-  "press",
-  "wait",
-  "screenshot",
-  "tabs",
-  "select_tab",
-  "new_tab",
-  "close_tab",
-  "close",
-] as const;
-
+const ACTIONS = ["open", "goto", "snapshot", "text", "eval", "click", "type", "press", "wait", "screenshot", "tabs", "select_tab", "new_tab", "close_tab", "close"] as const;
 const BrowserParameters = Type.Object({
   action: StringEnum(ACTIONS, { description: "Browser operation" }),
   url: Type.Optional(Type.String({ maxLength: 4096, description: "Absolute http(s) URL; required by goto and optional for open/new_tab" })),
-  ref: Type.Optional(Type.String({ maxLength: 32, description: "Element ref from the latest snapshot, for example e4" })),
+  ref: Type.Optional(Type.String({ maxLength: 32, description: "Element ref from the latest snapshot, for example f1e4" })),
   selector: Type.Optional(Type.String({ maxLength: 2000, description: "CSS selector when no snapshot ref is available" })),
   role: Type.Optional(Type.String({ maxLength: 80, description: "Accessible role such as button or textbox" })),
   name: Type.Optional(Type.String({ maxLength: 500, description: "Accessible name used with role" })),
   targetText: Type.Optional(Type.String({ maxLength: 1000, description: "Visible target text, or text filter used with selector" })),
   exact: Type.Optional(Type.Boolean({ description: "Use exact role/name/text matching; defaults to true" })),
-  value: Type.Optional(Type.String({ maxLength: 100_000, description: "Replacement text for action=type" })),
-  expression: Type.Optional(Type.String({ maxLength: 20_000, description: "JavaScript expression evaluated in the page for action=eval; result must be JSON-serializable" })),
-  maxChars: Type.Optional(Type.Integer({ minimum: 100, maximum: 200_000, description: "Character cap for action=text; defaults to 60000" })),
+  value: Type.Optional(Type.String({ maxLength: 100000, description: "Replacement text for action=type" })),
+  expression: Type.Optional(Type.String({ maxLength: 20000, description: "JavaScript expression evaluated in the page; result must be JSON-serializable" })),
+  maxChars: Type.Optional(Type.Integer({ minimum: 100, maximum: 200000, description: "Character cap for action=text; defaults to 60000" })),
   submit: Type.Optional(Type.Boolean({ description: "Press Enter after action=type" })),
   key: Type.Optional(Type.String({ maxLength: 100, description: "Playwright key chord for action=press, for example Enter or Control+A" })),
-  milliseconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 30_000, description: "Delay for action=wait when no target is supplied" })),
-  timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 60_000, description: "Operation timeout; defaults to 30000" })),
+  milliseconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 30000, description: "Delay for action=wait when no target is supplied" })),
+  timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 60000, description: "Operation timeout; defaults to 30000" })),
   fullPage: Type.Optional(Type.Boolean({ description: "Capture the entire scrollable page for action=screenshot" })),
   tabIndex: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000, description: "Zero-based tab index for action=select_tab" })),
 }, { additionalProperties: false });
 
 function extensionDataRoot() {
   if (process.env.PI_PORTABLE_DATA) return path.resolve(process.env.PI_PORTABLE_DATA);
-  const extensionDir = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(extensionDir, "..", "..", "..", "..");
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 }
 
-function targetFrom(params: any) {
-  return {
-    ref: params.ref,
-    selector: params.selector,
-    role: params.role,
-    name: params.name,
-    targetText: params.targetText,
-    exact: params.exact,
-  };
-}
-
-async function boundedText(runtime: BrowserRuntime, text: string) {
-  const truncation = truncateHead(text, { maxLines: 1800, maxBytes: 45_000 });
-  if (!truncation.truncated) return { text: truncation.content, fullOutputPath: undefined };
-  const fullOutputPath = await runtime.saveTextArtifact("snapshot", text);
-  const notice = `\n\n[Snapshot truncated: ${truncation.outputLines}/${truncation.totalLines} lines, ${truncation.outputBytes}/${truncation.totalBytes} bytes. Full output: ${fullOutputPath}]`;
-  return { text: truncation.content + notice, fullOutputPath };
-}
-
-export default function browserAgentExtension(pi: ExtensionAPI) {
-  const runtime = new BrowserRuntime({ dataRoot: extensionDataRoot() });
-
+export default async function browserAgentExtension(pi: ExtensionAPI) {
+  const { ExtensionBrowserRuntime } = await importFreshModule(new URL("./extension-runtime.mjs", import.meta.url));
+  const runtime = new ExtensionBrowserRuntime({ dataRoot: extensionDataRoot() });
   pi.registerTool({
     name: "browser",
-    label: "Headless Browser",
+    label: "Thorium Background Browser",
     description: [
-      "Operate a dedicated-profile, headless Thorium (fallback Edge/Chrome) instance over loopback CDP with Playwright.",
+      "Operate the user's daily Thorium through a background-only fork of the official Playwright Extension CDP bridge. Reuse its login state without activating windows or tabs.",
+      "Never connect to native remote-debugging ports, open an isolated browser, copy website login data, or silently fall back to another browser.",
       "Actions: open/goto/snapshot/text/eval/click/type/press/wait/screenshot/tabs/select_tab/new_tab/close_tab/close.",
-      "Prefer text (full innerText) or eval (JSON expression) for reading; snapshot lists interactive refs; screenshot is the visual fallback only.",
-      "For click/type targets prefer a ref returned by snapshot; otherwise provide selector, role+name, or targetText.",
-      "The browser never connects to the user's daily browser profile. Only absolute http(s) URLs and about:blank are accepted.",
+      "Prefer text or eval for reading; snapshot supplies refs (such as f1e4); screenshot is a visual fallback only.",
+      "Use snapshot refs for click/type, otherwise selectors or accessible role/name. A login redirect alone does not identify its cause.",
+      "Only http(s) and about:blank navigation is accepted. close disconnects the extension worker, retaining Thorium and its login state.",
     ].join(" "),
-    promptSnippet: "Open and operate live webpages in an isolated, no-window headless browser",
+    promptSnippet: "Read and operate logged-in webpages in daily Thorium through the background-only Playwright Extension",
     promptGuidelines: [
-      "Use browser for live webpage interaction, DOM-state checks, and screenshots; prefer snapshot refs over guessed coordinates or selectors.",
-      RESIDENT
-        ? "The browser process stays resident across sessions (isolated profile, loopback CDP); sessions only disconnect at shutdown. Call browser action=close only when the user wants the process gone."
-        : "The browser tool uses a persistent isolated profile and closes its process automatically at session shutdown; call browser action=close when it is no longer needed.",
+      "Use browser through the installed background-only Playwright Extension. Never activate a window/tab, use native remote-debugging windows, or launch an isolated browser.",
+      "The browser extension token is machine-local; never print it, copy website credentials, or synchronize credentials to another machine.",
+      "Prefer browser text/eval and snapshot refs. Do not infer login expiry from a redirect alone. Session shutdown only disconnects the MCP worker, never closes the user's Thorium process.",
     ],
     parameters: BrowserParameters,
     executionMode: "sequential",
-
-    async execute(_toolCallId, params, signal, onUpdate) {
-      const timeoutMs = params.timeoutMs ?? 30_000;
-      const target = targetFrom(params);
-      const snapshotResult = async (snapshot: any, action: string) => {
-        const bounded = await boundedText(runtime, formatSnapshot(snapshot));
-        return {
-          content: [{ type: "text" as const, text: bounded.text }],
-          details: {
-            action,
-            url: snapshot.url,
-            title: snapshot.title,
-            controls: snapshot.controls.length,
-            profileDir: runtime.profileDir,
-            fullOutputPath: bounded.fullOutputPath,
-          },
-        };
-      };
-
-      switch (params.action) {
-        case "open": {
-          onUpdate?.({ content: [{ type: "text", text: "Starting isolated headless browser…" }], details: { action: params.action } });
-          return snapshotResult(await runtime.open(params.url, { signal, timeoutMs }), params.action);
-        }
-        case "goto": {
-          if (!params.url) throw new Error("url is required for browser action=goto");
-          return snapshotResult(await runtime.navigate(params.url, { signal, timeoutMs }), params.action);
-        }
-        case "snapshot":
-          return snapshotResult(await runtime.snapshot({ signal }), params.action);
-        case "text": {
-          const result = await runtime.text({ signal, maxText: params.maxChars ?? 60_000 });
-          const bounded = await boundedText(runtime, `URL: ${result.url}\nTitle: ${result.title || "(untitled)"}\nChars: ${result.total}\n\n${result.text}`);
-          return {
-            content: [{ type: "text" as const, text: bounded.text }],
-            details: { action: params.action, url: result.url, title: result.title, chars: result.total, fullOutputPath: bounded.fullOutputPath },
-          };
-        }
-        case "eval": {
-          if (!params.expression) throw new Error("expression is required for browser action=eval");
-          const result = await runtime.evaluate(params.expression, { signal, timeoutMs });
-          const serialized = result.value === undefined ? "undefined" : JSON.stringify(result.value, null, 1);
-          const bounded = await boundedText(runtime, serialized);
-          return {
-            content: [{ type: "text" as const, text: bounded.text }],
-            details: { action: params.action, url: result.url, fullOutputPath: bounded.fullOutputPath },
-          };
-        }
-        case "click":
-          return snapshotResult(await runtime.click(target, { signal, timeoutMs }), params.action);
-        case "type": {
-          if (params.value === undefined) throw new Error("value is required for browser action=type");
-          return snapshotResult(await runtime.type(target, params.value, { signal, timeoutMs, submit: params.submit }), params.action);
-        }
-        case "press": {
-          if (!params.key) throw new Error("key is required for browser action=press");
-          return snapshotResult(await runtime.press(target, params.key, { signal, timeoutMs }), params.action);
-        }
-        case "wait":
-          return snapshotResult(await runtime.wait(target, { signal, timeoutMs, milliseconds: params.milliseconds }), params.action);
-        case "screenshot": {
-          const shot = await runtime.screenshot({ signal, timeoutMs, fullPage: params.fullPage });
-          return {
-            content: [
-              { type: "text" as const, text: `Screenshot captured: ${shot.file}\nURL: ${shot.url}\nTitle: ${shot.title || "(untitled)"}` },
-              { type: "image" as const, data: shot.data.toString("base64"), mimeType: "image/png" },
-            ],
-            details: { action: params.action, file: shot.file, url: shot.url, title: shot.title, bytes: shot.data.length, fullPage: shot.fullPage },
-          };
-        }
-        case "tabs": {
-          const tabs = await runtime.tabs({ signal });
-          const text = tabs.length
-            ? tabs.map((tab) => `${tab.current ? "*" : " "} [${tab.index}] ${tab.title || "(untitled)"} — ${tab.url}`).join("\n")
-            : "No open tabs";
-          return { content: [{ type: "text", text }], details: { action: params.action, tabs } };
-        }
-        case "select_tab": {
-          if (params.tabIndex === undefined) throw new Error("tabIndex is required for browser action=select_tab");
-          return snapshotResult(await runtime.selectTab(params.tabIndex, { signal }), params.action);
-        }
-        case "new_tab":
-          return snapshotResult(await runtime.newTab(params.url, { signal, timeoutMs }), params.action);
-        case "close_tab":
-          return snapshotResult(await runtime.closeTab({ signal }), params.action);
-        case "close": {
-          const result = await runtime.close();
-          return {
-            content: [{ type: "text", text: result.alreadyClosed ? "Headless browser was already closed." : "Headless browser closed; isolated profile retained." }],
-            details: { action: params.action, ...result },
-          };
-        }
-        default:
-          throw new Error(`Unsupported browser action: ${String(params.action)}`);
-      }
+    async execute(_toolCallId, params, signal) {
+      signal?.throwIfAborted();
+      const abort = () => { void runtime.detach().catch(error => console.error('[browser] abort-detach-failed:', error.message)); };
+      signal?.addEventListener('abort', abort, { once: true });
+      try { return await runtime.execute(params); }
+      finally { signal?.removeEventListener('abort', abort); }
     },
   });
-
   pi.registerCommand("browser-status", {
-    description: "Show isolated headless browser tool and process status",
+    description: "Show the official Playwright Extension connection status",
     handler: async (_args, ctx) => {
       const status = runtime.status();
-      const active = pi.getActiveTools().includes("browser");
-      ctx.ui.notify(
-        `browser active=${active} running=${status.running} resident=${status.resident} pid=${status.pid ?? "-"} port=${status.port ?? "-"} headless=true profile=${status.profileDir}`,
-        active ? "info" : "warning",
-      );
+      ctx.ui.notify(`browser active=${pi.getActiveTools().includes("browser")} running=${status.running} mode=${status.mode} pid=${status.pid ?? "-"} profile=${status.profileDir}`, "info");
     },
   });
-
   pi.registerCommand("browser-close", {
-    description: "Close the isolated headless browser process and retain its profile",
+    description: "Disconnect the extension worker without closing Thorium",
     handler: async (_args, ctx) => {
-      await runtime.close();
-      ctx.ui.notify("Isolated headless browser closed; profile retained.", "info");
+      await runtime.detach();
+      ctx.ui.notify("Extension disconnected; Thorium and its login state retained.", "info");
     },
   });
-
-  pi.on("session_shutdown", async () => {
-    if (RESIDENT) await runtime.detach();
-    else await runtime.close();
-  });
+  pi.on("session_shutdown", async () => { await runtime.detach(); });
 }
