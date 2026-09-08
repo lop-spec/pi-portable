@@ -36,6 +36,13 @@ export function integrate(getFile) {
   const runtime = [getClipboardPastePlan, normalizeClipboardImages, formatAtMentions, uploadClipboardFiles, filterSessionsForWorktree, conversationMessageText, toConversationNodeLine, conversationUserQuestion, collectConversationNodeRecords].map(fn => `export ${fn.toString()}`).join('\n\n');
   set('lib/pi-portable-runtime.js', `${runtime}\n\nexport function readPreference(key, fallback = null) {\n  if (typeof window === 'undefined') return fallback;\n  try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); }\n  catch (error) { console.error('[pi-web] preference read failed:', key, error); return fallback; }\n}\nexport function rememberPreference(key, value) {\n  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch (error) { console.error('[pi-web] preference write failed:', key, error); }\n}\n`);
   set('components/PortableControls.tsx', template('PortableControls.tsx'));
+  set('lib/portable-image-urls.ts', template('portable-image-urls.ts'));
+  set('components/PortableOutputImage.tsx', template('PortableOutputImage.tsx'));
+  const markdown = 'components/MarkdownBody.tsx';
+  prepend(markdown, 'import { portableImageUrls } from "@/lib/portable-image-urls";\nimport { PortableOutputImage } from "./PortableOutputImage";\n');
+  change(markdown, '  const normalizedMarkdown = useMemo', '  const imagePlugins = useMemo(() => [markdownRehypePlugins![0], [portableImageUrls, { cwd }], ...markdownRehypePlugins!.slice(1)] as typeof markdownRehypePlugins, [cwd]);\n  const normalizedMarkdown = useMemo');
+  change(markdown, 'rehypePlugins={markdownRehypePlugins}', 'rehypePlugins={imagePlugins}');
+  change(markdown, 'return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;', 'return <PortableOutputImage src={imageSrc} alt={alt ?? ""} {...props} />;');
   set('components/PortableNodes.tsx', template('PortableNodes.tsx'));
   set('app/portable.css', template('portable.css'));
   set('app/globals.css', get('app/globals.css') + '\n' + template('portable.css'));

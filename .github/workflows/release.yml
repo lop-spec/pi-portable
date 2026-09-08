@@ -145,6 +145,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "source integration contracts failed" }
           node tools/patch-piweb-source.mjs --source upstream
           if ($LASTEXITCODE -ne 0) { throw "source integration failed" }
+          node --test tests/piweb-image-output.mjs
+          if ($LASTEXITCODE -ne 0) { throw "image output contracts failed" }
           Push-Location upstream
           node node_modules/typescript/bin/tsc --noEmit
           if ($LASTEXITCODE -ne 0) { throw "integrated typecheck failed" }
