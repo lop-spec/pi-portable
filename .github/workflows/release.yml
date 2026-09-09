@@ -53,6 +53,7 @@ jobs:
           node --test tests/codex-model-catalog-contract.mjs
           node --test tests/live-model-catalog-contract.mjs
           node --test tests/piweb-archive-confirmation-contract.mjs
+          node --test tests/piweb-conversation-visibility.mjs
           node --test tests/piweb-worktree-visibility-contract.mjs
           node --test tests/piweb-account-usage-contract.mjs
           node --test tests/patch-piweb-worktree-sessions-contract.mjs

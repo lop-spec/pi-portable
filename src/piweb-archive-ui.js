@@ -1448,3 +1448,69 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
 })();
+
+// Conversation visibility: native progress stays readable after a turn ends.
+// Presentation only: no model calls, translation, transcript edits or polling.
+(() => {
+  "use strict";
+  if (window.__piConversationVisibility) return;
+  const processTitles = new Set([
+    "Expand process details", "Collapse process details",
+    "展开处理详情", "收起处理详情", "展開處理詳細資料", "收起處理詳細資料",
+  ]);
+  const selector = 'button[aria-expanded][title],.markdown-compaction-message';
+  const seen = new WeakSet();
+  const state = { version: 1, expanded: 0, hiddenCompactions: 0 };
+  window.__piConversationVisibility = state;
+
+  function decorate(element) {
+    if (seen.has(element)) return;
+    if (element.matches('button[aria-expanded][title]')) {
+      if (!processTitles.has(element.getAttribute('title'))) return;
+      seen.add(element);
+      // Only open the outer group once. Native thinking/tool toggles and an
+      // explicit subsequent user collapse retain their own state.
+      if (element.getAttribute('aria-expanded') === 'false') {
+        element.click();
+        state.expanded++;
+        setTimeout(() => {
+          if (element.isConnected && element.getAttribute('aria-expanded') !== 'true') {
+            console.warn('[pi-web conversation visibility] native process expansion did not apply; leaving native control available');
+          }
+        }, 0);
+      }
+      return;
+    }
+    if (!element.matches('.markdown-compaction-message')) return;
+    seen.add(element);
+    const wrapper = element.parentElement?.parentElement?.parentElement;
+    const card = wrapper?.firstElementChild;
+    const header = card?.firstElementChild;
+    // Validate the pinned native card, never hide an arbitrary ancestor of
+    // user/model Markdown just because its contents mention compaction.
+    if (header?.firstElementChild?.textContent.trim() !== 'compaction' || !header.nextElementSibling?.contains(element)) {
+      console.warn('[pi-web conversation visibility] compaction markup not recognized; summary left visible');
+      return;
+    }
+    wrapper.setAttribute('data-pi-compaction-hidden', 'true');
+    state.hiddenCompactions++;
+  }
+  function scan(root) {
+    if (!(root instanceof Element)) return;
+    if (root.matches(selector)) decorate(root);
+    for (const element of root.querySelectorAll(selector)) decorate(element);
+  }
+  function start() {
+    const style = document.createElement('style');
+    style.textContent = '[data-pi-compaction-hidden="true"]{display:none!important}';
+    document.head.append(style);
+    scan(document.documentElement);
+    new MutationObserver(records => {
+      // Newly mounted history and completed turns only; do not rescan the
+      // document for every streaming token or observe our own attributes.
+      for (const record of records) for (const node of record.addedNodes) scan(node);
+    }).observe(document.documentElement, { childList: true, subtree: true });
+    console.info('[pi-web conversation visibility] enabled: process groups default open; compaction summaries hidden; original data unchanged');
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+})();
