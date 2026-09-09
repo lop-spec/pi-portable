@@ -381,21 +381,23 @@ var ConnectedTabGroup = class {
 		this._connection.didInitialize();
 	}
 	connectedTabIds() {
-		return [...this._groupTabIds];
+		return [...new Set([...this._groupTabIds, ...this._connection.attachedTabs])];
 	}
 	close(reason) {
 		this._connection.close(reason);
 	}
 	releaseTab(tabId) {
-		if (!this._groupTabIds.has(tabId)) return;
+		if (!this._groupTabIds.has(tabId) && !this._connection.attachedTabs.has(tabId)) return;
 		this._groupTabIds.delete(tabId);
 		this._connection.detachTab(tabId);
 	}
 	_onTabUpdated(tabId, changeInfo, tab) {
 		if (changeInfo.groupId !== void 0) this._onTabGroupChanged(tabId, tab);
 		if (changeInfo.url === void 0) return;
-		if (this._connection.attachedTabs.has(tabId)) this._updateBadge(tabId, CONNECTED_BADGE);
-		else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url)) this._connection.attachTab(tab);
+		if (this._connection.attachedTabs.has(tabId)) {
+			this._updateBadge(tabId, CONNECTED_BADGE);
+			this._addTabToGroup(tabId);
+		} else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url)) this._connection.attachTab(tab);
 	}
 	_onTabGroupChanged(tabId, tab) {
 		const inOurGroup = this._groupId !== null && tab.groupId === this._groupId;
@@ -451,6 +453,11 @@ var ConnectedTabGroup = class {
 	async _addTabToGroup(tabId) {
 		if (this._groupTabIds.has(tabId)) return;
 		try {
+			const tab = await chrome.tabs.get(tabId);
+			if (isConnectionPage(tab)) {
+				if (!tab.pinned) await chrome.tabs.update(tabId, { pinned: true });
+				return; // Grouping would unpin the connection page again.
+			}
 			await retryOnDrag(async () => {
 				if (this._groupId === null) {
 					this._groupId = await chrome.tabs.group({ tabIds: [tabId] });
@@ -462,7 +469,7 @@ var ConnectedTabGroup = class {
 			});
 			this._groupTabIds.add(tabId);
 		} catch (error) {
-			debugLog("Error adding tab to group:", error);
+			console.error("[pi-background] tab-pin-or-group-failed", tabId, error.message);
 		}
 	}
 };
@@ -523,6 +530,9 @@ var PlaywrightExtension = class {
 	}
 	_onMessage(message, sender, sendResponse) {
 		switch (message.type) {
+			case "pi-connection-pinning-ready":
+				sendResponse({ ready: true });
+				return false;
 			case "connectionRequested": {
 				const selectorTabId = sender.tab.id;
 				this._releaseConnectPage(selectorTabId).then(() => {
@@ -604,5 +614,6 @@ var PlaywrightExtension = class {
 	}
 };
 new PlaywrightExtension();
+import { isConnectionPage } from "../pi-background-pin.mjs";
 import "../pi-background-service.mjs";
 //#endregion

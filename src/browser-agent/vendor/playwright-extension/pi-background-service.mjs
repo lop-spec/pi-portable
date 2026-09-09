@@ -1,4 +1,5 @@
 import {backgroundConfig} from './pi-background-config.mjs';
+import {pinConnectionTabs} from './pi-background-pin.mjs';
 let creating;
 async function ensureOffscreen() {
   const url=chrome.runtime.getURL('pi-background.html');
@@ -6,7 +7,7 @@ async function ensureOffscreen() {
   if(!creating)creating=chrome.offscreen.createDocument({url:'pi-background.html',reasons:['LOCAL_STORAGE'],justification:'Read this extension profile auth token and accept local background-only connection invitations.'}).finally(()=>creating=null);
   await creating;
 }
-const start=()=>ensureOffscreen().catch(error=>console.error('[pi-background] offscreen-start-failed',error.message));
+const start=()=>Promise.all([ensureOffscreen(),pinConnectionTabs()]).catch(error=>console.error('[pi-background] background-start-failed',error.message));
 chrome.runtime.onInstalled.addListener(start);
 chrome.runtime.onStartup.addListener(start);
 start();
@@ -23,7 +24,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     const windows=await chrome.windows.getAll({windowTypes:['normal']});
     if(!windows.length)throw new Error('No existing normal Thorium window; refusing to open a window');
     const window=windows.find(w=>w.focused)||windows[0];
-    const tab=await chrome.tabs.create({windowId:window.id,url:url.href,active:false});
+    const tab=await chrome.tabs.create({windowId:window.id,url:url.href,active:false,pinned:true});
     console.info('[pi-background] opened background connection tab',tab.id);
     return {success:true,tabId:tab.id};
   })().then(reply,error=>{console.error('[pi-background] invitation-failed',error.message);reply({success:false,error:error.message});});
