@@ -96,6 +96,34 @@ test("subsequent launcher runs preserve a user-selected global default and trans
   assert.deepEqual(second.settings.enabledModels, LIVE_CODEX_MODEL_PATTERNS);
 });
 
+test("file auth removes native subprocess auth but preserves historical provider and headers", () => {
+  const original = legacyModels();
+  original.providers[LIVE_CODEX_PROVIDER] = { apiKey: "!old-native-command", headers: { keep: "yes" } };
+  const result = buildLiveModelConfiguration(original, legacySettings(), { fileAuth: true });
+  assert.equal(result.ok, true);
+  assert.equal(Object.hasOwn(result.models.providers[LIVE_CODEX_PROVIDER], "apiKey"), false);
+  assert.deepEqual(result.models.providers["codex-bridge"], original.providers["codex-bridge"]);
+  assert.equal(result.models.providers[LIVE_CODEX_PROVIDER].headers.keep, "yes");
+  delete original.providers["codex-bridge"].apiKey;
+  assert.equal(buildLiveModelConfiguration(original, legacySettings(), { fileAuth: true }).ok, true);
+});
+
+test("configured native file auth survives repeated launcher migrations without reading credentials", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-file-auth-restart-"));
+  fs.mkdirSync(path.join(root, "extensions"));
+  fs.writeFileSync(path.join(root, "extensions/codex-file-auth.ts"), "// fixture");
+  fs.writeFileSync(path.join(root, "codex-file-auth.json"), JSON.stringify({ authFile: path.join(root, "must-not-be-read.json") }));
+  fs.writeFileSync(path.join(root, "models.json"), JSON.stringify(legacyModels()));
+  fs.writeFileSync(path.join(root, "settings.json"), JSON.stringify(legacySettings()));
+  const first = configureLiveModelCatalog(root);
+  assert.equal(first.status, "updated");
+  assert.equal(Object.hasOwn(JSON.parse(fs.readFileSync(path.join(root, "models.json"))).providers[LIVE_CODEX_PROVIDER], "apiKey"), false);
+  assert.equal(configureLiveModelCatalog(root).status, "already-current");
+  assert.equal(configureLiveModelCatalog(root).status, "already-current");
+  fs.renameSync(path.join(root, "extensions/codex-file-auth.ts"), path.join(root, "extension-fixture-retired.txt"));
+  assert.throws(() => configureLiveModelCatalog(root), /refusing legacy credential fallback/);
+});
+
 test("missing legacy provider fails open without inventing credentials", () => {
   const result = buildLiveModelConfiguration({ providers: {} }, {});
   assert.equal(result.ok, false);

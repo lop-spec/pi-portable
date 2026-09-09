@@ -40,7 +40,7 @@ $notify.Icon = $icon
 $notify.Text = $Title
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 [void]$menu.Items.Add($MenuOpen, $null, { Send-Cmd "OPEN" })
-[void]$menu.Items.Add($MenuRestart, $null, { Send-Cmd "RESTART" })
+$restartItem = $menu.Items.Add($MenuRestart, $null, { Send-Cmd "RESTART" })
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void]$menu.Items.Add($MenuExit, $null, { Send-Cmd "EXIT" })
 $notify.ContextMenuStrip = $menu
@@ -57,12 +57,20 @@ if ($SelfTest) {
   exit 0
 }
 
-# Self-clean when launcher dies without a clean shutdown (no orphan tray icon).
+# Same-user named event permits explicit remote restart through the real menu handler.
+# No network listener, polling files, model calls or automatic session continuation.
+$restartEvent = $null
 if ($ParentPid -gt 0) {
+  try {
+    $restartEvent = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::AutoReset, "Global\PiPortable.Restart.$ParentPid")
+  } catch { Send-Cmd ("ERROR:restart-event unavailable: " + $_.Exception.GetType().Name) }
+  $script:ticks = 0
   $timer = New-Object System.Windows.Forms.Timer
-  $timer.Interval = 2000
+  $timer.Interval = 100
   $timer.add_Tick({
-    if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
+    if ($restartEvent -and $restartEvent.WaitOne(0)) { $restartItem.PerformClick() }
+    $script:ticks++
+    if (($script:ticks % 20) -eq 0 -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
       $notify.Visible = $false
       [System.Windows.Forms.Application]::Exit()
     }
@@ -72,5 +80,6 @@ if ($ParentPid -gt 0) {
 
 Send-Cmd "READY"
 [System.Windows.Forms.Application]::Run()
+if ($restartEvent) { $restartEvent.Dispose() }
 $notify.Visible = $false
 $notify.Dispose()

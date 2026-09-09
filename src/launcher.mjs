@@ -14,6 +14,7 @@ import { appendLineRotating } from "./log-rotate.mjs";
 import { BRIDGE_REARM_MS, createBridgeGuard, describeBridgeExit } from "./bridge-guard.mjs";
 import { configureLiveModelCatalog } from "./live-model-catalog.mjs";
 import { resolveThoriumExecutable, dailyThoriumArgs } from "./thorium-browser.mjs";
+import { selectSweepRoots, saveRestartHandoff, consumeRestartHandoff } from "./restart-state.mjs";
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
@@ -246,6 +247,7 @@ function listPortOwners(ports) {
   const owners = new Set();
   try {
     const r = spawnSync("netstat", ["-ano", "-p", "TCP"], { windowsHide: true, timeout: 8000, encoding: "utf8" });
+    if (r.status !== 0) throw new Error(`netstat failed: ${r.status ?? r.error?.message}`);
     for (const line of String(r.stdout || "").split("\n")) {
       const m = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i);
       if (!m) continue;
@@ -253,82 +255,64 @@ function listPortOwners(ports) {
       const pid = Number(m[2]);
       if (pid > 4) owners.add(pid);
     }
-  } catch {}
+  } catch (error) { log(`端口归属查询失败:${error.message}`); throw error; }
   return [...owners];
 }
 
 // 命令行指纹:第三层兜底。台账丢失(数据根被清)且端口已被别的状态占住时,仍能按
 // "属于本运行面的进程"精确定位。限定 HOME 前缀,绝不误伤别人的 node / powershell。
-function listFingerprintPids() {
-  if (process.platform !== "win32") return [];
-  const script = [
-    "$home_ = $env:PI_SWEEP_HOME;",
-    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.ToLower().Contains($home_.ToLower()) } |",
-    "Where-Object { $_.CommandLine -match 'launcher\\.mjs|run-supervisor\\.mjs|tray\\.ps1|codex-responses-proxy|pi-web' } |",
-    "ForEach-Object { $_.ProcessId }",
-  ].join(" ");
-  try {
-    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      windowsHide: true, timeout: 15000, encoding: "utf8", env: { ...process.env, PI_SWEEP_HOME: HOME },
-    });
-    return String(r.stdout || "").split(/\r?\n/).map((s) => Number(s.trim()))
-      .filter((n) => Number.isInteger(n) && n > 4 && n !== process.pid);
-  } catch { return []; }
+function listFingerprintPids(bridgeOwned) {
+  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path.join(HOME, "src/runtime-processes.ps1")], {
+    windowsHide: true, timeout: 15000, encoding: "utf8",
+  });
+  if (r.status !== 0) throw new Error(`process identity snapshot failed: ${r.status ?? r.error?.message}`);
+  const processes = JSON.parse(r.stdout.replace(/^\uFEFF/, ""));
+  return selectSweepRoots(Array.isArray(processes) ? processes : [processes], {
+    home: HOME, data: DATA, selfPid: process.pid, parentPid: process.ppid,
+    bridgeOwned, webInternalPort: PORTS.webInternal,
+  });
 }
 
 // 全局清场:台账 → 端口占用者 → 命令行指纹,三层都杀,再确认端口真的空了。
 // 只清本运行面的东西:桥端口仅在本运行面拥有它时才动(不接管的生产桥不受影响)。
-async function sweepRuntime({ reason = "sweep", keepSelf = true } = {}) {
+async function sweepRuntime({ reason = "sweep" } = {}) {
+  const started = Date.now();
   const ledger = readLedger();
   const bridgeOurs = bridgeOwnedByUs || ledger.bridgeOwned;
   const ports = [PORTS.web, PORTS.webInternal, PORTS.supervisor, ...(bridgeOurs ? [PORTS.bridge] : [])];
-  const killed = new Set();
-  const kill = (pid) => {
-    if (!pid || killed.has(pid)) return;
-    if (keepSelf && pid === process.pid) return;
-    killed.add(pid);
-    killTree(pid);
-  };
-
-  const wanted = new Set();
-  for (const c of children) if (c?.pid) wanted.add(c.pid);
-  for (const e of ledger.entries) { const p = Number(e?.pid); if (Number.isInteger(p) && p > 4) wanted.add(p); }
-  for (const p of listPortOwners(ports)) wanted.add(p);
-  if (keepSelf) wanted.delete(process.pid);
-  for (const p of wanted) kill(p);
-
-  // 进程存活确认:taskkill 报成功不等于进程已消失(子树深、句柄未释放都会滞后),而
-  // "重启看起来没生效"正是从这种滞后开始的。逐轮复核到真死,中途补一次指纹扫描。
-  for (let round = 0; round < 20; round++) {
-    const alive = [...wanted].filter((p) => pidAlive(p));
-    if (!alive.length) break;
-    if (round === 3) for (const p of listFingerprintPids()) { wanted.add(p); kill(p); }
-    for (const p of alive) { killed.delete(p); kill(p); }
-    await new Promise((r) => setTimeout(r, 200));
+  const plan = listFingerprintPids(bridgeOurs);
+  const wanted = new Set(plan.pids);
+  const unowned = listPortOwners(ports).filter(pid => !wanted.has(pid));
+  if (unowned.length) throw new Error(`refusing to kill unowned port processes: ${unowned.join(",")}`);
+  const stale = ledger.entries.filter(e => e.pid !== process.pid && !wanted.has(Number(e.pid)));
+  if (stale.length) log(`清场:忽略 ${stale.length} 个已消失/身份不符/受保护的旧台账 PID`);
+  if (plan.roots.length) {
+    const result = spawnSync("taskkill", [...plan.roots.flatMap(pid => ["/PID", String(pid)]), "/T", "/F"], {
+      windowsHide: true, timeout: 8000, encoding: "utf8",
+    });
+    if (result.status !== 0) log(`批量清场返回 ${result.status ?? result.error?.message};以存活与端口读回为准`);
   }
-  const stubborn = [...wanted].filter((p) => pidAlive(p));
-
-  // 端口释放确认:进程都死了不代表端口立刻可 bind,占用者也可能根本不在上面几层里。
-  let free = false;
-  for (let round = 0; round < 24; round++) {
-    const stillListening = listPortOwners(ports);
-    if (!stillListening.length) { free = true; break; }
-    if (round === 4) for (const pid of listFingerprintPids()) kill(pid);
-    for (const pid of stillListening) { killed.delete(pid); kill(pid); }
-    await new Promise((r) => setTimeout(r, 250));
+  // One taskkill for deduplicated roots; no 20 rounds of sequential taskkill/netstat.
+  for (let round = 0; round < 20 && [...wanted].some(pidAlive); round++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
-  writeLedger({ entries: [], bridgeOwned: false });
-  log(`清场(${reason}):杀 ${killed.size} 个进程,端口 ${ports.join("/")} ${free ? "已全部释放" : "仍有占用"}`
+  let stubborn = [...wanted].filter(pidAlive);
+  // Windows may retain exited process handles. Recheck actual process identity once.
+  if (stubborn.length) stubborn = listFingerprintPids(bridgeOurs).pids.filter(pid => wanted.has(pid));
+  const free = !(await Promise.all(ports.map(port => portAlive(port)))).some(Boolean);
+  log(`清场(${reason}):${Date.now() - started}ms,批量 ${plan.roots.length} 棵树/${wanted.size} 个进程,端口 ${ports.join("/")} ${free ? "已全部释放" : "仍有占用"}`
     + (stubborn.length ? `,顽固存活 ${stubborn.join(",")}` : ""));
-  return { killed: [...killed], stubborn, free, ports };
+  if (!free || stubborn.length) throw new Error("restart cleanup incomplete; refusing to reuse old runtime");
+  writeLedger({ entries: [], bridgeOwned: false });
+  return { killed: [...wanted], stubborn, free, ports };
 }
 
 function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   log("退出中:杀进程树…");
-  for (const c of children) if (c?.pid) killTree(c.pid);
-  for (const e of readLedger().entries) if (e?.pid && e.pid !== process.pid) killTree(Number(e.pid));
+  for (const c of children) if (c?.pid && c.exitCode === null) killTree(c.pid);
+  // Old ledger identities are validated only by sweepRuntime; never bypass its safety gate here.
   writeLedger({ entries: [], bridgeOwned: false });
   log("已退出");
   process.exit(code);
@@ -341,8 +325,13 @@ async function main() {
   fs.mkdirSync(DATA, { recursive: true });
   // 受管远端的数据根标记只禁止登录自启时弹窗，仍保留交互桌面的托盘与双击进入能力。
   // 真正的无头启动必须由调用方显式传 PI_HEADLESS=1；否则标记会让人工双击也静默退出。
+  const restart = consumeRestartHandoff(DATA, { parentPid: process.ppid, log });
   const headlessMarker = path.join(DATA, "headless.enabled");
-  if (fs.existsSync(headlessMarker)) {
+  if (restart?.openWindow) {
+    process.env.PI_AUTO_WINDOW = "1";
+    delete process.env.PI_HEADLESS;
+    log("手动重启:就绪后自动打开 Pi Web（一次性覆盖静默自启标记）");
+  } else if (fs.existsSync(headlessMarker)) {
     process.env.PI_AUTO_WINDOW = "0";
     log("检测到受管启动标记:禁止首次自启弹窗;仅显式 PI_HEADLESS=1 才进入无头模式");
   }
@@ -352,10 +341,13 @@ async function main() {
   if (!fs.existsSync(NODE) && !process.env.PI_NODE_EXE) log(`警告:未找到便携 node(${NODE}),将使用当前 node`);
   const nodeExe = fs.existsSync(NODE) ? NODE : process.execPath;
   const portableEnv = withSilentWindowsProcessEnv(withPortableNode(process.env, nodeExe));
-  if (process.env.PI_FORCE_FRESH === "1") {
-    // 硬重启拉起的冷启实例:残留一律不复用,先清场再起全套(否则会退化成"只开个窗口")。
-    log("冷启:不复用任何残留实例,先做全局清场");
-    await sweepRuntime({ reason: "cold-start" });
+  if (restart || process.env.PI_FORCE_FRESH === "1") {
+    const released = restart?.swept && !(await Promise.all(restart.ports.map(port => portAlive(port)))).some(Boolean);
+    if (released) log("重启交接:上代已清场且端口读回为空,不重复清场");
+    else {
+      log("冷启:不复用任何残留实例,先做全局清场");
+      await sweepRuntime({ reason: "cold-start" });
+    }
   } else if (await portAlive(PORTS.web)) {
     if (process.env.PI_HEADLESS === "1") log(`端口 ${PORTS.web} 已有实例,无头模式仅同步规则,不打开窗口`);
     else { log(`端口 ${PORTS.web} 已被占用——可能已有实例在跑,直接开窗口`); await openWindow(); }
@@ -557,11 +549,16 @@ async function main() {
     shutdown(3);
   }
   log(`pi-web 内部运行面就绪 :${PORTS.webInternal}`);
-  const runtimeCheck = spawnSync(nodeExe, [path.join(HOME, "tools", "piweb-rules-live-check.mjs")], {
-    windowsHide: true, encoding: "utf8", timeout: 20000,
+  // Read-only diagnostics must not delay the UI proxy or reopening the page.
+  const runtimeCheck = spawn(nodeExe, [path.join(HOME, "tools", "piweb-rules-live-check.mjs")], {
+    windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...webEnv, PIWEB_BASE: `http://127.0.0.1:${PORTS.webInternal}` },
   });
-  log(`运行态验收:${runtimeCheck.status === 0 ? "verified" : "未验证/未生效"} ${(runtimeCheck.stdout || runtimeCheck.stderr || runtimeCheck.error?.message || "无输出").trim().slice(0, 700)}`);
+  let runtimeCheckOutput = "";
+  for (const stream of [runtimeCheck.stdout, runtimeCheck.stderr]) stream.on("data", data => { runtimeCheckOutput = (runtimeCheckOutput + data).slice(-4000); });
+  const checkTimeout = setTimeout(() => { log("运行态验收:20 秒超时,终止只读检查"); runtimeCheck.kill(); }, 20000);
+  runtimeCheck.once("error", error => { clearTimeout(checkTimeout); log(`运行态验收:启动失败 ${error.message}`); });
+  runtimeCheck.once("exit", code => { clearTimeout(checkTimeout); log(`运行态验收:${code === 0 ? "verified" : "未验证/未生效"} ${runtimeCheckOutput.trim().slice(0, 700) || "无输出"}`); });
 
   // 6 会话归档 UI 透明代理：只处理归档/额度展示，其余请求字节流透传；不读取 prompt、
   // 不跟踪任务、不注入恢复消息，也不改变模型 Stop。自身崩溃仍由 launcher 熔断守护。
@@ -629,6 +626,7 @@ async function main() {
   // PI_AUTO_WINDOW=0:自启/常驻场景不自动弹窗,窗口由托盘"进入"按需打开(托盘不可用则忽略该档)
   if (process.env.PI_AUTO_WINDOW === "0" && hasTray) { log("自启模式:不自动开窗,单击托盘进入"); return; }
   await openWindow();
+  if (restart) log(`重启完成:${Date.now() - restart.at}ms,服务就绪且已请求打开网页`);
 }
 
 function chromePath() {
@@ -721,6 +719,7 @@ function startTray() {
     else if (c === "OPEN") { log("托盘:进入"); openWindow().catch((e) => log(`开窗失败:${e.message}`)); }
     else if (c === "RESTART") { log("托盘:重启(无条件硬重启)"); hardRestart(); }
     else if (c === "EXIT") { log("托盘:彻底退出"); shutdown(0); }
+    else if (c.startsWith("ERROR:")) log(`托盘:${c}`);
   });
   tray.once("exit", () => {
     trayAlive = false;
@@ -747,13 +746,16 @@ function startTray() {
 // 静默退化成"开窗口",服务还是那套旧的甚至半死的。硬重启把这两处都堵死:
 //   1 三层清场(children + 跨实例台账 + 端口占用者 + 命令行指纹),不依赖本进程记忆;
 //   2 端口逐轮确认释放,不是等固定秒数就硬拉;
-//   3 新实例带 PI_FORCE_FRESH=1,进门先清场,绝不复用任何残留实例。
+//   3 新实例带 PI_FORCE_FRESH=1；仅可信一次性交接且端口为空时跳过重复清场。
 function hardRestart() {
   if (shuttingDown) return;
   shuttingDown = true;
   log("硬重启:全局清场中(台账+端口+指纹)…");
   (async () => {
+    const at = Date.now();
     const swept = await sweepRuntime({ reason: "restart" });
+    saveRestartHandoff(DATA, { at, openWindow: true, swept: true, ports: swept.ports,
+      supervisorPid: process.env.PI_LAUNCH_SUPERVISOR === "1" ? process.ppid : 0 });
     if (process.env.PI_LAUNCH_SUPERVISOR === "1") {
       log(`清场完成:交由原生宿主重启(exit ${NATIVE_RESTART_EXIT_CODE})`);
       process.exit(NATIVE_RESTART_EXIT_CODE);
@@ -767,7 +769,11 @@ function hardRestart() {
       log(`新实例已拉起 pid=${next.pid} 冷启=1 清场=${swept.killed.length}(后续日志见 launcher.log)`);
     } catch (e) { log(`新实例拉起失败:${e.message}`); }
     process.exit(0);
-  })();
+  })().catch(error => {
+    log(`重启失败（未复用旧实例）:${error.message}`);
+    shuttingDown = false;
+    if (!trayAlive && process.env.PI_HEADLESS !== "1") startTray();
+  });
 }
 
 main().catch((e) => { log("启动失败:" + String(e.stack || e).slice(0, 400)); shutdown(1); });

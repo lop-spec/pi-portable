@@ -85,6 +85,7 @@ launcher 只应用以下补丁：
 - bridge 只记录状态码、延迟、模型、账号标签、出口和重试次数。
 - launcher、UI proxy、bridge 和 metrics 日志按 20 MB × 5 代自动轮转；pretool 日志按 10 MB × 3 代轮转，不需要人工清理。
 - 凭据始终留在运行机数据根，公开仓库和 Release 不包含 `auth.json`、token 或加密资产段。
+- 配置了 `codex-file-auth.json` 的机器由原生扩展在进程内读取既有凭据；启动器不会把旧 `!node` 鉴权命令写回原生 provider。配置存在而扩展缺失时明确报错，不静默恢复旧鉴权。
 
 ## 启动与发布
 
@@ -101,13 +102,15 @@ pi-portable-launcher.exe
 - `30141`：用户入口
 - `30142`：UI proxy health
 
-托盘“重启”会清理本运行面拥有的进程树后冷启；未被本运行面接管的外部 8794 不会误杀。所有本地子进程默认 hidden/no-activate。
+托盘“重启”按当前进程身份核对归属，合并进程树根后一次批量清场；保护原生宿主、日常浏览器和未接管的外部 8794。跨原生宿主重启使用有时限、仅消费一次的交接标记；已验证清场且端口为空时不再重复清场。手动重启就绪后自动打开 Pi Web，普通登录自启仍遵守静默标记。只读运行态检查异步记录结果，不阻塞页面打开。
+
+同一 Windows 用户可设置 `Global\PiPortable.Restart.<launcherPID>` 自动复位事件，调用真实托盘菜单的同一个重启处理器；没有新增网络控制端口。重启日志记录清场及就绪开窗耗时。除用户明确要求的 Pi Web 页面外，子进程均 hidden/no-activate。
 
 ## 本地合同
 
 ```bash
 node tests/launcher-portable-node-contract.mjs
-node --test tests/piweb-ui-proxy.mjs tests/hard-restart-contract.mjs
+node --test tests/piweb-ui-proxy.mjs tests/hard-restart-contract.mjs tests/restart-state-contract.mjs tests/tray-contract.mjs
 # piweb-ui-proxy.mjs 会一并加载冷启动会话目录快照合同
 node --test tests/account-pool-contract.mjs tests/account-usage-contract.mjs
 node --test tests/codex-model-catalog-contract.mjs tests/live-model-catalog-contract.mjs

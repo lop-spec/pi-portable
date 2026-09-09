@@ -61,7 +61,7 @@ function enabledPatternMaySelectCodex(pattern) {
 }
 
 /** Pure migration used by both the launcher and contract tests. */
-export function buildLiveModelConfiguration(modelsInput, settingsInput) {
+export function buildLiveModelConfiguration(modelsInput, settingsInput, { fileAuth = false } = {}) {
   const models = clone(isRecord(modelsInput) ? modelsInput : {});
   const settings = clone(isRecord(settingsInput) ? settingsInput : {});
   models.providers = isRecord(models.providers) ? models.providers : {};
@@ -75,7 +75,7 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput) {
     ? models.providers[LIVE_CODEX_PROVIDER]
     : {};
   const apiKey = legacy.apiKey ?? existing.apiKey;
-  if (!baseUrl || typeof apiKey !== "string" || !apiKey.trim()) {
+  if (!baseUrl || (!fileAuth && (typeof apiKey !== "string" || !apiKey.trim()))) {
     return { ok: false, reason: `${LEGACY_CODEX_PROVIDER} baseUrl/apiKey is incomplete`, models, settings };
   }
 
@@ -93,6 +93,9 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput) {
       originator: "pi_web",
     },
   };
+
+  // The native extension owns credential resolution. Never resurrect a !command on restart.
+  if (fileAuth) delete models.providers[LIVE_CODEX_PROVIDER].apiKey;
 
   const previousPatterns = Array.isArray(settings.enabledModels) ? settings.enabledModels : [];
   const unrelatedPatterns = previousPatterns.filter((pattern) => (
@@ -167,7 +170,11 @@ export function configureLiveModelCatalog(agentDir, options = {}) {
 
   const models = JSON.parse(fs.readFileSync(modelsFile, "utf8").replace(/^\uFEFF/u, ""));
   const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8").replace(/^\uFEFF/u, ""));
-  const next = buildLiveModelConfiguration(models, settings);
+  const fileAuth = fs.existsSync(path.join(root, "codex-file-auth.json"));
+  if (fileAuth && !fs.existsSync(path.join(root, "extensions", "codex-file-auth.ts"))) {
+    throw new Error("codex-file-auth is configured but its extension is missing; refusing legacy credential fallback");
+  }
+  const next = buildLiveModelConfiguration(models, settings, { fileAuth });
   if (!next.ok) return { status: "skipped", reason: next.reason, changed: [] };
 
   const changed = [];

@@ -48,15 +48,18 @@ test("硬重启:清场覆盖跨实例台账、端口占用者与命令行指纹�
   assert.match(launcher, /function listPortOwners/, "缺端口占用者发现(netstat)");
   assert.match(launcher, /function listFingerprintPids/, "缺命令行指纹兜底");
   assert.match(launcher, /listPortOwners\(ports\)/, "清场必须按端口找占用者");
-  assert.match(launcher, /const stubborn = \[\.\.\.wanted\]\.filter/, "缺进程存活确认——taskkill 报成功不等于进程已消失");
+  assert.match(launcher, /let stubborn = \[\.\.\.wanted\]\.filter/, "缺进程存活确认——taskkill 报成功不等于进程已消失");
+  assert.match(launcher, /plan\.roots\.flatMap/, "必须批量清理去重的进程树根，不能逐 PID 串行 taskkill");
+  assert.match(launcher, /refusing to kill unowned port processes/, "端口号不能替代进程归属核验");
 });
 
 test("硬重启:新实例冷启,绝不复用残留实例", () => {
   assert.match(launcher, /function hardRestart/, "托盘重启必须走硬重启");
   assert.match(launcher, /c === "RESTART".*hardRestart\(\)/s, "托盘 RESTART 必须绑定 hardRestart");
   assert.match(launcher, /PI_FORCE_FRESH: "1"/, "硬重启拉起的新实例必须带冷启标记");
-  assert.match(launcher, /PI_FORCE_FRESH === "1"[\s\S]{0,400}sweepRuntime/, "冷启实例进门必须先清场");
-  const shortCircuit = launcher.match(/if \(process\.env\.PI_FORCE_FRESH === "1"\)[\s\S]*?已被占用/);
+  assert.match(launcher, /PI_FORCE_FRESH === "1"[\s\S]{0,550}sweepRuntime/, "冷启没有可信清场交接时必须先清场");
+  assert.match(launcher, /restart\?\.swept && !\(await Promise\.all\(restart\.ports\.map/, "跳过重复清场必须同时核验交接标记和端口为空");
+  const shortCircuit = launcher.match(/if \(restart \|\| process\.env\.PI_FORCE_FRESH === "1"\)[\s\S]*?已被占用/);
   assert(shortCircuit, "「端口已占用就只开窗口」的短路必须排在冷启分支之后,否则重启退化成开窗口");
   assert(!/restartSelf/.test(launcher), "旧的半吊子 restartSelf 必须已被替换");
 });
@@ -64,6 +67,13 @@ test("硬重启:新实例冷启,绝不复用残留实例", () => {
 test("硬重启:桥端口只在本运行面拥有它时才清", () => {
   assert.match(launcher, /bridgeOwnedByUs/, "缺桥归属标记");
   assert.match(launcher, /bridgeOurs \? \[PORTS\.bridge\] : \[\]/, "不接管的生产桥不得被清场误杀");
+});
+
+test("manual restart survives native supervisor env and reopens the page without blocking on diagnostics", () => {
+  assert.match(launcher, /saveRestartHandoff\(DATA,[\s\S]*supervisorPid:/);
+  assert.match(launcher, /if \(restart\?\.openWindow\)[\s\S]*PI_AUTO_WINDOW = "1"[\s\S]*else if \(fs\.existsSync\(headlessMarker\)\)/);
+  assert.match(launcher, /const runtimeCheck = spawn\(/, "只读诊断不能阻塞启动 UI");
+  assert(launcher.indexOf("saveRestartHandoff(DATA") < launcher.indexOf("process.exit(NATIVE_RESTART_EXIT_CODE)"));
 });
 
 test("常驻形态下 ask() 不得挂起", () => {

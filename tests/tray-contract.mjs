@@ -25,6 +25,10 @@ test("tray.ps1 与 launcher 协议契约", () => {
   assert(launcher.includes("PI_AUTO_WINDOW"), "launcher 缺 PI_AUTO_WINDOW 自启档");
   assert(fs.existsSync(path.join(ROOT, "assets", "pi-web.ico")), "assets/pi-web.ico 缺失");
   assert(launcher.includes("-MenuOpen"), "中文菜单文本必须由 launcher argv 传入");
+  assert(ps1.includes('Global\\PiPortable.Restart.$ParentPid'), "显式远端重启使用同用户命名事件，不开网络控制端口");
+  assert(ps1.includes('$restartItem.PerformClick()'), "控制事件必须经过真实菜单处理器");
+  assert(ps1.includes('AutoReset'), "一次请求只允许触发一次重启");
+  assert(launcher.includes('c.startsWith("ERROR:")'), "托盘控制不可用必须输出原因日志");
 });
 
 test("tray.ps1 SelfTest 实跑(Windows)", { skip: process.platform !== "win32" }, () => {
