@@ -81,7 +81,7 @@ export function connect(serial) {
   const adb = (args, options) => run(adbPath, ['-s', device.serial, ...args], options);
   return { device, dir, adb, policy: () => parsePolicy(adb(['shell', 'dumpsys', 'window', 'policy'])) };
 }
-function exclusive(ctx, work) {
+export function exclusive(ctx, work) {
   const lock = path.join(ctx.dir, 'operation.lock');
   let fd;
   for (let i = 0; i < 2; i++) {
@@ -97,7 +97,11 @@ function exclusive(ctx, work) {
     }
   }
   if (fd === undefined) throw Error('Cannot acquire phone operation lock.');
-  try { return work(); } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
+  const release = () => { fs.closeSync(fd); fs.unlinkSync(lock); };
+  let result;
+  try { result = work(); } catch (error) { release(); throw error; }
+  if (result && typeof result.then === 'function') return Promise.resolve(result).finally(release);
+  release(); return result;
 }
 export function ensureReady(ctx) {
   const { adb, policy, dir, device } = ctx;
@@ -184,7 +188,7 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command !== 'enroll') attachWorkspaceUi(ctx);
-  if (command === 'workspace') return workspaceCommand(ctx, rest, () => exclusive(ctx, () => ensureReady(ctx)));
+  if (command === 'workspace') return workspaceCommand(ctx, rest, work => exclusive(ctx, () => { ensureReady(ctx); return work ? work() : undefined; }));
   return exclusive(ctx, () => {
     if (command === 'enroll') return enroll(ctx, rest[0] || 'pin', rest.includes('--stdin'));
     const ready = ensureReady(ctx);

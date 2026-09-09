@@ -105,7 +105,7 @@ export function attachWorkspaceUi(ctx) {
 async function prepare(ready) {
   const deadline = Date.now() + 15000; let announced = false;
   for (;;) {
-    try { return ready(); }
+    try { return await ready(); }
     catch (error) {
       if (!/Another phone operation is running/.test(error.message) || Date.now() >= deadline) throw error;
       if (!announced) { log('Waiting for the short shared readiness gate; workspace execution remains independent.'); announced = true; }
@@ -113,7 +113,7 @@ async function prepare(ready) {
     }
   }
 }
-async function start(ctx, ready) {
+async function start(ctx) {
   // Cross-process startup lease; holds the old gate only during installation/connection.
   let state = readWorkspaceState(ctx);
   if (state) {
@@ -137,7 +137,7 @@ async function start(ctx, ready) {
     try { process.kill(pid, 0); } catch (probe) {
       if (probe.code !== 'ESRCH') throw probe;
       log('Expired workspace startup lease; removing only its lock, not a running phone process.');
-      fs.unlinkSync(lock); return start(ctx, ready);
+      fs.unlinkSync(lock); return start(ctx);
     }
     throw Error('Workspace startup already running; retry list after it finishes');
   }
@@ -145,7 +145,6 @@ async function start(ctx, ready) {
   try {
     state = readWorkspaceState(ctx);
     if (state) return await rpc(state.port, { op: 'ping' });
-    await prepare(ready);
     ctx.adb(['push', jar, remoteJar]);
     const remoteHash = ctx.adb(['shell', 'sha256sum', remoteJar]).trim().split(/\s/)[0];
     require(remoteHash === meta.sha256, 'Phone server upload hash mismatch');
@@ -185,7 +184,7 @@ export async function workspaceCommand(ctx, args, ready) {
     console.log('phone workspace start | list | stop\nphone workspace open NAME PACKAGE | close NAME\nphone workspace observe A [B] | snapshot NAME | screenshot NAME NEW.png\nphone workspace click NAME REF SNAPSHOT\nphone workspace text NAME REF TEXT SNAPSHOT\nphone workspace tap NAME X Y SNAPSHOT\nphone workspace swipe NAME X Y END_X END_Y DURATION_MS SNAPSHOT\nphone workspace back NAME SNAPSHOT | enter NAME SNAPSHOT\nTwo isolated app leases. Every action consumes a <=10s snapshot. No main-display, clipboard or keyboard fallback.');
     return;
   }
-  if (request.op === 'start') { console.log(JSON.stringify(await start(ctx, ready))); return; }
+  if (request.op === 'start') { console.log(JSON.stringify(await prepare(() => ready(() => start(ctx))))); return; }
   const state = readWorkspaceState(ctx);
   if (!state && request.op === 'stop') { console.log(JSON.stringify({ stopped: true, alreadyStopped: true })); return; }
   require(state, 'Workspaces not started; run phone workspace start');

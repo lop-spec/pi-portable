@@ -167,9 +167,20 @@ public final class WorkspaceServer {
         require(intent != null, "APP_NOT_LAUNCHABLE");
         Workspace w = new Workspace(name, pkg);
         try {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
-            ActivityOptions options = ActivityOptions.makeBasic(); options.setLaunchDisplayId(w.displayId);
-            context.startActivity(intent, options.toBundle());
+            require(intent.getComponent() != null, "APP_COMPONENT_UNRESOLVED");
+            // A shell context has no Activity Instrumentation. Use Android's supported am entry
+            // rather than depending on another private ActivityThread initialization field.
+            java.lang.Process launch = new ProcessBuilder("/system/bin/am", "start", "--display", String.valueOf(w.displayId),
+                    "-f", "0x18000000", "-n", intent.getComponent().flattenToString()).redirectErrorStream(true).start();
+            if (!launch.waitFor(6, TimeUnit.SECONDS)) { launch.destroy(); throw new IllegalStateException("APP_LAUNCH_TIMEOUT"); }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (InputStream stream = launch.getInputStream()) {
+                byte[] chunk = new byte[1024]; int length;
+                while ((length = stream.read(chunk)) > 0 && output.size() < 16000) output.write(chunk, 0, length);
+            }
+            String launchResult = output.toString("UTF-8");
+            require(launch.exitValue() == 0 && !launchResult.contains("Error:") && !launchResult.contains("Exception"),
+                    "APP_LAUNCH_REJECTED: " + launchResult.trim());
             boolean seen = false;
             for (int i = 0; i < 20; i++) {
                 SystemClock.sleep(150);

@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { parseWorkspaceCommand, validateReply, workspaceLease } from '../tools/phone-workspaces.mjs';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
+import { once } from 'node:events';
+import { exclusive } from '../tools/phone.mjs';
+import { parseWorkspaceCommand, validateReply, workspaceLease, rpc } from '../tools/phone-workspaces.mjs';
 
 test('workspace names and packages cannot become shell syntax', () => {
   assert.deepEqual(parseWorkspaceCommand(['open', 'a', 'com.miui.calculator']), { op: 'open', workspace: 'a', package: 'com.miui.calculator' });
@@ -36,6 +41,36 @@ test('same workspace serializes, independent workspaces overlap, queue survives 
   assert.equal(maxActive, 2);
   await assert.rejects(work('a', true), /probe/);
   await work('a');
+});
+test('startup retains the existing cross-process phone gate until the async handshake settles', async () => {
+  const ctx = { dir: fs.mkdtempSync(path.join(os.tmpdir(), 'phone-start-gate-')) };
+  let finish;
+  const running = exclusive(ctx, () => new Promise(resolve => { finish = resolve; }));
+  assert.ok(fs.existsSync(path.join(ctx.dir, 'operation.lock')));
+  assert.throws(() => exclusive(ctx, () => {}), /Another phone operation/);
+  finish('ready'); assert.equal(await running, 'ready');
+  assert.equal(fs.existsSync(path.join(ctx.dir, 'operation.lock')), false);
+  await assert.rejects(exclusive(ctx, async () => { throw Error('startup failed'); }), /startup failed/);
+  assert.equal(fs.existsSync(path.join(ctx.dir, 'operation.lock')), false);
+});
+test('RPC accepts fragmented UTF-8 and never retries a timed-out action', async () => {
+  let connections = 0;
+  const server = net.createServer(socket => {
+    connections++;
+    socket.once('data', data => {
+      const request = JSON.parse(data.toString());
+      if (request.op === 'timeout') return;
+      const response = Buffer.from(JSON.stringify({ id: request.id, ok: true, result: { text: '中文' } }) + '\n');
+      socket.write(response.subarray(0, response.length - 6));
+      setTimeout(() => socket.end(response.subarray(response.length - 6)), 10);
+    });
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    assert.deepEqual(await rpc(server.address().port, { op: 'probe' }), { text: '中文' });
+    await assert.rejects(rpc(server.address().port, { op: 'timeout' }, { timeout: 50 }), /do not replay/);
+    assert.equal(connections, 2);
+  } finally { server.close(); }
 });
 test('Android hard gates are present: shell-only transport, two slots, app lease, stale guard, no clipboard', () => {
   const java = fs.readFileSync(new URL('../src/phone/WorkspaceServer.java', import.meta.url), 'utf8');
