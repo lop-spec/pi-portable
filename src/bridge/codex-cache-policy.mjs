@@ -128,7 +128,21 @@ export function applyCodexRequestPolicy(payload, { explicitBreakpoint = true } =
     return { payload: copy, cache };
   }
 
-  const boundary = findStableBreakpoint(copy.input);
+  // A native session key is authoritative. Do not repartition an existing
+  // client's cache when it starts sending developer messages or tool results.
+  if (typeof copy.prompt_cache_key === 'string' && copy.prompt_cache_key.trim()) {
+    cache.reason = 'client-cache-key-preserved';
+    return { payload: copy, cache };
+  }
+
+  let boundary = findStableBreakpoint(copy.input);
+  // Codex-native clients (including EvoX) put their system prompt in the
+  // top-level instructions field, with input starting at the first user item.
+  // Derive a key only; never move instructions into input or change roles.
+  if (!boundary && typeof copy.instructions === 'string' && copy.instructions.trim()
+      && !VOLATILE_DEVELOPER_TEXT.test(copy.instructions)) {
+    boundary = { itemIndex: -1, blockIndex: -1, source: 'instructions' };
+  }
   if (!boundary) {
     cache.reason = 'no-safe-stable-boundary';
     return { payload: copy, cache };
@@ -140,15 +154,15 @@ export function applyCodexRequestPolicy(payload, { explicitBreakpoint = true } =
     const block = copy.input[boundary.itemIndex].content[boundary.blockIndex];
     block.prompt_cache_breakpoint = { mode: 'explicit' };
   }
-  // v7.8.0:key 只按稳定前缀分组,不再掺首条任务文本。任务分组会把不同任务路由到
-  // 不同上游缓存节点——t1 写热的共享前缀 t2-t5 摸不到(2026-08-27 五链基准:
-  // 跨任务首轮命中封顶 11008,同任务重跑 13056)。同前缀同 key 后限流面=同项目
-  // 连续首请求,量级远低于单 key 降级阈值。
+  // Stable prefix + first user item partitions concurrent sessions, while
+  // append-only history keeps the same key. itemIndex=-1 hashes instructions
+  // and tools without incorrectly including the growing message suffix.
   copy.prompt_cache_key = stableCacheKey(copy, boundary.itemIndex);
   Object.assign(cache, {
     applied: true,
     breakpointApplied,
-    reason: breakpointApplied ? 'stable-developer-prefix' : 'stable-developer-prefix-key-only',
+    reason: boundary.source === 'instructions' ? 'stable-instructions-key-only'
+      : breakpointApplied ? 'stable-developer-prefix' : 'stable-developer-prefix-key-only',
     key: copy.prompt_cache_key,
     ...boundary,
   });
@@ -203,16 +217,31 @@ export function rewriteCodexRequestBody(body, headers, { explicitBreakpoint = tr
     const effectiveTier = Object.prototype.hasOwnProperty.call(payload, 'service_tier')
       ? payload.service_tier
       : null;
+    // Codex SSE's native client sends these alongside prompt_cache_key.
+    // Preserve caller-owned headers; only fill missing session routing metadata.
+    let routedHeaders = headers;
+    const routingHeadersAdded = [];
+    const routingKey = payload.prompt_cache_key;
+    if (GPT56_MODEL.test(String(payload.model || '')) && typeof routingKey === 'string'
+        && routingKey.trim() && !/[\r\n]/u.test(routingKey)) {
+      for (const name of ['session-id', 'x-client-request-id']) {
+        if (!headerValue(headers, name)) {
+          routedHeaders = { ...routedHeaders, [name]: routingKey };
+          routingHeadersAdded.push(name);
+        }
+      }
+    }
     // Native openai-codex uses zstd. Even when cache policy does not apply (for
     // example a newly published major), normalize the successfully decoded JSON
     // so compatibility stripping and model fallback can inspect it downstream.
     if (!cache.applied) {
       return {
         body: decodedEncoding ? raw : body,
-        headers: decodedEncoding ? removeHeader(headers, 'content-encoding') : headers,
+        headers: decodedEncoding ? removeHeader(routedHeaders, 'content-encoding') : routedHeaders,
         meta: {
           parseFailed: false,
           cacheApplied: false,
+          routingHeadersAdded,
           effectiveTier,
           decodedEncoding,
           cache,
@@ -221,10 +250,11 @@ export function rewriteCodexRequestBody(body, headers, { explicitBreakpoint = tr
     }
     return {
       body: Buffer.from(JSON.stringify(payload), 'utf8'),
-      headers: removeHeader(headers, 'content-encoding'),
+      headers: removeHeader(routedHeaders, 'content-encoding'),
       meta: {
         parseFailed: false,
         cacheApplied: cache.applied,
+        routingHeadersAdded,
         effectiveTier,
         decodedEncoding,
         cache,

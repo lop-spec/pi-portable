@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { applyCodexRequestPolicy, rewriteCodexRequestBody } from '../src/bridge/codex-cache-policy.mjs';
+const base = { model: 'gpt-5.6-sol', instructions: 'Stable native EvoX instructions.', input: [{role:'user',content:[{type:'input_text',text:'Task A'}]}], tools: [], reasoning: {effort:'high'}, stream:true, store:false };
+let checks = 0;
+const check = (name, fn) => { fn(); checks++; console.log(`PASS ${name}`); };
+const run = x => applyCodexRequestPolicy(x, {explicitBreakpoint:false});
+check('instructions-only native payload gets a key without semantic changes', () => {
+ const before=structuredClone(base),r=run(base); assert.equal(r.cache.applied,true); assert.equal(r.cache.source,'instructions'); assert.match(r.payload.prompt_cache_key,/^[0-9a-f-]{36}$/); const {prompt_cache_key,...visible}=r.payload; assert.deepEqual(visible,before);assert.deepEqual(base,before);
+});
+check('append-only history retains key',()=>{const next={...base,input:[...base.input,{type:'function_call',call_id:'x',name:'read',arguments:'{}'},{type:'function_call_output',call_id:'x',output:'result'}]};assert.equal(run(base).payload.prompt_cache_key,run(next).payload.prompt_cache_key);});
+check('different first task gets a distinct key',()=>{assert.notEqual(run(base).payload.prompt_cache_key,run({...base,input:[{role:'user',content:'Task B'}]}).payload.prompt_cache_key);});
+check('model/instructions/tools changes partition the key',()=>{for(const change of [{model:'gpt-5.6-terra'},{instructions:'Changed instructions'},{tools:[{type:'function',name:'read',parameters:{type:'object'}}]}])assert.notEqual(run(base).payload.prompt_cache_key,run({...base,...change}).payload.prompt_cache_key);});
+check('native client cache key is never overwritten',()=>{for(const input of [base.input,[{role:'developer',content:'Stable'},...base.input]]){const p={...base,input,prompt_cache_key:'native-session-key'};const r=run(p);assert.deepEqual(r.payload,p);assert.equal(r.cache.reason,'client-cache-key-preserved');}});
+check('legacy developer prefix remains supported',()=>{const p={...base,instructions:undefined,input:[{role:'developer',content:'Stable'},...base.input]};assert.equal(run(p).cache.applied,true);});
+check('no instructions and no stable prefix stays fail-open with reason',()=>{const p={...base,instructions:''};assert.equal(run(p).cache.reason,'no-safe-stable-boundary');assert.equal(run(p).payload.prompt_cache_key,undefined);});
+check('volatile instructions do not acquire a derived key',()=>{assert.equal(run({...base,instructions:'<environment_context>volatile</environment_context>'}).cache.applied,false);});
+check('unsupported model retains native key and full payload',()=>{const p={...base,model:'gpt-6-astra',prompt_cache_key:'native-astra'};assert.deepEqual(run(p).payload,p);});
+check('instructions shape never receives explicit breakpoint or role promotion',()=>{const r=applyCodexRequestPolicy(base,{explicitBreakpoint:true});assert.equal(r.cache.breakpointApplied,false);assert.deepEqual(r.payload.input,base.input);assert.equal(r.payload.instructions,base.instructions);});
+check('derived key gets native Codex SSE routing headers',()=>{const r=rewriteCodexRequestBody(Buffer.from(JSON.stringify(base)),{'content-type':'application/json'},{explicitBreakpoint:false});const p=JSON.parse(r.body);assert.equal(r.headers['session-id'],p.prompt_cache_key);assert.equal(r.headers['x-client-request-id'],p.prompt_cache_key);assert.deepEqual(r.meta.routingHeadersAdded,['session-id','x-client-request-id']);});
+check('caller-owned headers and key stay authoritative',()=>{const headers={'Session-Id':'existing-session','X-Client-Request-Id':'existing-request'};const p={...base,prompt_cache_key:'native-key'};const r=rewriteCodexRequestBody(Buffer.from(JSON.stringify(p)),headers,{explicitBreakpoint:false});assert.deepEqual(r.headers,headers);assert.deepEqual(JSON.parse(r.body),p);assert.deepEqual(r.meta.routingHeadersAdded,[]);});
+check('parse errors retain body and headers unchanged',()=>{const body=Buffer.from('{'),headers={'x-test':'value'};const r=rewriteCodexRequestBody(body,headers);assert.equal(r.body,body);assert.equal(r.headers,headers);assert.equal(r.meta.parseFailed,true);});
+console.log(`PASS ${checks} cache policy contracts`);

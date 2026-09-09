@@ -461,13 +461,18 @@ async function handleResponses(req, res) {
   }
   if (rewritten.meta.cacheApplied) {
     const c = rewritten.meta.cache;
-    log(`cache 注入：key=${c.key} breakpoint=${c.breakpointApplied ? "explicit" : "off"} boundary=input[${c.itemIndex}].content[${c.blockIndex < 0 ? "string" : c.blockIndex}] body=${originalBytes}B→${body.length}B originator=${req.headers.originator || "-"}`);
+    const boundary = c.source === "instructions" ? "instructions"
+      : `input[${c.itemIndex}].content[${c.blockIndex < 0 ? "string" : c.blockIndex}]`;
+    log(`cache 注入：key=${c.key} breakpoint=${c.breakpointApplied ? "explicit" : "off"} boundary=${boundary} body=${originalBytes}B→${body.length}B originator=${req.headers.originator || "-"}`);
   } else if (rewritten.meta.parseFailed) {
     log(`cache/tier 解析失败，fail-open 原样透传 body=${originalBytes}B`);
   } else {
     // 不再用 CODEX_PROXY_DUMP 门控:key 注入静默失效曾隐藏两天(2026-08-31→09-01,
     // pi 的 input[0].content 是字符串形态,findStableBreakpoint 找不到 input_text 块)。
     log(`cache 未注入：${rewritten.meta.cache?.reason || "未命中策略"} originator=${req.headers.originator || "-"}`);
+  }
+  if (rewritten.meta.routingHeadersAdded?.length) {
+    log(`cache 会话路由：headers=${rewritten.meta.routingHeadersAdded.join(",")} originator=${req.headers.originator || "-"}`);
   }
   if (process.env.CODEX_PROXY_DUMP === "1") {
     try {
