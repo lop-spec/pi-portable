@@ -33,8 +33,9 @@ export function dailyThoriumArgs({ exists = fs.existsSync, userHome = os.userInf
     .map((name) => path.join(root, "Extensions", name))
     .filter((directory) => exists(path.join(directory, "manifest.json")));
   return [
-    "--remote-debugging-address=127.0.0.1",
-    "--remote-debugging-port=9222",
+    // Suppress chrome.debugger infobars for this trusted daily browser profile.
+    // Browser automation uses the extension bridge, never a native debug port.
+    "--silent-debugger-extension-api",
     "--no-default-browser-check",
     ...(extensions.length ? [`--load-extension=${extensions.join(",")}`] : []),
   ];

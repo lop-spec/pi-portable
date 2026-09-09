@@ -12,8 +12,8 @@ const expected = path.join(env.PI_PORTABLE_DATA, "AppData", "Local", "Thorium", 
 assert.equal(resolveThoriumExecutable({ env, exists: (p) => p === expected }), expected);
 assert.equal(resolveThoriumExecutable({ env, exists: () => false }), null);
 const args = dailyThoriumArgs({ userHome: env.USERPROFILE, exists: (p) => p.endsWith(path.join("auto-close-old-tabs", "manifest.json")) });
-assert(args.includes("--remote-debugging-address=127.0.0.1"));
-assert(args.includes("--remote-debugging-port=9222"));
+assert(args.includes("--silent-debugger-extension-api"));
+assert(!args.some((arg) => arg.startsWith("--remote-debugging-")));
 assert(!args.some((arg) => arg.startsWith("--user-data-dir=")));
 assert.equal(dailyThoriumProfile(), path.join(os.userInfo().homedir, "AppData", "Local", "Thorium", "User Data"));
 assert(args.some((p) => p.startsWith("--load-extension=") && p.endsWith("auto-close-old-tabs")));
