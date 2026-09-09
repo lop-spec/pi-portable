@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import {
@@ -35,6 +36,11 @@ test('CLI help executes through the actual portable tools junction', () => {
   const text = execFileSync(process.execPath, [modulePath, 'help'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
   assert.match(text, /websearch search/);
   assert.match(text, /Parallel\/Exa/);
+});
+
+test('release staging retains the websearch helper implementation', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /Copy-Item tools\/websearch\.mjs stage\/tools\/websearch\.mjs/);
 });
 
 test('CLI is explicit, bounded and cannot invoke research or select paid credentials', () => {

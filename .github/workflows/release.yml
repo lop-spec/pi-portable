@@ -216,6 +216,7 @@ jobs:
           Copy-Item tools/patch-piweb-live-models.mjs stage/tools/patch-piweb-live-models.mjs
           Copy-Item tools/patch-piweb-service-tier.mjs stage/tools/patch-piweb-service-tier.mjs
           Copy-Item tools/backup.mjs stage/tools/backup.mjs
+          Copy-Item tools/websearch.mjs stage/tools/websearch.mjs
           Copy-Item tools/patch-pi-native-policy.mjs stage/tools/patch-pi-native-policy.mjs
           Copy-Item tools/piweb-rules-live-check.mjs stage/tools/piweb-rules-live-check.mjs
           Copy-Item tools/sync-cli-home.mjs stage/tools/sync-cli-home.mjs
