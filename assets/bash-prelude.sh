@@ -24,3 +24,6 @@ _pi_tools() { printf '%s' "${PI_PORTABLE_HOME:-C:/Users/lop/Documents/claude/pi-
 bak()       { node "$(_pi_tools)/backup.mjs" "$@"; }
 peerpush()  { node "$(_pi_tools)/peer-sync.mjs" push "$@"; }
 peerpatch() { node "$(_pi_tools)/peer-sync.mjs" patch "$@"; }
+
+# Free search/reading adapters; no daemon, API keys or extra browser. websearch help lists commands.
+websearch() { MSYS_NO_PATHCONV=1 node "$(_pi_tools)/websearch.mjs" "$@"; }

@@ -45,6 +45,7 @@ jobs:
           node tests/thorium-browser-contract.mjs
           node --test tests/log-rotate-contract.mjs
           node --test tests/bridge-tools-portability-contract.mjs
+          node --test tests/websearch.test.mjs
           node --test tests/bridge-stop-contract.mjs
           node tests/bridge-idle-e2e.mjs
           node --test tests/piweb-ui-proxy.mjs
