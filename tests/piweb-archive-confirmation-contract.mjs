@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import "./piweb-archive-virtual-layout.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(root, "src", "piweb-archive-ui.js"), "utf8");
@@ -24,7 +25,7 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.ok(immediateSource.indexOf("handOffSelectedConversation(pending)") < immediateSource.indexOf("void performDirectAction"), "selected-session handoff must happen before waiting for the archive request");
   assert.match(source, /data-pi-session-archive-handoff='true'/u, "the adjacent row must show the new selection in the same frame as the pointer press");
   assert.match(source, /history\.replaceState\(history\.state, "", `\$\{nextUrl\.pathname\}/u, "the adjacent route must update immediately without waiting for Next.js navigation");
-  assert.match(source, /if \(pending\.handedOff\) scheduleHandoffRefresh\(\)/u, "list refresh must wait until the selected-session transition has settled");
+  assert.match(source, /if \(pending\.handedOff\) scheduleHandoffRefresh\(\)/u, "list refresh must be scheduled after starting the selected-session handoff");
   assert.match(source, /adjacent session id unavailable for immediate route handoff/u, "a missing adjacent route id must never fail silently");
   assert.match(source, /pending\.handedOff.*queueMicrotask\(\(\) => pending\.row\?\.click\(\)\)/u, "a rejected optimistic archive must return to the original selected conversation");
   assert.match(source, /nativeFetch\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{action\}`/u);

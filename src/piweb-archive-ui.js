@@ -113,6 +113,7 @@
     lastRequestedListView: "",
     pendingActions: [],
     optimisticActions: new Set(),
+    optimisticLayouts: new Map(),
   };
 
   const copy = {
@@ -486,13 +487,53 @@
     return null;
   }
 
+  // Native 0.9 rows are inside absolutely positioned virtual-list wrappers.
+  // Shrinking the child alone cannot move its neighbours. Animate wrappers,
+  // leaving React's top/height coordinates untouched, until it reconciles.
+  function syncOptimisticLayout(animate = false) {
+    const removed = [...state.optimisticActions].filter(item => item.row?.isConnected);
+    const offsets = new Map();
+    for (const row of document.querySelectorAll('.sidebar-container [data-pi-session-id]')) {
+      const wrapper = row.parentElement;
+      if (wrapper?.style.position !== 'absolute') continue;
+      const top = Number.parseFloat(wrapper.style.top);
+      if (!Number.isFinite(top)) continue;
+      const offset = removed.reduce((sum, item) => {
+        const other = item.row.parentElement;
+        return other?.parentElement === wrapper.parentElement && Number.parseFloat(other.style.top) < top
+          ? sum - item.rowHeight : sum;
+      }, 0);
+      if (offset) offsets.set(wrapper, { offset, top });
+    }
+    for (const [wrapper, previous] of state.optimisticLayouts) {
+      if (!offsets.has(wrapper)) {
+        previous.animation.cancel();
+        state.optimisticLayouts.delete(wrapper);
+      }
+    }
+    for (const [wrapper, { offset, top }] of offsets) {
+      const previous = state.optimisticLayouts.get(wrapper);
+      if (previous?.offset === offset && previous.top === top) continue;
+      const from = getComputedStyle(wrapper).transform;
+      previous?.animation.cancel();
+      const animation = wrapper.animate([
+        { transform: from === 'none' ? 'translateY(0)' : from },
+        { transform: `translateY(${offset}px)` },
+      ], { duration: animate && !matchMedia('(prefers-reduced-motion: reduce)').matches ? 180 : 0,
+        easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' });
+      state.optimisticLayouts.set(wrapper, { offset, top, animation });
+    }
+  }
+
   function restoreOptimisticAction(pending) {
     if (!pending) return;
+    clearTimeout(pending.timeout);
     clearTimeout(pending.hideTimer);
     clearTimeout(pending.cleanupTimer);
     clearTimeout(pending.handoffTimer);
     pending.animation?.cancel();
     state.optimisticActions.delete(pending);
+    syncOptimisticLayout();
     if (pending.button?.isConnected) delete pending.button.dataset.piSessionArchiveBusy;
     if (pending.nextRow?.isConnected) delete pending.nextRow.dataset.piSessionArchiveHandoff;
     if (!pending.row?.isConnected) return;
@@ -532,6 +573,8 @@
     row.style.pointerEvents = "none";
     const computed = getComputedStyle(row);
     const rowHeight = row.getBoundingClientRect().height || 54;
+    pending.rowHeight = rowHeight;
+    syncOptimisticLayout(true);
     pending.animation = row.animate([
       { opacity: computed.opacity || "1", transform: computed.transform === "none" ? "translateX(0)" : computed.transform, height: `${rowHeight}px` },
       { opacity: "0", transform: "translateX(-6px)", height: "0px" },
@@ -555,7 +598,8 @@
 
   function adjacentSessionRow(row) {
     if (row.dataset.piSessionId) {
-      const rows = [...document.querySelectorAll('.sidebar-container [data-pi-session-id]')];
+      const rows = [...document.querySelectorAll('.sidebar-container [data-pi-session-id]')]
+        .filter(candidate => candidate === row || !candidate.dataset.piSessionArchivePending);
       const at = rows.indexOf(row);
       return rows[at + 1] || rows[at - 1] || null;
     }
@@ -589,9 +633,9 @@
     }
     pending.visualHandoffLatencyMs = performance.now() - pending.pointerStartedAt;
     document.documentElement.dataset.piSessionArchiveHandoffLatencyMs = pending.visualHandoffLatencyMs.toFixed(2);
-    pending.handoffTimer = setTimeout(() => {
-      if (nextRow.isConnected) nextRow.click();
-    }, 190);
+    queueMicrotask(() => {
+      if (state.optimisticActions.has(pending) && nextRow.isConnected) nextRow.click();
+    });
     const startedAt = performance.now();
     const settle = () => {
       if (!nextRow.isConnected) return;
@@ -605,7 +649,7 @@
   }
 
   function scheduleHandoffRefresh() {
-    setTimeout(requestNativeRefresh, 1400);
+    queueMicrotask(requestNativeRefresh);
   }
 
   async function performDirectAction(pending, sessionId) {
@@ -623,7 +667,7 @@
       state.archivedCount = Math.max(0, state.archivedCount + (action === "archive" ? 1 : -1));
       scheduleDecorate();
       if (pending.handedOff) scheduleHandoffRefresh();
-      else setTimeout(requestNativeRefresh, 220);
+      else queueMicrotask(requestNativeRefresh);
     } catch (error) {
       const message = `${words().requestFailed}：${String(error?.message || error || "network error")}`;
       console.error("[pi-web archive]", message);
@@ -653,6 +697,7 @@
       void performDirectAction(pending, sessionId);
       return;
     }
+    console.error('[pi-web archive] direct action unavailable: row or session id missing; using native callback');
     const forwarded = new MouseEvent("click", {
       bubbles: true,
       cancelable: true,
@@ -691,6 +736,7 @@
   const observer = new MutationObserver(records => {
     // Our own title changes settle after one frame; transcript tokens never
     // reach this observer. New native rows and translated titles still do.
+    if (records.some(record => record.type === 'childList')) syncOptimisticLayout();
     if (records.some(record => record.type === 'childList' || oldDeleteTitles.has(record.target.title))) scheduleDecorate();
   });
   const start = () => {
