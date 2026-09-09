@@ -37,6 +37,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
       - name: Verify phone safety and workspace contracts
         run: node --test tests/phone.test.mjs tests/phone-workspaces.test.mjs
       - name: Build shell-only Android broker
