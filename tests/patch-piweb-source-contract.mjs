@@ -73,6 +73,47 @@ test('Q/A nodes exclude intermediate tool/error turns without transporting messa
   assert.doesNotMatch(nodes, /setInterval|\/api\/agent/);
 });
 
+test('Q/A navigation paginates while streaming, serializes loads, reports failures and cancels', async () => {
+  const effect = fs.readFileSync(path.join(repo, 'assets/piweb-overlay/conversation-navigation.effect.txt'), 'utf8').replace('new Set<string>()', 'new Set()');
+  assert.doesNotMatch(effect, /sessionBusy/);
+  assert.match(integrated.get('components/ChatWindow.tsx'), /conversation navigation target not rendered/);
+  assert.match(integrated.get('components/PortableNodes.tsx'), /正在加载并定位消息/);
+  async function run({ pages = [], loaded = false, cancel = false, locked = false } = {}) {
+    let task, cleanup;
+    const result = { calls: [], errors: [], handled: 0, selected: null, visible: 0 };
+    const lock = { current: locked };
+    const scope = {
+      AbortController, Set, Error, String, Math,
+      console: { error: (...args) => result.errors.push(args) },
+      setTimeout: fn => { lock.current = false; queueMicrotask(fn); },
+      searchTarget: { sessionId: 'fixture', entryId: 'target' }, loading: false, sessionBusy: true,
+      activeLeafId: null, loadingOlderRef: lock,
+      searchHistoryRef: { current: { entryIds: loaded ? ['target'] : ['tail'], historyCursor: 'p0', hasEarlierMessages: true } },
+      prevScrollDistanceRef: { current: 10 },
+      loadContext: async (...args) => { result.calls.push(args); return pages.shift(); },
+      setVisibleCount: fn => { result.visible = fn(20); },
+      setPendingSearchScroll: target => { result.selected = target.entryId; },
+      setNodeNavigationError: error => { result.error = error; },
+      onSearchTargetHandled: () => { result.handled++; },
+      useEffect: fn => { cleanup = fn(); },
+      capture: promise => { task = promise; },
+    };
+    vm.runInNewContext(effect.replace('void locate();', 'capture(locate());'), scope);
+    if (cancel) cleanup();
+    await task;
+    assert.equal(lock.current, false);
+    return result;
+  }
+  const page = (ids, cursor, more = true) => ({ entryIds: ids, oldestEntryId: cursor, hasMore: more });
+  const deep = await run({ locked: true, pages: [page(['old1'], 'p1'), page(['old2'], 'p2'), page(['target'], 'p3')] });
+  assert.equal(deep.selected, 'target'); assert.equal(deep.calls.length, 3); assert.equal(deep.errors.length, 0);
+  const loaded = await run({ loaded: true }); assert.equal(loaded.selected, 'target'); assert.equal(loaded.calls.length, 0);
+  const failed = await run(); assert.equal(failed.handled, 1); assert.equal(failed.errors.length, 1); assert.ok(failed.error);
+  const missing = await run({ pages: [page([], null, false)] }); assert.equal(missing.handled, 1); assert.ok(missing.error);
+  const stalled = await run({ pages: [page([], 'p0')] }); assert.equal(stalled.calls.length, 1); assert.equal(stalled.errors.length, 1);
+  const aborted = await run({ cancel: true, pages: [page(['target'], null, false)] }); assert.equal(aborted.selected, null); assert.equal(aborted.handled, 0); assert.equal(aborted.errors.length, 0);
+});
+
 test('worktree categories keep unrelated historical checkouts in main and native terminals alive', () => {
   const sessions = [{ id: 'main', cwd: 'C:/repo' }, { id: 'old', cwd: 'C:/repo/.claude/worktrees/temp' }, { id: 'feature', cwd: 'C:/repo-worktrees/feature' }];
   const trees = { isGit: true, currentWorktreePath: 'C:/repo', worktrees: [{ isMain: true, path: 'C:/repo' }, { path: 'C:/repo-worktrees/feature' }] };
