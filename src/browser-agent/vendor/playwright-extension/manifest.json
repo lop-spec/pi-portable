@@ -23,7 +23,8 @@
    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwRsUUO4mmbCi4JpmrIoIw31iVW9+xUJRZ6nSzya17PQkaUPDxe1IpgM+vpd/xB6mJWlJSyE1Lj95c0sbomGfVY1M0zUeKbaRVcAb+/a6m59gNR+ubFlmTX0nK9/8fE2FpRB9D+4N5jyeIPQuASW/0oswI2/ijK7hH5NTRX8gWc/ROMSgUj7rKhTAgBrICt/NsStgDPsxRTPPJnhJ/ViJtM1P5KsSYswE987DPoFnpmkFpq8g1ae0eYbQfXy55ieaacC4QWyJPj3daU2kMfBQw7MXnnk0H/WDxouMOIHnd8MlQxpEMqAihj7KpuONH+MUhuj9HEQo4df6bSaIuQ0b4QIDAQAB",
    "manifest_version": 3,
    "name": "Playwright Extension — Pi Background",
-   "permissions": [ "debugger", "activeTab", "tabs", "tabGroups", "offscreen" ],
-   "version_name": "0.4.0 + Pi background 1",
-   "version": "0.4.0.1"
+   "permissions": [ "debugger", "activeTab", "tabs", "tabGroups" ],
+   "minimum_chrome_version": "110",
+   "version_name": "0.4.0 + Pi background 2",
+   "version": "0.4.0.2"
 }

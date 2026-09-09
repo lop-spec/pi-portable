@@ -7,7 +7,8 @@ const vendor=new URL('../src/browser-agent/vendor/playwright-extension/',import.
 const manifest=JSON.parse(await fs.readFile(new URL('manifest.json',vendor),'utf8'));
 const extensionId=createHash('sha256').update(Buffer.from(manifest.key,'base64')).digest('hex').slice(0,32).split('').map(c=>String.fromCharCode(97+parseInt(c,16))).join('');
 assert.equal(extensionId,backgroundConfig.extensionId);
-assert(manifest.permissions.includes('offscreen'));
+assert(!manifest.permissions.includes('offscreen'));
+assert.equal(manifest.minimum_chrome_version,'110');
 assert.equal(manifest.update_url,undefined,'Store updates must not silently restore foreground behavior');
 const source=await fs.readFile(new URL('lib/background.mjs',vendor),'utf8');
 assert(!source.includes('chrome.windows.update('));
@@ -31,25 +32,25 @@ assert(changed.includes('await globalThis.__piOpenBackgroundExtension(href)'));
 assert(!changed.includes('.spawn)'));
 assert.throws(()=>patchBackgroundBootstrap(fixture.replace('stdio: "ignore"','stdio: "pipe"')),/refusing foreground fallback/);
 assert.throws(()=>patchBackgroundBootstrap('unknown upstream'),/Unsupported/);
-const handlers=[];const calls=[];let windows=[{id:7,focused:true}];
+const calls=[];let windows=[{id:7,focused:true}];
+const originalFetch=globalThis.fetch, originalTimeout=globalThis.setTimeout;
+globalThis.fetch=async url=>({ok:true,json:async()=>String(url).endsWith('pi-background-pairing.json')?{token:'x'.repeat(43)}:{tickets:[]}});
+globalThis.setTimeout=()=>0;
 const event={addListener(){}};
 globalThis.chrome={
-  runtime:{id:extensionId,getURL:p=>`chrome-extension://${extensionId}/${p}`,getContexts:async()=>[{}],onInstalled:event,onStartup:event,onMessage:{addListener:f=>handlers.push(f)},sendMessage:async()=>{}},
-  offscreen:{createDocument:async()=>{throw new Error('Existing offscreen document must be reused');}},
+  runtime:{id:extensionId,getURL:p=>`chrome-extension://${extensionId}/${p}`,getPlatformInfo:async()=>({}),onInstalled:event,onStartup:event,onMessage:event,sendMessage:async()=>{}},
   tabs:{onActivated:event,query:async()=>[],create:async args=>{calls.push(args);return {id:55};}},
   windows:{onFocusChanged:event,getAll:async()=>windows},
 };
 try {
-  await import(new URL('pi-background-service.mjs?contract',vendor));
-  const sender={id:extensionId,url:chrome.runtime.getURL('pi-background.html')};
+  const service=await import(new URL('pi-background-service.mjs?contract',vendor));
   const url=chrome.runtime.getURL('connect.html')+'?mcpRelayUrl='+encodeURIComponent('ws://127.0.0.1:50001/extension/test');
-  const invoke=(message,s=sender)=>new Promise(resolve=>handlers[0](message,s,resolve));
-  assert.equal((await invoke({type:'pi-background-connect',url})).success,true);
+  assert.equal((await service.openBackgroundConnection(url)).success,true);
   assert.deepEqual(calls,[{windowId:7,url,active:false,pinned:true}]);
   windows=[];
-  assert.equal((await invoke({type:'pi-background-connect',url})).success,false);
+  await assert.rejects(service.openBackgroundConnection(url),/No existing normal/);
   assert.equal(calls.length,1,'No normal window must fail closed, not launch one');
-  assert.equal((await invoke({type:'pi-background-connect',url},{...sender,id:'untrusted'})).success,false);
+  await assert.rejects(service.openBackgroundConnection(url.replace('127.0.0.1','example.com')),/Rejected non-local/);
   const ownUrl=chrome.runtime.getURL('connect.html');
   const tabs=new Map([
     [1,{id:1,url:ownUrl+'?connection=old',pinned:false}],
@@ -113,4 +114,5 @@ try {
   group.releaseTab(1);assert.deepEqual(group.connectedTabIds(),[]);
   assert(source.includes('case "pi-connection-pinning-ready":'));
   console.log('PASS background connection, pinning/reconnect/ownership/navigation, control-page group exemption, ordinary-page regrouping, no activation');
-}finally{delete globalThis.chrome;}
+}finally{delete globalThis.chrome;globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;}
+await import('./browser-worker-contract.mjs');
