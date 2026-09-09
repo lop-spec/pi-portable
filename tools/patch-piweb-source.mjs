@@ -250,6 +250,7 @@ export function integrate(getFile) {
   const at = headerEnd + '}: Props) {'.length;
   set(chat, get(chat).slice(0, at) + `
   const [nodeTarget, setNodeTarget] = useState<Props['searchTarget']>(null);
+  const [nodeNavigationError, setNodeNavigationError] = useState("");
   const searchTarget = nodeTarget ?? externalSearchTarget;
   const onSearchTargetHandled = useCallback((target: { sessionId: string; entryId: string }) => {
     setNodeTarget(null); externalSearchHandled?.(target);
@@ -259,10 +260,22 @@ export function integrate(getFile) {
   const minimapEnd = get(chat).indexOf('\n        </>}', minimapStart);
   if (minimapStart < 0 || minimapEnd < 0) throw new Error('native minimap mount missing');
   change(chat, get(chat).slice(minimapStart, minimapEnd), `        <PortableScrollBottom container={scrollContainerRef} />
-        <PortableNodes sessionId={session?.id ?? sessionIdRef.current ?? undefined} leafId={activeLeafId} messages={messages} entryIds={entryIds} onSelect={entryId => {
+        <PortableNodes sessionId={session?.id ?? sessionIdRef.current ?? undefined} leafId={activeLeafId} messages={messages} entryIds={entryIds} navigating={Boolean(nodeTarget)} navigationError={nodeNavigationError} onSelect={entryId => {
           const sessionId = session?.id ?? sessionIdRef.current;
+          setNodeNavigationError("");
           if (sessionId) setNodeTarget({ sessionId, entryId });
+          else { console.error("[pi-web] conversation navigation missing session"); setNodeNavigationError("会话尚未就绪，请重试"); }
         }} />`);
+  const searchStart = get(chat).indexOf('  useEffect(() => {\n    if (!searchTarget || loading) return;');
+  const searchEnd = get(chat).indexOf('\n  useLayoutEffect(() => {\n    if (!pendingSearchScroll', searchStart);
+  if (searchStart < 0 || searchEnd < 0) throw new Error('search navigation effect missing');
+  change(chat, get(chat).slice(searchStart, searchEnd), template('conversation-navigation.effect.txt'));
+  change(chat, '    setPendingSearchScroll(null);\n    onSearchTargetHandled?.(pendingSearchScroll);', `    if (!element) {
+      console.error("[pi-web] conversation navigation target not rendered:", pendingSearchScroll.entryId);
+      setNodeNavigationError("消息已加载但未能定位，请重试");
+    }
+    setPendingSearchScroll(null);
+    onSearchTargetHandled?.(pendingSearchScroll);`);
 
   change(chat, '                const processViews: ReactNode[] = [];', '                const processViews: ReactNode[] = [];\n                const portableToolViews: ReactNode[] = [];');
   change(chat, '                  const message = processIdx === finalAssistantIdx', '                  const originalProcessMessage = processIdx === finalAssistantIdx');

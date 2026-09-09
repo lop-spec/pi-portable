@@ -4,14 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { collectConversationNodeRecords } from "@/lib/pi-portable-runtime.js";
 
 type NodeRecord = { entryId: string; role: "user" | "assistant"; text: string; fullText: string };
-type Props = { sessionId?: string; leafId?: string | null; messages: unknown[]; entryIds: string[]; onSelect: (entryId: string) => void };
+type Props = { sessionId?: string; leafId?: string | null; messages: unknown[]; entryIds: string[]; navigating?: boolean; navigationError?: string; onSelect: (entryId: string) => void };
 const ROW_HEIGHT = 38;
 function isNode(value: unknown): value is NodeRecord {
   if (!value || typeof value !== "object") return false;
   const node = value as NodeRecord;
   return typeof node.entryId === "string" && ["user", "assistant"].includes(node.role) && typeof node.text === "string" && typeof node.fullText === "string";
 }
-export function PortableNodes({ sessionId, leafId, messages, entryIds, onSelect }: Props) {
+export function PortableNodes({ sessionId, leafId, messages, entryIds, navigating, navigationError, onSelect }: Props) {
   const [history, setHistory] = useState<NodeRecord[]>([]);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
@@ -49,13 +49,15 @@ export function PortableNodes({ sessionId, leafId, messages, entryIds, onSelect 
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
   }, [open]);
-  if (!nodes.length && !error) return null;
+  if (!nodes.length && !error && !navigationError && !navigating) return null;
   const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 3);
   const shown = nodes.slice(start, start + 24);
   return <aside ref={panel} className="pw-conversation-nodes" aria-label="对话节点" onKeyDown={event => {
     if (event.key === "Escape") { event.preventDefault(); setOpen(false); panel.current?.querySelector<HTMLButtonElement>("button")?.focus(); }
   }}>
     <button type="button" className="pw-node-toggle" aria-label={`对话节点（${nodes.length}）`} aria-expanded={open} onClick={() => setOpen(value => !value)}>Q/A <span>{nodes.length}</span></button>
+    {navigating && <p role="status">正在加载并定位消息…</p>}
+    {navigationError && <p role="alert">定位失败：{navigationError}</p>}
     {open && <section className="pw-node-panel" aria-label="问题与最终回答">
       <header>问题 / 最终回答 · {nodes.length}</header>
       {error && <p role="alert">节点索引加载失败：{error}</p>}

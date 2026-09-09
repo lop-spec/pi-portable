@@ -1,0 +1,51 @@
+  useEffect(() => {
+    if (!searchTarget || loading) return;
+    const controller = new AbortController();
+    const locate = async () => {
+      let ownsHistoryLoad = false;
+      try {
+        // Serialize with native upward pagination; never drop a click while it loads.
+        while (loadingOlderRef.current && !controller.signal.aborted) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        if (controller.signal.aborted) return;
+        const history = searchHistoryRef.current;
+        let found = history.entryIds.includes(searchTarget.entryId);
+        let before = history.historyCursor;
+        let hasMore = history.hasEarlierMessages;
+        let revealed = history.entryIds.length;
+        const visited = new Set<string>();
+        if (!found) {
+          ownsHistoryLoad = true;
+          loadingOlderRef.current = true;
+        }
+        // Read-only ancestor pages are safe during streaming: loadContext prepends
+        // with functional state updates, preserving the live tail and SSE stream.
+        while (!found && hasMore && before && !controller.signal.aborted) {
+          if (visited.has(before)) throw new Error("历史分页游标没有前进");
+          visited.add(before);
+          const context = await loadContext(searchTarget.sessionId, activeLeafId, before, { tail: 200, signal: controller.signal });
+          if (controller.signal.aborted) return;
+          if (!context) throw new Error("历史消息加载失败，请重试");
+          revealed += context.entryIds.length;
+          found = context.entryIds.includes(searchTarget.entryId);
+          before = context.oldestEntryId;
+          hasMore = context.hasMore;
+        }
+        if (controller.signal.aborted) return;
+        if (!found) throw new Error("当前分支中找不到该消息");
+        prevScrollDistanceRef.current = null;
+        setVisibleCount(current => Math.max(current, revealed * 2));
+        setPendingSearchScroll(searchTarget);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        console.error("[pi-web] conversation navigation failed:", searchTarget.entryId, cause);
+        setNodeNavigationError(cause instanceof Error ? cause.message : String(cause));
+        onSearchTargetHandled?.(searchTarget);
+      } finally {
+        if (ownsHistoryLoad) loadingOlderRef.current = false;
+      }
+    };
+    void locate();
+    return () => controller.abort();
+  }, [searchTarget, loading, activeLeafId, loadContext, onSearchTargetHandled]);
