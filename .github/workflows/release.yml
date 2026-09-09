@@ -13,6 +13,10 @@ on:
         description: "Build Pi Web only; reuse the unchanged native launcher"
         type: boolean
         default: false
+      phone_only:
+        description: "Build the deterministic Android workspace broker only"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,7 +25,38 @@ env:
   NODE_VERSION: "22.19.0"
 
 jobs:
+  phone-workspaces:
+    if: ${{ inputs.phone_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify phone safety and workspace contracts
+        run: node --test tests/phone.test.mjs tests/phone-workspaces.test.mjs
+      - name: Build shell-only Android broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          mkdir -p phone-build/classes phone-artifact
+          javac -source 11 -target 11 -encoding UTF-8 -classpath "$ANDROID_HOME/platforms/android-36/android.jar" -d phone-build/classes src/phone/*.java
+          "$ANDROID_HOME/build-tools/36.0.0/d8" --lib "$ANDROID_HOME/platforms/android-36/android.jar" --min-api 34 --output phone-artifact/phone-workspaces.jar $(find phone-build/classes -name '*.class')
+          node -e 'const fs=require("node:fs"),c=require("node:crypto");const b=fs.readFileSync("phone-artifact/phone-workspaces.jar");fs.writeFileSync("phone-artifact/build.json",JSON.stringify({commit:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,version:"phone-"+process.env.GITHUB_SHA.slice(0,12),minApi:34,size:b.length,sha256:c.createHash("sha256").update(b).digest("hex")},null,2)+"\n")'
+          unzip -l phone-artifact/phone-workspaces.jar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phone-workspaces-${{ github.sha }}
+          path: phone-artifact/*
+          if-no-files-found: error
+          retention-days: 30
   build:
+    if: ${{ !inputs.phone_only }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
