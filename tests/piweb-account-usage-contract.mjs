@@ -70,6 +70,17 @@ test("quota control is half-area compact, cached, keyboard accessible, and opens
   assert.doesNotMatch(quotaUi, /\/v1\/responses|\/api\/agent/u, "quota UI must never invoke a model path");
 });
 
+test("account management uses existing header whitespace and never overlays account information", () => {
+  assert.match(quotaUi, /controls\.append\(reauth, remove, action\)/u);
+  assert.match(quotaUi, /top\.appendChild\(controls\)/u);
+  assert.doesNotMatch(quotaUi, /row\.appendChild\(controls\)/u, "management buttons must not add a separate row");
+  assert.match(quotaUi, /reauth\.title = `\$\{text\.reauth\} \$\{email\}`/u);
+  assert.match(quotaUi, /remove\.setAttribute\("aria-label"/u);
+  const footer = quotaUi.match(/\.pi-account-login-footer\{([^}]+)\}/u)?.[1];
+  assert.ok(footer);
+  assert.doesNotMatch(footer, /position\s*:\s*(sticky|fixed|absolute)/u, "add account must flow after the list, not cover its last row");
+});
+
 test("bridge usage and selection controls stay outside bearer auth and return confirmed active state", () => {
   const usageAt = bridgeSource.indexOf('if (url === "/account-usage"');
   const selectAt = bridgeSource.indexOf('if (url === "/account/select"');

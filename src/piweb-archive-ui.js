@@ -1034,6 +1034,22 @@
     state.list.appendChild(row);
   }
 
+  function accountActionIcon(action) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "14"); svg.setAttribute("height", "14");
+    svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.7"); svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round"); svg.setAttribute("aria-hidden", "true");
+    const shape = document.createElementNS(ns, "path");
+    shape.setAttribute("d", action === "reauth"
+      ? "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 7l5 5-5 5M15 12H3"
+      : "M3 6h18M9 6V4h6v2M5 6l1 15h12l1-15M10 10v7M14 10v7");
+    svg.appendChild(shape);
+    return svg;
+  }
+
   function accountRow(account) {
     const text = words();
     const row = document.createElement("div");
@@ -1065,14 +1081,14 @@
     action.setAttribute("aria-label", action.title);
     action.disabled = Boolean(account.active || state.switchingId || state.removingId);
     action.addEventListener("click", () => { void switchAccount(String(account.id || "")); });
-    top.appendChild(action);
     row.appendChild(top);
     const reauth = document.createElement("button");
     reauth.type = "button";
-    reauth.className = "pi-account-usage-switch pi-account-reauth";
+    reauth.className = "pi-account-usage-switch pi-account-icon-action pi-account-reauth";
     reauth.dataset.action = "reauth";
-    reauth.textContent = text.reauth;
-    reauth.setAttribute("aria-label", `${text.reauth} ${email}`);
+    reauth.appendChild(accountActionIcon("reauth"));
+    reauth.title = `${text.reauth} ${email}`;
+    reauth.setAttribute("aria-label", reauth.title);
     reauth.disabled = loginBusy();
     reauth.addEventListener("click", () => { void loginAction({ action: "start", mode: "reauth", id: account.id }); });
 
@@ -1105,8 +1121,8 @@
     const controls = document.createElement("div");
     controls.className = "pi-account-row-controls";
     const remove = document.createElement("button");
-    remove.type = "button"; remove.className = "pi-account-usage-switch pi-account-remove";
-    remove.textContent = text.removeAccount; remove.dataset.action = "remove";
+    remove.type = "button"; remove.className = "pi-account-usage-switch pi-account-icon-action pi-account-remove";
+    remove.appendChild(accountActionIcon("remove")); remove.dataset.action = "remove";
     remove.setAttribute("aria-label", `${text.removeAccount} ${email}`);
     remove.title = account.active ? text.removeActive : `${text.removeAccount} ${email}`;
     remove.disabled = loginBusy() || Boolean(state.switchingId);
@@ -1114,8 +1130,9 @@
       state.removeConfirmId = String(account.id); render();
       state.list?.querySelector(".pi-account-remove-confirm button")?.focus();
     });
-    controls.append(reauth, remove);
-    row.appendChild(controls);
+    // Use the existing gap beside the email; never add an always-visible action row.
+    controls.append(reauth, remove, action);
+    top.appendChild(controls);
     if (state.removeConfirmId === account.id) {
       const confirmation = document.createElement("div"); confirmation.className = "pi-account-remove-confirm";
       appendText(confirmation, "pi-account-login-hint", account.active ? text.removeActive : `${email} · ${text.removeHint}`);
@@ -1404,11 +1421,13 @@
       .pi-account-usage-meta>span{min-width:0;white-space:normal;overflow-wrap:anywhere}
       .pi-account-usage-meta>.pi-account-usage-remaining-compact{flex:0 0 auto;color:var(--text);font-weight:650}
       .pi-account-usage-meta>span+span::before{margin:0 4px;color:var(--text-dim);content:'·'}
-      .pi-account-row-controls{display:flex;justify-content:flex-end;gap:5px;margin:4px 0 2px}
+      .pi-account-row-controls{display:flex;align-items:center;gap:2px}
+      .pi-account-icon-action{display:inline-flex;align-items:center;justify-content:center;min-width:18px;width:18px;padding:0;border-color:transparent;background:transparent}
+      .pi-account-icon-action svg{flex:none;pointer-events:none}
       .pi-account-remove{color:#b91c1c}
       .pi-account-remove-confirm{display:flex;flex-wrap:wrap;gap:5px;padding:6px 0}
       .pi-account-remove-confirm>span{flex-basis:100%}
-      .pi-account-login-footer{position:sticky;bottom:0;padding:6px 7px;border-top:1px solid var(--border);background:var(--bg)}
+      .pi-account-login-footer{padding:3px 7px;border-top:1px solid var(--border);background:var(--bg)}
       #pi-account-add{width:100%;color:var(--accent)}
       #pi-account-login-box{display:flex;flex-direction:column;gap:6px;padding:0 7px;font-size:12px;overflow-wrap:anywhere}
       #pi-account-login-box:not(:empty){padding:8px 7px;border-top:1px solid var(--border)}
