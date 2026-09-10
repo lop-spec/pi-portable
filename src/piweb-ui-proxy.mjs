@@ -7,12 +7,14 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendLineRotating } from "./log-rotate.mjs";
+import { AccountLogin } from "./account-login.mjs";
 
 export const PIWEB_UI_PROXY_VERSION = "piweb-ui-proxy-v1";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v9";
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 export const PIWEB_ACCOUNT_USAGE_PATH = "/__pi_account_usage";
 export const PIWEB_ACCOUNT_SELECT_PATH = "/__pi_account_select";
+export const PIWEB_ACCOUNT_LOGIN_PATH = "/__pi_account_login";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 
@@ -234,6 +236,17 @@ export class PiWebUiProxy {
     this.server = null;
     this.proxyServer = null;
     this.closed = false;
+    this.accountLogin = options.accountLogin || new AccountLogin({
+      dataRoot,
+      log: (event, detail) => this.log(event, detail),
+      context: async () => {
+        const result = await this.fetch(`http://127.0.0.1:${this.bridgePort}/health`, { signal: timeoutSignal(1500) });
+        const health = await result.json();
+        if (!result.ok || !health.accountHomes) throw new Error("账号池未启用，无法登录");
+        const candidate = process.env.CODEX_PRIMARY_AUTH_FILE || path.resolve(health.accountHomes, "..", "..", "..", "homes", "primary", "auth.json");
+        return { homesRoot: health.accountHomes, primaryAuthFile: fs.existsSync(candidate) ? candidate : undefined };
+      },
+    });
   }
 
   log(event, detail = {}) {
@@ -414,6 +427,52 @@ export class PiWebUiProxy {
       const reason = normalizeError(error?.message || error);
       this.log("account-select-proxy-error", { id, bridgePort: this.bridgePort, reason });
       this.jsonResponse(response, 503, { ok: false, error: "账号切换服务暂不可用" });
+    }
+  }
+
+  async handleAccountLogin(request, response) {
+    // Login controls are local-only and require browser same-origin JSON POSTs.
+    // No CORS, callback URLs/session handles in query strings, or token responses.
+    const host = String(request.headers.host || "");
+    if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/iu.test(host)
+      || !request.headers.origin || !this.mutationOriginAllowed(request)
+      || request.headers["sec-fetch-site"] === "cross-site") {
+      this.log("account-login-rejected", { reason: "non-local-or-cross-origin" });
+      return this.jsonResponse(response, 403, { ok: false, error: "登录仅允许本机同源操作" });
+    }
+    if (!/^application\/json\b/iu.test(String(request.headers["content-type"] || ""))) {
+      this.log("account-login-rejected", { reason: "non-json" });
+      return this.jsonResponse(response, 415, { ok: false, error: "需要 JSON 请求" });
+    }
+    let input;
+    try { input = await this.readControlJson(request, 8192); }
+    catch {
+      this.log("account-login-rejected", { reason: "invalid-json" });
+      return this.jsonResponse(response, 400, { ok: false, error: "登录请求无效" });
+    }
+    try {
+      let login;
+      if (input.action === "remove") {
+        if (this.accountLogin.busy() || this.accountLogin.starting) throw new Error("已有登录进行中，请先完成或取消");
+        if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(input.id) || typeof input.email !== "string") throw new Error("账号删除请求无效");
+        const upstream = await this.fetch(`http://127.0.0.1:${this.bridgePort}/account/remove`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: input.id, email: input.email }), signal: timeoutSignal(2000),
+        });
+        const result = await upstream.json();
+        if (!upstream.ok || !result.ok) throw new Error(result.error || "账号移除失败，桥接服务需更新");
+        this.log("account-remove-success", { id: input.id, credentialsPreserved: true });
+        return this.jsonResponse(response, 200, result);
+      }
+      if (input.action === "start") login = await this.accountLogin.start(input.mode, input.id);
+      else if (input.action === "status") { this.accountLogin.require(input.session); login = this.accountLogin.view(); }
+      else if (input.action === "cancel") login = this.accountLogin.cancel(input.session);
+      else if (input.action === "complete") login = await this.accountLogin.complete(input.session, input.callback);
+      else throw new Error("登录操作无效");
+      this.jsonResponse(response, 200, { ok: true, login });
+    } catch (error) {
+      const reason = /^(登录|授权|账号|原账号|该账号|无法|凭据|回调|代理|出口|请|已有)/u.test(error?.message || "") ? error.message : "登录服务暂不可用，请重试";
+      this.log("account-login-control-failed", { reason });
+      this.jsonResponse(response, 400, { ok: false, error: reason });
     }
   }
 
@@ -771,6 +830,10 @@ export class PiWebUiProxy {
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ARCHIVE_UI_PATH) return this.serveArchiveUi(response);
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ACCOUNT_USAGE_PATH) return this.handleAccountUsageProxy(response, parsedUrl);
     if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_SELECT_PATH) return this.handleAccountSelectProxy(request, response);
+    if (parsedUrl.pathname === PIWEB_ACCOUNT_LOGIN_PATH) {
+      if (request.method !== "POST") return this.jsonResponse(response, 405, { ok: false, error: "POST required" }, { Allow: "POST" });
+      return this.handleAccountLogin(request, response);
+    }
     if (request.method === "GET" && this.serveCurrentPiWebPageChunk(parsedUrl, response)) return;
     if (request.method === "GET" && parsedUrl.pathname === "/api/sessions") return this.handleSessionList(request, response, parsedUrl);
 
@@ -795,6 +858,7 @@ export class PiWebUiProxy {
       publicWebPort: this.publicWebPort,
       upstreamWebPort: this.webPort,
       archiveVersion: PIWEB_ARCHIVE_VERSION,
+      accountLogin: true,
       promptCapture: false,
       recoveryDispatch: false,
       goalStateConsumer: false,
@@ -835,6 +899,7 @@ export class PiWebUiProxy {
 
   async close() {
     this.closed = true;
+    this.accountLogin.close();
     const closeServer = (server) => new Promise((resolve) => {
       if (!server?.listening) return resolve();
       server.close(() => resolve());

@@ -12,6 +12,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
+import { readAccountUsageIdentity } from "./account-usage.mjs";
+
+export const POOL_REMOVED_FILE = ".pi-pool-removed.json";
 
 const COOLDOWN_DEFAULT_MS = 30 * 60_000;
 const COOLDOWN_MAX_MS = 6 * 60 * 60_000;
@@ -67,11 +70,13 @@ export function createAccountPool(options) {
     connect,
     log = () => {},
     refreshTransport,
+    removalIdentity = member => readAccountUsageIdentity(member.authPath),
     now = Date.now,
   } = options;
 
   const state = { active: "primary", cooldown: new Map(), lastRefreshTry: new Map(), loaded: false };
   const refreshInFlight = new Map();
+  const removedLogged = new Set();
 
   function loadState() {
     if (state.loaded) return;
@@ -117,6 +122,12 @@ export function createAccountPool(options) {
       for (const entry of fs.readdirSync(homesRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(entry.name)) continue;
         const authPath = path.join(homesRoot, entry.name, "auth.json");
+        if (fs.existsSync(path.join(homesRoot, entry.name, POOL_REMOVED_FILE))) {
+          if (!removedLogged.has(entry.name)) log(`账号 ${entry.name} 跳过：explicitly-removed-from-pool`);
+          removedLogged.add(entry.name);
+          continue;
+        }
+        removedLogged.delete(entry.name);
         if (fs.existsSync(authPath)) {
           found.push({ id: entry.name, authPath, writable: entry.name !== "primary" });
         }
@@ -178,6 +189,12 @@ export function createAccountPool(options) {
       const tokens = await (refreshTransport || defaultRefreshTransport)(refreshToken);
       if (!tokens?.access_token) return false;
       const value = JSON.parse(fs.readFileSync(member.authPath, "utf8"));
+      // An explicit login may have replaced credentials while refresh was in flight.
+      // Never overwrite that newer identity with the old refresh response.
+      if (value.tokens?.refresh_token !== refreshToken) {
+        log(`账号 ${member.id} 刷新结果丢弃：credentials-changed-during-refresh`);
+        return true;
+      }
       value.tokens = {
         ...value.tokens,
         access_token: tokens.access_token,
@@ -302,6 +319,31 @@ export function createAccountPool(options) {
     return { ok: true, id };
   }
 
+  // Removing a pool member never deletes shared Codex/CLI login files.
+  // The marker is reversible and automatically discovered on both machines.
+  function remove(id, email) {
+    loadState();
+    const all = members(), target = all.find(member => member.id === id);
+    if (!target) return { ok: false, error: "账号不存在或已移除" };
+    if (id === state.active || id === pinTarget()) return { ok: false, error: "请先切换当前或固定账号，再删除" };
+    if (all.length <= 1) return { ok: false, error: "至少保留一个轮转账号" };
+    let actual;
+    try { actual = removalIdentity(target).email; }
+    catch { return { ok: false, error: "无法核对账号邮箱，未删除" }; }
+    if (!actual || String(email).toLowerCase() !== actual.toLowerCase()) return { ok: false, error: "账号邮箱不匹配，未删除" };
+    const marker = path.join(homesRoot, id, POOL_REMOVED_FILE);
+    const raw = JSON.stringify({ version: 1, removedAt: new Date(now()).toISOString(), credentialsPreserved: true });
+    try {
+      fs.writeFileSync(marker, raw, { flag: "wx", mode: 0o600 });
+      if (fs.readFileSync(marker, "utf8") !== raw) throw new Error("marker readback mismatch");
+      log(`账号 ${id} 已移出轮转池，登录文件保留`);
+      return { ok: true, id, credentialsPreserved: true };
+    } catch {
+      log(`账号 ${id} 移除失败：marker-write-failed`);
+      return { ok: false, error: "移除标记写入失败，请检查账号池" };
+    }
+  }
+
   function snapshot() {
     loadState();
     const pin = pinTarget();
@@ -324,7 +366,7 @@ export function createAccountPool(options) {
     });
   }
 
-  return { pick, onUpstreamFailure, select, snapshot, refresh, refreshExpiring, members };
+  return { pick, onUpstreamFailure, select, remove, snapshot, refresh, refreshExpiring, members };
 }
 
 // 429/401 failover 环：在 200（或非池管状态码）之前完成「冷却 → 切号 → 重发」，
