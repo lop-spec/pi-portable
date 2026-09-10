@@ -40,6 +40,15 @@ test('incomplete, unreviewed, unknown usage and quality regressions never pass',
   }
   assert.equal(comparePair(undefined, undefined).passed, false);
 });
+test('unfinished or unknown-usage runs never publish apparent savings ratios', () => {
+  for (const state of [{ completed: false }, { usageComplete: false }]) {
+    const result = comparePair(valid(), valid({ tokens: 1, estimatedUSD: .001, ...state }));
+    assert.equal(result.passed, false);
+    assert.equal(result.tokenRatio, null);
+    assert.equal(result.costRatio, null);
+    assert.ok(result.reasons.includes('comparison-withheld-incomplete-or-unknown-usage'));
+  }
+});
 test('quality checks do not count presence of an answer as task completion', () => {
   for (const c of CASES) assert.ok(Object.values(quality('已完成，可以继续。', c.checks)).every(v => !v));
 });

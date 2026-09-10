@@ -57,13 +57,15 @@ export function comparePair(baseline, candidate) {
     Object.values(r.quality ?? {}).length > 0 && Object.values(r.quality).every(v => v === true);
   const comparable = !!baseline && !!candidate && baseline.fixtureHash === candidate.fixtureHash &&
     baseline.model === candidate.model && baseline.thinking === candidate.thinking && baseline.priceHash === candidate.priceHash;
-  const tokenRatio = baseline?.tokens > 0 ? candidate?.tokens / baseline.tokens : null;
-  const costRatio = baseline?.estimatedUSD > 0 ? candidate?.estimatedUSD / baseline.estimatedUSD : null;
+  const measurable = [baseline, candidate].every(r => r?.completed === true && r?.usageComplete === true &&
+    Number.isFinite(r.tokens) && r.tokens > 0 && Number.isFinite(r.estimatedUSD) && r.estimatedUSD > 0);
+  const tokenRatio = measurable ? candidate.tokens / baseline.tokens : null;
+  const costRatio = measurable ? candidate.estimatedUSD / baseline.estimatedUSD : null;
   return { comparable, tokenRatio, costRatio,
     passed: comparable && valid(baseline) && valid(candidate) && tokenRatio <= .7 && costRatio <= .7,
     reasons: [!comparable && 'non-comparable', !valid(baseline) && 'baseline-not-fully-accepted',
-      !valid(candidate) && 'candidate-not-fully-accepted', !(tokenRatio <= .7) && 'token-target-missed',
-      !(costRatio <= .7) && 'cost-target-missed'].filter(Boolean) };
+      !valid(candidate) && 'candidate-not-fully-accepted', !measurable && 'comparison-withheld-incomplete-or-unknown-usage',
+      measurable && tokenRatio > .7 && 'token-target-missed', measurable && costRatio > .7 && 'cost-target-missed'].filter(Boolean) };
 }
 export function discoverCases(agentDir, definitions) {
   assert.ok(Array.isArray(definitions) && definitions.length > 0, 'Private case definitions required');
