@@ -761,6 +761,7 @@
   const VERSION = "piweb-account-usage-v2";
   const ENDPOINT = "/__pi_account_usage";
   const SELECT_ENDPOINT = "/__pi_account_select";
+  const LOGIN_ENDPOINT = "/__pi_account_login";
   // The bridge refreshes upstream data every four minutes. Reading its local
   // snapshot every 45 seconds keeps the rendered value safely below five
   // minutes old even with timer jitter; this never calls a model endpoint.
@@ -774,6 +775,15 @@
     loading: false,
     open: false,
     switchingId: "",
+    login: null,
+    loginPending: false,
+    loginError: "",
+    loginTimer: null,
+    removeConfirmId: "",
+    removingId: "",
+    loginBox: null,
+    loginSignature: "",
+    addButton: null,
     switchFailedId: "",
     switchError: "",
     lastFetchAt: 0,
@@ -801,6 +811,15 @@
       current: "Current",
       cached: "Cached",
       switchAccount: "Switch",
+      reauth: "Sign in again", addAccount: "Add account", loginOpen: "Open authorization page",
+      removeAccount: "Delete", confirmRemove: "Confirm removal", cancelRemove: "Cancel",
+      removeHint: "Remove from rotation? Local login files are preserved. Adding this account again restores it.",
+      removeActive: "Switch away from the current account before deleting it.",
+      loginHint: "Sign in with the intended account, then return here. If localhost cannot open, paste its full URL below.",
+      callback: "Full localhost callback URL", completeLogin: "Complete sign-in", cancelLogin: "Cancel",
+      loginWaiting: "Waiting for authorization", loginWorking: "Processing…", loginSuccess: "Signed in. You can now switch to this account.",
+      loginCancelled: "Sign-in cancelled", loginExpired: "Sign-in expired. Please retry.", loginFailed: "Sign-in failed",
+      loginManual: "Callback port unavailable. Paste the full callback URL to finish.",
       switchingAccount: "Switching…",
       retrySwitch: "Retry",
       switchFailed: "Switch failed",
@@ -827,6 +846,15 @@
       current: "当前",
       cached: "缓存",
       switchAccount: "切换",
+      reauth: "重新登录", addAccount: "添加账号", loginOpen: "打开授权页面",
+      removeAccount: "删除", confirmRemove: "确认删除", cancelRemove: "取消",
+      removeHint: "从轮转池移除？保留本机登录文件，再次添加可恢复。",
+      removeActive: "请先切换到其他账号，再删除当前账号。",
+      loginHint: "请使用目标账号登录后返回这里。若 localhost 页面无法打开，请复制地址栏完整网址并粘贴到下方。",
+      callback: "完整的 localhost 回调网址", completeLogin: "完成登录", cancelLogin: "取消登录",
+      loginWaiting: "等待授权", loginWorking: "处理中…", loginSuccess: "登录成功，可切换到此账号使用。",
+      loginCancelled: "已取消登录", loginExpired: "登录已超时，请重试。", loginFailed: "登录失败",
+      loginManual: "回调端口被占用，请粘贴完整回调网址完成登录。",
       switchingAccount: "切换中…",
       retrySwitch: "重试",
       switchFailed: "切换失败",
@@ -853,6 +881,15 @@
       current: "目前",
       cached: "快取",
       switchAccount: "切換",
+      reauth: "重新登入", addAccount: "新增帳號", loginOpen: "開啟授權頁面",
+      removeAccount: "刪除", confirmRemove: "確認刪除", cancelRemove: "取消",
+      removeHint: "從輪轉池移除？保留本機登入檔案，再次新增可恢復。",
+      removeActive: "請先切換到其他帳號，再刪除目前帳號。",
+      loginHint: "請使用目標帳號登入後返回這裡。若 localhost 頁面無法開啟，請複製網址列完整網址並貼到下方。",
+      callback: "完整的 localhost 回呼網址", completeLogin: "完成登入", cancelLogin: "取消登入",
+      loginWaiting: "等待授權", loginWorking: "處理中…", loginSuccess: "登入成功，可切換到此帳號使用。",
+      loginCancelled: "已取消登入", loginExpired: "登入已逾時，請重試。", loginFailed: "登入失敗",
+      loginManual: "回呼連接埠被佔用，請貼上完整回呼網址完成登入。",
       switchingAccount: "切換中…",
       retrySwitch: "重試",
       switchFailed: "切換失敗",
@@ -1026,10 +1063,18 @@
     action.textContent = account.active ? text.current : isSwitching ? text.switchingAccount : didFail ? text.retrySwitch : text.switchAccount;
     action.title = account.active ? `${email} · ${text.current}` : `${text.switchAccount} ${email}`;
     action.setAttribute("aria-label", action.title);
-    action.disabled = Boolean(account.active || state.switchingId);
+    action.disabled = Boolean(account.active || state.switchingId || state.removingId);
     action.addEventListener("click", () => { void switchAccount(String(account.id || "")); });
     top.appendChild(action);
     row.appendChild(top);
+    const reauth = document.createElement("button");
+    reauth.type = "button";
+    reauth.className = "pi-account-usage-switch pi-account-reauth";
+    reauth.dataset.action = "reauth";
+    reauth.textContent = text.reauth;
+    reauth.setAttribute("aria-label", `${text.reauth} ${email}`);
+    reauth.disabled = loginBusy();
+    reauth.addEventListener("click", () => { void loginAction({ action: "start", mode: "reauth", id: account.id }); });
 
     if (account.remainingPercent != null) {
       const meter = document.createElement("div");
@@ -1057,7 +1102,50 @@
       reset.title = `${text.resetAt} ${full} · ${relativeReset(account.resetAt)}`;
     }
     row.appendChild(meta);
+    const controls = document.createElement("div");
+    controls.className = "pi-account-row-controls";
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "pi-account-usage-switch pi-account-remove";
+    remove.textContent = text.removeAccount; remove.dataset.action = "remove";
+    remove.setAttribute("aria-label", `${text.removeAccount} ${email}`);
+    remove.title = account.active ? text.removeActive : `${text.removeAccount} ${email}`;
+    remove.disabled = loginBusy() || Boolean(state.switchingId);
+    remove.addEventListener("click", () => {
+      state.removeConfirmId = String(account.id); render();
+      state.list?.querySelector(".pi-account-remove-confirm button")?.focus();
+    });
+    controls.append(reauth, remove);
+    row.appendChild(controls);
+    if (state.removeConfirmId === account.id) {
+      const confirmation = document.createElement("div"); confirmation.className = "pi-account-remove-confirm";
+      appendText(confirmation, "pi-account-login-hint", account.active ? text.removeActive : `${email} · ${text.removeHint}`);
+      if (!account.active) {
+        const yes = document.createElement("button"); yes.type = "button"; yes.className = "pi-account-usage-switch pi-account-remove";
+        yes.textContent = state.removingId ? text.loginWorking : text.confirmRemove; yes.disabled = loginBusy();
+        yes.addEventListener("click", () => { void removeAccount(account); }); confirmation.appendChild(yes);
+      }
+      const no = document.createElement("button"); no.type = "button"; no.className = "pi-account-usage-switch";
+      no.textContent = text.cancelRemove; no.disabled = Boolean(state.removingId);
+      no.addEventListener("click", () => { state.removeConfirmId = ""; render(); }); confirmation.appendChild(no);
+      row.appendChild(confirmation);
+    }
     return row;
+  }
+
+  async function removeAccount(account) {
+    if (loginBusy() || account.active || state.switchingId) return;
+    state.removingId = account.id; state.loginError = ""; render();
+    try {
+      const response = await fetch(LOGIN_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "remove", id: account.id, email: account.email }), cache: "no-store", signal: AbortSignal.timeout(4000) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      state.data = { ...state.data, accounts: result.accounts };
+      state.removeConfirmId = "";
+    } catch (error) {
+      state.loginError = String(error?.message || "Remove failed").slice(0, 180);
+      console.error("[pi-web account login] remove failed:", state.loginError);
+    } finally { state.removingId = ""; render(); }
   }
 
   async function switchAccount(id) {
@@ -1096,6 +1184,88 @@
     }
   }
 
+  function loginBusy() { return Boolean(state.removingId) || state.loginPending || ["waiting", "exchanging"].includes(state.login?.status); }
+
+  async function loginAction(input, polling = false) {
+    if (state.loginPending) return;
+    if (!polling) { state.loginPending = true; state.loginError = ""; render(); }
+    clearTimeout(state.loginTimer);
+    try {
+      const response = await fetch(LOGIN_ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: state.login?.session, ...input }), cache: "no-store",
+        signal: AbortSignal.timeout(input.action === "complete" ? 25_000 : 5000),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      state.login = result.login;
+      state.loginError = "";
+      try {
+        if (["waiting", "exchanging"].includes(state.login.status)) sessionStorage.setItem("pi-account-login", state.login.session);
+        else sessionStorage.removeItem("pi-account-login");
+      } catch { console.warn("[pi-web account login] session persistence unavailable"); }
+      if (state.login.status === "success") void refresh(true);
+    } catch (error) {
+      state.loginError = String(error?.message || "Login failed").slice(0, 180);
+      console.error("[pi-web account login] request failed:", state.loginError);
+      if (polling && Date.now() > (state.login?.expiresAt || 0)) state.login = null;
+    } finally {
+      state.loginPending = false;
+      render();
+      if (!polling && input.action === "start") {
+        state.loginBox?.scrollIntoView({ block: "nearest" });
+        state.loginBox?.querySelector("a")?.focus({ preventScroll: true });
+      } else if (!polling && input.action === "cancel") state.addButton?.focus();
+      if (["waiting", "exchanging"].includes(state.login?.status)) {
+        state.loginTimer = setTimeout(() => { void loginAction({ action: "status" }, true); }, 2000);
+      }
+    }
+  }
+
+  function renderLogin() {
+    if (!state.loginBox || !state.addButton) return;
+    const text = words(), login = state.login;
+    state.addButton.textContent = `+ ${text.addAccount}`;
+    state.addButton.disabled = loginBusy();
+    // Polling must not replace a focused callback input or discard its draft.
+    const signature = JSON.stringify([locale(), login?.session, login?.status, state.loginPending, state.loginError]);
+    if (signature === state.loginSignature) return;
+    state.loginSignature = signature;
+    const draft = state.loginBox.querySelector("input")?.value || "";
+    state.loginBox.replaceChildren();
+    if (!login && !state.loginPending && !state.loginError) return;
+    const title = state.loginPending || login?.status === "exchanging" ? text.loginWorking
+      : ({ waiting: text.loginWaiting, success: text.loginSuccess, cancelled: text.loginCancelled, expired: text.loginExpired, failed: text.loginFailed })[login?.status] || "";
+    appendText(state.loginBox, "pi-account-login-status", `${title}${login?.email ? ` · ${login.email}` : ""}`);
+    if (state.loginError || login?.error) appendText(state.loginBox, "pi-account-usage-warning", state.loginError || login.error);
+    if (login?.status === "waiting") {
+      const link = document.createElement("a");
+      link.textContent = text.loginOpen;
+      // The backend owns this URL; nevertheless allow only the official origin.
+      try {
+        const url = new URL(login.url);
+        if (url.origin !== "https://auth.openai.com" || url.pathname !== "/oauth/authorize") throw new Error("Unexpected authorization URL");
+        link.href = url.href; link.target = "_blank"; link.rel = "noopener noreferrer";
+        state.loginBox.appendChild(link);
+      } catch { appendText(state.loginBox, "pi-account-usage-warning", text.loginFailed); console.error("[pi-web account login] invalid authorization URL"); }
+      appendText(state.loginBox, "pi-account-login-hint", login.manual ? text.loginManual : text.loginHint);
+      const form = document.createElement("form"), input = document.createElement("input");
+      input.type = "text"; input.autocomplete = "off"; input.spellcheck = false;
+      input.placeholder = text.callback; input.setAttribute("aria-label", text.callback); input.value = draft;
+      const complete = document.createElement("button");
+      complete.type = "submit"; complete.className = "pi-account-usage-switch"; complete.textContent = text.completeLogin; complete.disabled = state.loginPending;
+      form.append(input, complete);
+      form.addEventListener("submit", event => { event.preventDefault(); if (input.value.trim()) void loginAction({ action: "complete", callback: input.value.trim() }); });
+      state.loginBox.appendChild(form);
+    }
+    if (["waiting", "exchanging"].includes(login?.status)) {
+      const cancel = document.createElement("button");
+      cancel.type = "button"; cancel.className = "pi-account-usage-switch"; cancel.textContent = text.cancelLogin; cancel.disabled = state.loginPending;
+      cancel.addEventListener("click", () => { void loginAction({ action: "cancel" }); });
+      state.loginBox.appendChild(cancel);
+    }
+  }
+
   function render() {
     if (!state.list || !state.title || !state.freshness || !state.panel || !state.button) return;
     const text = words();
@@ -1105,12 +1275,13 @@
     state.button.setAttribute("aria-label", text.button);
     state.panel.setAttribute("aria-label", text.title);
     state.panel.setAttribute("aria-busy", String(state.loading));
+    renderLogin();
 
     const accounts = Array.isArray(state.data?.accounts) ? state.data.accounts : [];
     // Keep cached rows (and keyboard focus) through loading transitions. Closed
     // panels never construct account DOM or date formatters.
     if (state.open) {
-      const signature = JSON.stringify([state.renderedLocale, state.data?.enabled, accounts.map(({ ageMs, ...account }) => account), state.switchingId, state.switchFailedId, !state.data && [state.loading, state.error]]);
+      const signature = JSON.stringify([state.renderedLocale, state.data?.enabled, accounts.map(({ ageMs, ...account }) => account), state.switchingId, state.switchFailedId, loginBusy(), state.removeConfirmId, state.removingId, !state.data && [state.loading, state.error]]);
       if (signature !== state.listSignature) {
         state.listSignature = signature;
         const focusedId = state.list.contains(document.activeElement) ? document.activeElement.closest('[data-account-id]')?.dataset.accountId : null;
@@ -1210,7 +1381,7 @@
       .pi-account-usage-title{font-size:13px;font-weight:650;color:var(--text)}
       .pi-account-usage-freshness{overflow:hidden;color:var(--text-dim);font-size:11px;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
       .pi-account-usage-freshness[data-stale='true']{color:#b45309}
-      .pi-account-usage-row{padding:3px 7px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
+      .pi-account-usage-row{display:flow-root;padding:3px 7px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
       .pi-account-usage-row:first-child{border-top:0}
       .pi-account-usage-row[data-active='true']{background:color-mix(in srgb,var(--accent) 3%,var(--bg))}
       .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0;min-height:24px}
@@ -1233,6 +1404,18 @@
       .pi-account-usage-meta>span{min-width:0;white-space:normal;overflow-wrap:anywhere}
       .pi-account-usage-meta>.pi-account-usage-remaining-compact{flex:0 0 auto;color:var(--text);font-weight:650}
       .pi-account-usage-meta>span+span::before{margin:0 4px;color:var(--text-dim);content:'·'}
+      .pi-account-row-controls{display:flex;justify-content:flex-end;gap:5px;margin:4px 0 2px}
+      .pi-account-remove{color:#b91c1c}
+      .pi-account-remove-confirm{display:flex;flex-wrap:wrap;gap:5px;padding:6px 0}
+      .pi-account-remove-confirm>span{flex-basis:100%}
+      .pi-account-login-footer{position:sticky;bottom:0;padding:6px 7px;border-top:1px solid var(--border);background:var(--bg)}
+      #pi-account-add{width:100%;color:var(--accent)}
+      #pi-account-login-box{display:flex;flex-direction:column;gap:6px;padding:0 7px;font-size:12px;overflow-wrap:anywhere}
+      #pi-account-login-box:not(:empty){padding:8px 7px;border-top:1px solid var(--border)}
+      #pi-account-login-box a{color:var(--accent);text-decoration:underline}
+      #pi-account-login-box form{display:flex;flex-direction:column;gap:5px}
+      #pi-account-login-box input{box-sizing:border-box;width:100%;padding:6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font:inherit}
+      .pi-account-login-hint{color:var(--text-muted)}
       .pi-account-usage-empty{display:flex;min-height:58px;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px;color:var(--text-muted);text-align:center}
       .pi-account-usage-empty-title{font-size:13px;font-weight:600;color:var(--text-muted)}
       .pi-account-usage-empty-note{font-size:11px;color:var(--text-dim)}
@@ -1270,8 +1453,20 @@
     freshness.setAttribute("aria-live", "polite");
     const list = document.createElement("div");
     list.className = "pi-account-usage-list";
-    panel.append(header, list);
+    const loginBox = document.createElement("div");
+    loginBox.id = "pi-account-login-box";
+    const footer = document.createElement("footer");
+    footer.className = "pi-account-login-footer";
+    const addButton = document.createElement("button");
+    addButton.id = "pi-account-add";
+    addButton.type = "button";
+    addButton.className = "pi-account-usage-switch";
+    addButton.addEventListener("click", () => { void loginAction({ action: "start", mode: "add" }); });
+    footer.appendChild(addButton);
+    panel.append(header, list, loginBox, footer);
     document.documentElement.append(host, panel);
+    state.loginBox = loginBox;
+    state.addButton = addButton;
 
     state.host = host;
     state.button = button;
@@ -1313,6 +1508,10 @@
     window.__piUiLayout.subscribe(positionUi);
     render();
     void refresh(false);
+    try {
+      const session = sessionStorage.getItem("pi-account-login");
+      if (session) { state.login = { session }; void loginAction({ action: "status" }); }
+    } catch { console.warn("[pi-web account login] session restore unavailable"); }
   }
 
   const start = () => {

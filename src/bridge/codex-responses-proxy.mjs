@@ -265,6 +265,7 @@ const accountPool = ACCOUNT_HOMES ? createAccountPool({
   poolStateFile: path.join(PORTABLE_DATA, "account-pool.json"),
   pinStateFile: path.join(PORTABLE_DATA, "account-pool-pin.json"),
   connect: (host) => freshUpstreamSocket(currentEgress().port, host),
+  removalIdentity: member => (member.id === "primary" && primaryUsageIdentity()) || readAccountUsageIdentity(member.authPath),
   log,
 }) : null;
 
@@ -721,6 +722,7 @@ const server = http.createServer(async (req, res) => {
       modelsClientVersion: process.env.CODEX_MODELS_CLIENT_VERSION || DEFAULT_CODEX_MODELS_CLIENT_VERSION,
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
       accountHomes: ACCOUNT_HOMES || null,
+      accountRemoval: true,
       accounts: accountPool ? accountPool.snapshot() : [],
       upstreamProxy: `${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}`,
       upstreamAgent: { maxSockets: 16, maxFreeSockets: 8 },
@@ -788,6 +790,21 @@ const server = http.createServer(async (req, res) => {
       : result;
     res.writeHead(result.ok ? 200 : 404, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     return res.end(JSON.stringify(responseBody));
+  }
+
+  if (url === "/account/remove" && req.method === "POST") {
+    const localHost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(String(req.headers.host || ""));
+    if (!localHost || req.headers.origin || !/^application\/json\b/i.test(String(req.headers["content-type"] || ""))) {
+      log("账号移除拒绝：local-json-control-required");
+      res.writeHead(403, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "仅允许本机控制请求" }));
+    }
+    let input;
+    try { input = JSON.parse((await drainBody(req, 4096)).toString("utf8")); } catch { input = {}; }
+    const result = accountPool?.remove(input?.id, input?.email) || { ok: false, error: "账号池未启用" };
+    if (!result.ok) log(`账号移除拒绝：${result.error}`);
+    res.writeHead(result.ok ? 200 : 409, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    return res.end(JSON.stringify(result.ok ? { ...result, accounts: accountUsageMonitor?.snapshot().accounts || [] } : result));
   }
 
   if (!lifecycle.admit(res)) return;

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
+import "./account-login-contract.mjs";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -53,6 +54,12 @@ test("quota control is half-area compact, cached, keyboard accessible, and opens
   assert.match(quotaUi, /width:280px/u);
   assert.doesNotMatch(quotaUi, /width:352px/u);
   assert.match(quotaUi, /switchAccount: "切换"/u);
+  assert.match(quotaUi, /reauth: "重新登录", addAccount: "添加账号"/u);
+  assert.match(quotaUi, /const LOGIN_ENDPOINT = "\/__pi_account_login"/u);
+  assert.match(quotaUi, /reauth\.addEventListener\("click"/u);
+  assert.match(quotaUi, /addButton\.addEventListener\("click"/u);
+  assert.match(quotaUi, /input\.setAttribute\("aria-label", text\.callback\)/u);
+  assert.doesNotMatch(quotaUi, /window\.open\(/u, "authorization opens only through an explicit user link");
   assert.match(quotaUi, /className = "pi-account-usage-switch"/u);
   assert.match(quotaUi, /remaining: "剩余"/u);
   assert.match(quotaUi, /resets: "重置次数"/u);
