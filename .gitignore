@@ -17,3 +17,7 @@ assets.enc
 
 # 本地归档区:退役链/门/验收材料只留本机,不入仓
 _历史版本/
+
+# Private workload fixtures, answers and isolated token-cost runs
+scratch/token-cost-*
+scratch/stop-token-native.ps1
