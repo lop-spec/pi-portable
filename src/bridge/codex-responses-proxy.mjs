@@ -34,6 +34,7 @@ import { codexModelsUpstreamPath, DEFAULT_CODEX_MODELS_CLIENT_VERSION, modelCata
 import { appendLineRotating } from "../log-rotate.mjs";
 import { TRANSPORT_ERROR_VERSION, upstreamConnectionError } from "./transport-errors.mjs";
 import { createRequestLifecycle } from "./request-lifecycle.mjs";
+import { createSystemProxyFollower } from "../system-proxy.mjs";
 
 const PORT = Number(process.env.CODEX_PROXY_PORT || 8794);
 const HOST = "127.0.0.1";
@@ -48,7 +49,7 @@ const EXPLICIT_BREAKPOINT = process.env.CODEX_CACHE_EXPLICIT_BREAKPOINT === "1";
 // (协议文本移入 pi AGENTS.md 管理块,桥部署不再作废会话前缀)、response memo 精确重放、
 // history 快路 reasoning 改写、tier 兜底——三样从未在真实流量里起作用,却是本周两起静默
 // 缺陷(强制 max、注入失效)的温床。
-const POLICY_VERSION = "gpt56-live-models-v8.3.0";
+const POLICY_VERSION = "gpt56-egress-fallback-v8.5.0";
 // pi 压缩摘要请求单独的推理档位（默认 low；CODEX_SUMMARY_EFFORT=off 关闭）。判定只看 input[0]，无状态。
 const SUMMARY_EFFORT = resolveSummaryEffort(process.env.CODEX_SUMMARY_EFFORT);
 const UPSTREAM_GZIP = process.env.CODEX_UPSTREAM_GZIP !== "0";
@@ -104,8 +105,14 @@ function readBody(req) {
 const HOP_BY_HOP = new Set(["host", "connection", "proxy-connection", "keep-alive",
   "transfer-encoding", "upgrade", "te", "trailer"]);
 
-let egressCache = { at: 0, key: "env-default", port: UPSTREAM_PROXY_PORT };
+const followSystemProxy = process.platform === "win32" && process.env.CODEX_FOLLOW_SYSTEM_PROXY !== "0";
+const systemProxyFollower = followSystemProxy ? createSystemProxyFollower({ log }) : null;
+if (systemProxyFollower) await systemProxyFollower.start();
+else log("system-proxy following disabled: non-Windows or CODEX_FOLLOW_SYSTEM_PROXY=0; explicit egress retained");
+let egressCache = { at: 0, key: "env-default", host: UPSTREAM_PROXY_HOST, port: UPSTREAM_PROXY_PORT };
 function currentEgress() {
+  const system = systemProxyFollower?.snapshot();
+  if (system) return system;
   if (Date.now() - egressCache.at < 5000) return egressCache;
   egressCache.at = Date.now();
   try {
@@ -116,37 +123,60 @@ function currentEgress() {
       }
       egressCache.key = String(state.key || "");
       egressCache.port = Number(state.port);
+      egressCache.host = String(state.host || UPSTREAM_PROXY_HOST);
     }
-  } catch { /* 状态文件缺失或损坏：保持上次值 */ }
+  } catch (error) { log(`legacy egress state unavailable: ${error?.code || error?.name || "read-failed"}; previous endpoint retained`); }
   return egressCache;
 }
 
-function freshUpstreamSocket(proxyPort, host = UPSTREAM_HOST) {
+// 连接层重试（v8.4.0，2026-09-07）：CONNECT 超时/被拒、直连 TLS 超时都发生在任何请求字节
+// 发出之前，重试语义安全。此前这类错误没有 code，进不了 upstreamOnce 的 RETRYABLE 集合，
+// 一次 10s 超时就直接 502「上游连接失败」打断整轮任务（9/6 23:39 起 57905 出口抖动 8 次全部如此）。
+// CODEX_CONNECT_RETRIES=0 即回到旧行为；每次尝试各自计时，退避 delay×第几次。
+const CONNECT_TIMEOUT_MS = Math.max(100, numberEnv("CODEX_CONNECT_TIMEOUT_MS", 10000));
+const CONNECT_RETRIES = Math.trunc(numberEnv("CODEX_CONNECT_RETRIES", 2));
+const CONNECT_RETRY_DELAY_MS = numberEnv("CODEX_CONNECT_RETRY_DELAY_MS", 300);
+const CONNECT_TIMEOUT_LABEL = CONNECT_TIMEOUT_MS >= 1000 ? `${Math.round(CONNECT_TIMEOUT_MS / 1000)}s` : `${CONNECT_TIMEOUT_MS}ms`;
+const connectError = (code, message) => Object.assign(new Error(message), { code });
+// 出口回退（v8.5.0，2026-09-07）：主出口 CONNECT 在 EGRESS_FALLBACK_AFTER_MS 内未建立就并行起备用出口，
+// 先建立者胜出，每个连接独立决策、无状态。实录：57905 整段黑 30-60s（网关同毫秒批量 upstream timeout），
+// 3×10s 串行重试扛不过；真直连 chatgpt.com 在本机不通，所以 "0"(直连) 只在显式列出时才作候选。
+// 默认备用 18799(Smart Proxy)/57905(店铺网关)，与主出口去重；CODEX_EGRESS_FALLBACK_PORTS= 空串关闭。
+const EGRESS_FALLBACK_PORTS = String(process.env.CODEX_EGRESS_FALLBACK_PORTS ?? "18799,57905")
+  .split(",").map((v) => v.trim()).filter(Boolean).map(Number).filter((v) => Number.isInteger(v) && v >= 0);
+const EGRESS_FALLBACK_AFTER_MS = Math.max(50, numberEnv("CODEX_EGRESS_FALLBACK_AFTER_MS", 3000));
+const egressLabelOf = (port, proxyHost = currentEgress().host || UPSTREAM_PROXY_HOST) => (port ? `${proxyHost}:${port}` : "direct");
+
+// ctl.cancel 由调用方在竞速结束后触发，销毁未胜出的在途连接（否则悬挂的 CONNECT 会占到超时）。
+function connectUpstreamOnce(proxyPort, host, ctl = {}, proxyHost = currentEgress().host || UPSTREAM_PROXY_HOST) {
   // [portable] 直连模式:无本机 CONNECT 代理时直接 TLS 到上游(换机默认路径)
   if (!proxyPort) {
     return new Promise((resolve, reject) => {
       const secure = tls.connect({ host, port: 443, servername: host, ALPNProtocols: ["http/1.1"] });
-      secure.setTimeout(10000, () => secure.destroy(new Error("直连 TLS 超时 10s")));
+      ctl.cancel = () => secure.destroy(connectError("ECONNECT_CANCELLED", "竞速落败已取消"));
+      secure.setTimeout(CONNECT_TIMEOUT_MS, () => secure.destroy(connectError("ETLS_TIMEOUT", `直连 TLS 超时 ${CONNECT_TIMEOUT_LABEL}`)));
       secure.once("secureConnect", () => { secure.setTimeout(0); resolve(secure); });
       secure.once("error", reject);
     });
   }
   return new Promise((resolve, reject) => {
     const connect = http.request({
-      host: UPSTREAM_PROXY_HOST,
+      host: proxyHost,
       port: proxyPort,
       method: "CONNECT",
       path: `${host}:443`,
       headers: { Host: `${host}:443` },
     });
-    connect.setTimeout(10000, () => connect.destroy(new Error("CONNECT 超时 10s")));
+    ctl.cancel = () => connect.destroy(connectError("ECONNECT_CANCELLED", "竞速落败已取消"));
+    connect.setTimeout(CONNECT_TIMEOUT_MS, () => connect.destroy(connectError("ECONNECT_TIMEOUT", `CONNECT 超时 ${CONNECT_TIMEOUT_LABEL}`)));
     connect.on("connect", (res, socket, head) => {
       if (res.statusCode !== 200) {
         socket.destroy();
-        return reject(new Error(`CONNECT 返回 ${res.statusCode}`));
+        return reject(connectError("ECONNECT_REJECTED", `CONNECT 返回 ${res.statusCode}`));
       }
       if (head?.length) socket.unshift(head);
       const secure = tls.connect({ socket, servername: host, ALPNProtocols: ["http/1.1"] });
+      ctl.cancel = () => secure.destroy(connectError("ECONNECT_CANCELLED", "竞速落败已取消"));
       secure.once("secureConnect", () => resolve(secure));
       secure.once("error", reject);
     });
@@ -155,14 +185,118 @@ function freshUpstreamSocket(proxyPort, host = UPSTREAM_HOST) {
   });
 }
 
+function egressCandidates(primaryPort) {
+  if (systemProxyFollower?.snapshot()) return []; // Following system means no hidden alternate proxy.
+  const seen = new Set([primaryPort || 0]);
+  const out = [];
+  for (const port of EGRESS_FALLBACK_PORTS) {
+    if (seen.has(port)) continue;
+    seen.add(port);
+    out.push(port);
+  }
+  return out;
+}
+
+// 主出口先行；每过 EGRESS_FALLBACK_AFTER_MS 未成功（或某候选已失败）就再起下一个候选，
+// 先建立的 socket 胜出并打上 lopEgress 标记，其余候选到达后即销毁。全部失败抛主出口的错误并附备用结果。
+function connectWithFallback(primaryPort, host, proxyHost) {
+  const fallbacks = egressCandidates(primaryPort);
+  if (!fallbacks.length) return connectUpstreamOnce(primaryPort, host, {}, proxyHost);
+  const primary = primaryPort || 0;
+  return new Promise((resolve, reject) => {
+    const started = performance.now();
+    const queue = [primary, ...fallbacks];
+    const failures = [];
+    const controls = new Map();
+    let inFlight = 0;
+    let settled = false;
+    let timer = null;
+    const cancelOthers = (winner) => {
+      for (const [port, ctl] of controls) if (port !== winner) { try { ctl.cancel?.(); } catch { /* 已结束 */ } }
+    };
+    const launch = () => {
+      if (settled || !queue.length) return;
+      const port = queue.shift();
+      const ctl = {};
+      controls.set(port, ctl);
+      inFlight += 1;
+      connectUpstreamOnce(port, host, ctl, proxyHost).then((socket) => {
+        inFlight -= 1;
+        if (settled) { socket.destroy(); return; }
+        settled = true;
+        clearTimeout(timer);
+        cancelOthers(port);
+        socket.lopEgress = { port, fallback: port !== primary };
+        if (port !== primary) {
+          const elapsed = Math.round(performance.now() - started);
+          const primaryFail = failures.find((f) => f.port === primary);
+          const why = primaryFail ? `失败（${primaryFail.error.code || primaryFail.error.message}）` : `${elapsed}ms 未建立`;
+          log(`出口回退：主出口 ${egressLabelOf(primary)} ${why}，备用 ${egressLabelOf(port)} 先成功（仅本连接）host=${host}`);
+          recordMetric({ ts: new Date().toISOString(), retryKind: "egress-fallback", primaryPort: primary, egressPort: port, elapsedMs: elapsed, host });
+        }
+        resolve(socket);
+      }, (error) => {
+        inFlight -= 1;
+        failures.push({ port, error });
+        if (settled) return;
+        if (queue.length) { clearTimeout(timer); launch(); return; }
+        if (inFlight > 0) return;
+        settled = true;
+        const main = failures.find((f) => f.port === primary)?.error || error;
+        const others = failures.filter((f) => f.port !== primary)
+          .map((f) => `${egressLabelOf(f.port)}=${f.error.code || String(f.error.message).slice(0, 40)}`).join("，");
+        if (others) main.message = `${main.message}；备用 ${others}`;
+        reject(main);
+      });
+      if (queue.length) timer = setTimeout(launch, EGRESS_FALLBACK_AFTER_MS);
+    };
+    launch();
+  });
+}
+
+async function freshUpstreamSocket(proxyPort, host = UPSTREAM_HOST, proxyHost = currentEgress().host || UPSTREAM_PROXY_HOST) {
+  const attempts = 1 + Math.max(0, CONNECT_RETRIES);
+  const egressLabel = egressLabelOf(proxyPort, proxyHost);
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await connectWithFallback(proxyPort, host, proxyHost);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) break;
+      const delayMs = CONNECT_RETRY_DELAY_MS * attempt;
+      const kind = String(error?.code || error?.message || "unknown").slice(0, 60);
+      log(`连接层失败（${kind}：${String(error?.message || error).slice(0, 80)}）egress=${egressLabel} host=${host}，${delayMs}ms 后重试 ${attempt}/${attempts - 1}`);
+      const egress = currentEgress();
+      recordMetric({
+        ts: new Date().toISOString(),
+        egressKey: egress.port === (proxyPort || 0) ? egress.key : "",
+        egressPort: proxyPort || 0,
+        retryKind: "connect",
+        attempt,
+        maxRetries: attempts - 1,
+        delayMs,
+        errorKind: kind,
+        host,
+      });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  const error = lastError || connectError("ECONNECT_FAILED", "连接层失败");
+  error.message = `${error.message}（连接尝试 ${attempts} 次）`;
+  error.connectAttempts = attempts;
+  throw error;
+}
+
 // 单会话内 Responses 是串行流，但现在多会话并发是常态（mobile-bridge 并发会话）。
 // maxSockets=2 时第 3 个及以后的请求在本地排队：2026-08-27 实测 21 次 >30s TTFB
 // 全部发生在并发窗口（含一次 GET /v1/models 44.6s），fresh socket 均值 17.9s vs
 // 复用 1.9s。放宽到 16 并发 + 8 条保温空闲连接；上游主动关闭时 Agent 透明重建。
 // 三类出口各持独立 Agent：切换出口不打断旧出口上的在途流，各自保温。
 const upstreamAgents = new Map();
-function agentFor(proxyPort) {
-  let agent = upstreamAgents.get(proxyPort);
+function agentFor(proxyPort, proxyHost = currentEgress().host || UPSTREAM_PROXY_HOST) {
+  const agentKey = `${proxyHost}:${proxyPort}`;
+  let agent = upstreamAgents.get(agentKey);
   if (agent) return agent;
   agent = new https.Agent({
     keepAlive: true,
@@ -172,12 +306,12 @@ function agentFor(proxyPort) {
     scheduling: "lifo",
   });
   agent.createConnection = (_options, callback) => {
-    freshUpstreamSocket(proxyPort).then(
+    freshUpstreamSocket(proxyPort, UPSTREAM_HOST, proxyHost).then(
       (socket) => callback(null, socket),
       (error) => callback(error),
     );
   };
-  upstreamAgents.set(proxyPort, agent);
+  upstreamAgents.set(agentKey, agent);
   return agent;
 }
 
@@ -201,8 +335,10 @@ function upstreamOnce(body, headers, allowRetry = true, onAttempt = () => {}) {
     }, (upRes) => {
       responded = true;
       const ttfbMs = performance.now() - started;
-      upRes.lopMeta = { startedAt: started, ttfbMs, egress: { ...egress } };
-      log(`-> POST ${upRes.statusCode} ttfbMs=${ttfbMs.toFixed(1)} reusedSocket=${req.reusedSocket ? "yes" : "no"} egress=${egress.port}`);
+      const via = req.socket?.lopEgress;
+      const actual = via?.fallback ? { key: `fallback:${via.port}`, port: via.port } : egress;
+      upRes.lopMeta = { startedAt: started, ttfbMs, egress: { ...actual } };
+      log(`-> POST ${upRes.statusCode} ttfbMs=${ttfbMs.toFixed(1)} reusedSocket=${req.reusedSocket ? "yes" : "no"} egress=${actual.port}${via?.fallback ? "(回退)" : ""}`);
       resolve(upRes);
     });
     // 首包前的连接层错误（保温竞态、节点瞬时 reset、CONNECT 失败）一律换新连接
@@ -237,7 +373,8 @@ function upstreamGet(path, headers) {
       agent: agentFor(egress.port),
       headers: fwd,
     }, (upRes) => {
-      log(`-> GET ${upRes.statusCode} ttfbMs=${(performance.now() - started).toFixed(1)} reusedSocket=${req.reusedSocket ? "yes" : "no"} egress=${egress.port}`);
+      const via = req.socket?.lopEgress;
+      log(`-> GET ${upRes.statusCode} ttfbMs=${(performance.now() - started).toFixed(1)} reusedSocket=${req.reusedSocket ? "yes" : "no"} egress=${via?.fallback ? `${via.port}(回退)` : egress.port}`);
       resolve(upRes);
     });
     req.on("error", reject);
@@ -250,8 +387,15 @@ function upstreamGet(path, headers) {
 // 都不存在则禁用，身份保持「下游登录态透明传递」，行为与无池版本完全一致。
 // 池状态独立落在 pi 数据根（冷却表不与 code-lite 桥共享），auth.json 槽位共用。
 const ACCOUNT_HOMES = (() => {
+  // 显式 CODEX_ACCOUNT_HOMES 不是目录时禁池并留痕，不回落本机布局：否则测试/异机的
+  // "指向不存在目录=禁池"会静默变成"借用本机 code-lite 账号池"（2026-09-07 两个 e2e 因此误判）。
+  const explicit = process.env.CODEX_ACCOUNT_HOMES;
+  if (explicit) {
+    try { if (fs.statSync(explicit).isDirectory()) return explicit; } catch { /* 不存在 */ }
+    log(`账号池：CODEX_ACCOUNT_HOMES=${explicit} 不是目录，账号池禁用（显式配置不回落本机布局）`);
+    return "";
+  }
   const candidates = [
-    process.env.CODEX_ACCOUNT_HOMES,
     path.join(PORTABLE_DATA, "homes"),
     path.join(os.homedir(), "Documents", "claude", "vscodium", "data", "code-lite", "homes"),
   ].filter(Boolean);
@@ -722,10 +866,13 @@ const server = http.createServer(async (req, res) => {
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
       accountHomes: ACCOUNT_HOMES || null,
       accounts: accountPool ? accountPool.snapshot() : [],
-      upstreamProxy: `${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}`,
+      upstreamProxy: egressLabelOf(currentEgress().port),
+      followSystemProxy,
       upstreamAgent: { maxSockets: 16, maxFreeSockets: 8 },
       upstreamGzip: UPSTREAM_GZIP,
       retryOwner: "bridge",
+      connectRetry: { timeoutMs: CONNECT_TIMEOUT_MS, retries: CONNECT_RETRIES, delayMs: CONNECT_RETRY_DELAY_MS },
+      egressFallback: { ports: egressCandidates(currentEgress().port), afterMs: EGRESS_FALLBACK_AFTER_MS },
       overloadRetry: {
         maxRetries: OVERLOAD_MAX_RETRIES,
         baseDelayMs: OVERLOAD_BASE_DELAY_MS,
@@ -835,6 +982,12 @@ server.listen(PORT, HOST, () => {
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
   log(`推理强度：透传会话请求值（桥不改写）`);
   log(`上游连接：keep-alive maxSockets=16 maxFreeSockets=8；上行 gzip=${UPSTREAM_GZIP ? "on" : "off"}`);
+  log(`连接层重试：CONNECT/TLS 单次超时 ${CONNECT_TIMEOUT_MS}ms，失败最多重试 ${CONNECT_RETRIES} 次（退避 ${CONNECT_RETRY_DELAY_MS}ms×n），CODEX_CONNECT_RETRIES=0 关闭`);
+  log(systemProxyFollower?.snapshot()
+    ? "出口跟随：Windows 系统代理，每 5 秒刷新；不使用历史端口或备用代理"
+    : EGRESS_FALLBACK_PORTS.length
+      ? `出口回退：主出口 ${EGRESS_FALLBACK_AFTER_MS}ms 未建立即并行尝试备用 ${EGRESS_FALLBACK_PORTS.map(port => egressLabelOf(port)).join("→")}（与主出口去重，先通者用，逐连接决策）`
+      : "出口回退：已由 CODEX_EGRESS_FALLBACK_PORTS 空值关闭");
   log(`摘要推理档位：${SUMMARY_EFFORT}（只对 input[0] 为 pi 压缩摘要提示的请求生效，普通轮次原样透传）`);
   log(`容量过载保护：首个有效 SSE 前 ${OVERLOAD_PRIMARY_MODEL}→${OVERLOAD_FALLBACK_MODELS.join("→") || "same-model"}，最多重试 ${OVERLOAD_MAX_RETRIES} 次，退避 ${OVERLOAD_BASE_DELAY_MS}-${OVERLOAD_MAX_DELAY_MS}ms，prefix 上限 ${OVERLOAD_PREFIX_MAX_BYTES}B`);
   log(STATUS_RETRY_ENABLED
@@ -855,4 +1008,4 @@ server.listen(PORT, HOST, () => {
   log(`流吞吐观测：SSE 尾部真实 usage → ${METRICS_FILE}`);
 });
 
-server.on("close", () => accountUsageMonitor?.stop());
+server.on("close", () => { accountUsageMonitor?.stop(); systemProxyFollower?.stop(); });

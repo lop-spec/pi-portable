@@ -24,6 +24,7 @@ const PORT = process.env.BRIDGE_E2E_PORT ? Number(process.env.BRIDGE_E2E_PORT) :
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-5xx-e2e-"));
 const emptyHomes = path.join(root, "homes-absent");
 
+process.env.CODEX_FOLLOW_SYSTEM_PROXY = "0"; // Fixture transport; never consult the user's registry.
 process.env.CODEX_PROXY_PORT = String(PORT);
 process.env.PI_PORTABLE_DATA = root;
 process.env.CODEX_ACCOUNT_HOMES = emptyHomes; // 不存在 → 账号池禁用,身份透明传递

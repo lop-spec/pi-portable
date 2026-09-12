@@ -5,6 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import tls from "node:tls";
+import { readSystemProxy } from "./system-proxy.mjs";
 
 const UPSTREAM_HOST = "chatgpt.com";
 // 常见本机代理端口:Clash/Mihomo、v2rayN、Shadowsocks、Surge/Quantumult 等默认值。
@@ -52,7 +53,17 @@ export function probeProxy(port, host = "127.0.0.1", timeout = PROBE_TIMEOUT) {
 }
 
 // 返回 {mode:"direct"|"proxy"|"needsInput", port, tried:[...]}
-export async function detectEgress(dataRoot, { force = false, extraPorts = [] } = {}) {
+export async function detectEgress(dataRoot, { force = false, extraPorts = [], systemProxy = readSystemProxy, log = console.error } = {}) {
+  // System settings override stale saved endpoints, even when that old port still accepts connections.
+  if (process.env.CODEX_FOLLOW_SYSTEM_PROXY !== "0") {
+    try {
+      const system = await systemProxy();
+      if (system) return system;
+    } catch (error) {
+      const reason = /^system-proxy-[a-z-]+$/.test(error?.message || "") ? error.message : error?.code || "registry-read-failed";
+      log(`system-proxy unavailable: ${reason}; legacy detection retained`);
+    }
+  }
   if (!force) {
     const saved = loadEgress(dataRoot);
     if (saved?.mode === "direct" && await probeDirect()) return { ...saved, source: "saved" };
@@ -75,7 +86,7 @@ export async function detectEgress(dataRoot, { force = false, extraPorts = [] } 
 }
 
 // CLI:node egress-autodetect.mjs <dataRoot>
-if (import.meta.url === `file:///${process.argv[1].replaceAll("\\", "/")}`) {
+if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replaceAll("\\", "/")}`) {
   const dataRoot = process.argv[2] || path.join(process.env.LOCALAPPDATA || ".", "pi-portable");
   const t0 = Date.now();
   const r = await detectEgress(dataRoot, { force: process.argv.includes("--force") });
