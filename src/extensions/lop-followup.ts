@@ -205,6 +205,39 @@ export default function lopFollowupExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("lop-followup-control", {
+    description: "暂停或立即恢复当前目标，不中断正在执行的工作",
+    handler: async (args, ctx) => {
+      const [action, expectedMode, extra] = args.trim().split(/\s+/);
+      if (!["pause", "resume"].includes(action) || extra || !state.mode || state.phase === "off" || (expectedMode && expectedMode !== state.mode)) {
+        logFailure(`control rejected reason=invalid-state action=${action} mode=${state.mode ?? "none"}`);
+        throw new Error("目标状态已变化，无法暂停或恢复");
+      }
+      if (action === "pause") {
+        if (state.phase !== "paused") pause(ctx, "manual-pause", "目标已暂停；当前执行不中断");
+        else log("pause ignored reason=already-paused");
+        return;
+      }
+      if (state.phase === "active") {
+        log("resume ignored reason=already-active");
+        return;
+      }
+      const idle = ctx.isIdle();
+      state = { ...state, phase: "active", sent: 0, reason: undefined };
+      if (idle) lastHandledAssistantSequence = assistantSequence;
+      persist(ctx);
+      try {
+        if (idle) pi.sendUserMessage(FOLLOWUP_PROFILES[state.mode!].prompt);
+        ctx.ui.notify(idle ? "已恢复上次目标并继续执行" : "已恢复上次目标，接续当前执行", "info");
+        log(`resumed mode=${state.mode} idle=${idle}`);
+      } catch (error) {
+        pause(ctx, "manual-resume-failed", "恢复目标失败，已保留暂停状态");
+        logFailure(`resume failed error=${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
+    },
+  });
+
   pi.on("session_start", (event, ctx) => {
     const entries = ctx.sessionManager.getEntries();
     let restored: FollowupState | null = null;

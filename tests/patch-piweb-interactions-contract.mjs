@@ -306,7 +306,7 @@ test("extension uses only ordinary input/lifecycle APIs and sends one follow-up 
     ["agent_settled", "input", "message_end", "session_shutdown", "session_start"],
     "the extension must not hook context, system prompts, tools, or provider requests",
   );
-  assert.deepEqual([...runtime.commands.keys()], ["lop-followup"]);
+  assert.deepEqual([...runtime.commands.keys()], ["lop-followup", "lop-followup-control"]);
 
   await runtime.fire("session_start", { reason: "startup" });
   await runtime.commands.get("lop-followup").handler("root-fix", runtime.ctx);
@@ -324,6 +324,57 @@ test("extension uses only ordinary input/lifecycle APIs and sends one follow-up 
   assert.equal(runtime.sent.length, 1);
   assert.equal(runtime.state().phase, "off");
   assert.equal(runtime.statuses.has("lop-followup"), false);
+});
+
+test("manual controls pause without aborting, then resume immediately with no new user input", async () => {
+  for (const mode of Object.keys(FOLLOWUP_PROFILES)) {
+    const runtime = createFakeFollowupRuntime();
+    await runtime.fire("session_start", { reason: "startup" });
+    await runtime.commands.get("lop-followup").handler(mode, runtime.ctx);
+    await runtime.fire("input", { source: "rpc", text: "原始目标" });
+    const control = runtime.commands.get("lop-followup-control").handler;
+    await control(`pause ${mode}`, runtime.ctx);
+    assert.equal(runtime.state().phase, "paused");
+    assert.equal(runtime.sent.length, 0, "pause must not submit anything or stop work");
+    await control(`resume ${mode}`, runtime.ctx);
+    assert.equal(runtime.state().phase, "active", "not armed: no next manual message needed");
+    assert.equal(runtime.state().mode, mode);
+    assert.deepEqual(runtime.sent, [FOLLOWUP_PROFILES[mode].prompt]);
+    await control(`resume ${mode}`, runtime.ctx);
+    assert.equal(runtime.sent.length, 1, "repeated resume must not duplicate continuation");
+    await runtime.fire("input", { source: "extension", text: runtime.sent[0] });
+    assert.equal(runtime.state().phase, "active");
+  }
+});
+
+test("resume during an existing turn becomes active immediately without sending extra work", async () => {
+  const runtime = createFakeFollowupRuntime();
+  await runtime.fire("session_start", { reason: "startup" });
+  await runtime.commands.get("lop-followup").handler("target", runtime.ctx);
+  const control = runtime.commands.get("lop-followup-control").handler;
+  runtime.setIdle(false);
+  await control("pause target", runtime.ctx);
+  await runtime.fire("message_end", { message: { role: "assistant", content: "处理中", stopReason: "stop" } });
+  await control("resume target", runtime.ctx);
+  assert.equal(runtime.state().phase, "active");
+  assert.equal(runtime.sent.length, 0);
+  runtime.setIdle(true);
+  await runtime.fire("agent_settled");
+  assert.deepEqual(runtime.sent, [FOLLOWUP_PROFILES.target.prompt]);
+});
+
+test("failed resume retains the paused goal; stale target and off state are rejected", async () => {
+  const runtime = createFakeFollowupRuntime({ sendError: new Error("send failed") });
+  await runtime.fire("session_start", { reason: "startup" });
+  const control = runtime.commands.get("lop-followup-control").handler;
+  await assert.rejects(control("resume target", runtime.ctx), /目标状态/);
+  await runtime.commands.get("lop-followup").handler("target", runtime.ctx);
+  await control("pause target", runtime.ctx);
+  await assert.rejects(control("resume root-fix", runtime.ctx), /目标状态/);
+  await assert.rejects(control("resume target", runtime.ctx), /send failed/);
+  assert.equal(runtime.state().phase, "paused");
+  assert.equal(runtime.state().mode, "target");
+  assert.equal(runtime.state().reason, "manual-resume-failed");
 });
 
 test("plan mode sends the execution handoff once and disarms before that turn", async () => {
