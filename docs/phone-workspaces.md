@@ -21,9 +21,13 @@ phone workspace close a
 phone workspace stop
 ```
 
-`observe a b` returns independent timestamps, display IDs and snapshots; it is concurrent observation, not an atomic same-instant snapshot across apps. Every action consumes its snapshot and also compares a freshly read UI fingerprint. Snapshot lifetime is 10 seconds. Observe again after every action; do not replay actions after transport timeouts.
+`observe a b` returns independent timestamps, display IDs and snapshots; it is concurrent observation, not an atomic same-instant snapshot across apps. Every action consumes its snapshot and also compares a freshly read UI fingerprint. Snapshot lifetime is 10 seconds. Observe again after every action; do not replay actions after transport timeouts. Launch/page-transition animations can legitimately reject a fresh-looking snapshot: wait for stable observations before deciding on the next action. Continuously changing UI may remain unsupported by this strict first-version guard.
 
-Two UI slots are available. Actions within a workspace are serialized in the Android broker; independent workspaces can read and perform node actions concurrently. Complete low-level gestures serialize only around the shared input injector. More tasks should queue, not create more heavy App instances.
+Up to **10 UI slots** are available. `start` creates no displays; each `open` allocates one, `close` releases it, and `stop` releases all owned displays. `observe` accepts 1–10 distinct names. Eleven live workspaces are refused; completed tasks must close their workspace instead of leaving ten unused Apps resident.
+
+Actions within a workspace remain serialized; independent workspaces can read and perform node actions concurrently. Ten read workers, a bounded 20-read queue and 12 request workers support the larger limit without unbounded fanout. A batch has one 15-second deadline, not 15 seconds per App. Complete low-level gestures still serialize only around the shared injector. These are admission limits, not a guarantee that every ten-App workload is fast.
+
+After upgrading, `start` verifies the broker actually reports capacity 10. An old two-slot broker is not silently reused or replaced: finish its tasks, run `stop`, install the matching CI artifact, then `start`. `list.maxWorkspaces` reports the running broker's real limit.
 
 ## Isolation and safety
 
@@ -48,6 +52,17 @@ Local contracts:
 node --test tests/phone.test.mjs tests/phone-workspaces.test.mjs
 ```
 
-Device acceptance: two distinct nonzero displays, correct package trees, independent node actions and reads, rejected same-package/third-slot/stale-snapshot operations, no physical-screen package change, main-screen XML readback still working, stop releases both displays. These must be measured on the target device; compile success is not device acceptance.
+Device acceptance: step through 2→4→6→10 distinct nonzero displays, verify correct package trees, independent node actions and reads, rejected same-package/eleventh-slot/stale-snapshot operations, unchanged physical-screen package/focus, working main-screen XML readback, and stop releasing every owned display. These must be measured on the target device; compile success is not device acceptance.
+
+## Historical two-slot baseline (2026-09-12, local time)
+
+- Device: 2602BRT18C / Android 16 (API 36). Broker CI commit `8792d31ce8d37a3421ae729ffe8c8ee140346052`, [successful cloud run](https://github.com/lop-spec/pi-portable/actions/runs/34376514732). Artifact SHA256: `87cdfb22b1f7bf78c00250317cdab726363c7b8eb78a7c79be0ae3a12d64b3ef`.
+- Calculator and clock ran on distinct nonzero displays. Concurrent direct calculator text input and clock stopwatch navigation passed; original calculator expression and alarm tab were restored without changing alarm settings. Two-display screenshots were captured successfully.
+- Joint read: 326–492 ms host end-to-end in the measured samples; sequential two-call read: 648 ms. One concurrent text/click pair: 582 ms. These are smoke-test samples, not a sustained throughput or thermal benchmark.
+- Display-scoped tap and scroll both changed only the intended App; the physical-screen package remained `com.miui.home`, and `mTopFocusedDisplayId` remained 0 after actions.
+- Duplicate-App, main-screen App and third-slot allocation, reused/cross-workspace tokens and tokens older than 10 seconds were rejected. Existing `phone ui` continued working with the broker active and after stop. Stop removed both virtual displays and the owned broker process; the physical display and desktop remained.
+- One two-slot resource sample: broker PSS 110299 KiB (about 108 MiB), RSS 188272 KiB; Android thermal status 0. App process memory is additional. This does not establish a sustained memory/thermal limit.
+- Host tests: 35 passed on each managed Windows host, including existing unlock protection, transport recovery and rapid shared-directory backup tests. Source/runtime files were synchronized with physical backup and SHA256 readback. Credentials and live connection state were not synchronized.
+- Not yet established: every third-party App, a real user typing on the physical screen at the same time, App migration caused by the user reopening a leased App, and sustained memory/thermal limits. The historical measurements above cover only two slots; they are not evidence of ten-slot compatibility. There is no automatic thermal controller.
 
 Architecture references: Android multi-resume and per-display focus documentation; scrcpy virtual-display documentation; ShadowAuto's shell-context/UiAutomation design. This implementation deliberately omits ShadowAuto's model loop, clipboard fallback and force-kill startup behavior.

@@ -16,6 +16,7 @@ const stateFile = ctx => path.join(ctx.dir, 'workspaces.json');
 const remoteJar = '/data/local/tmp/pi-phone-workspaces.jar';
 const remoteLog = '/data/local/tmp/pi-phone-workspaces.log';
 const queues = new Map();
+export const MAX_WORKSPACES = 10; // Cross-language agreement is enforced by the CI contract test.
 
 export async function workspaceLease(key, work) {
   const previous = queues.get(key) || Promise.resolve();
@@ -29,7 +30,7 @@ export function parseWorkspaceCommand(args) {
   if (['help', 'start', 'stop', 'list'].includes(op)) { require(args.length <= 1, `Unexpected ${op} arguments`); return { op }; }
   if (op === 'observe') {
     const workspaces = args.slice(1);
-    require(workspaces.length >= 1 && workspaces.length <= 2 && new Set(workspaces).size === workspaces.length && workspaces.every(x => namePattern.test(x)), 'observe requires one or two distinct workspace names');
+    require(workspaces.length >= 1 && workspaces.length <= MAX_WORKSPACES && new Set(workspaces).size === workspaces.length && workspaces.every(x => namePattern.test(x)), `observe requires 1–${MAX_WORKSPACES} distinct workspace names`);
     return { op, workspaces };
   }
   require(namePattern.test(workspace || ''), 'Invalid workspace name');
@@ -51,6 +52,10 @@ export function parseWorkspaceCommand(args) {
     r.snapshot = rest.at(-1); return r;
   }
   throw Error('Unsupported workspace operation; use phone workspace help');
+}
+export function requireWorkspaceCapacity(ping) {
+  require(ping?.maxWorkspaces === MAX_WORKSPACES, `BROKER_CAPACITY_MISMATCH: client requires ${MAX_WORKSPACES}, broker reports ${ping?.maxWorkspaces ?? 'legacy/unknown'}; install the matching CI artifact and explicitly stop/start. No active workspace was replaced.`);
+  return ping;
 }
 export function validateReply(reply, id) {
   require(reply?.id === id, 'Workspace response identity mismatch');
@@ -86,18 +91,73 @@ export function readWorkspaceState(ctx) {
   require(state.serial === ctx.device.serial && Number.isInteger(state.port) && state.port > 0 && state.port <= 65535 && typeof state.instance === 'string', 'Invalid machine-local workspace state; refusing routing');
   return state;
 }
-export function attachWorkspaceUi(ctx) {
+function rpcSync(port, request, timeout = 25000) {
+  const result = spawnSync(process.execPath, [self, '--internal-rpc', String(port)], {
+    windowsHide: true, encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024,
+    input: JSON.stringify(request),
+  });
+  require(!result.error && result.status === 0, `Shared UI broker unavailable: ${result.error?.code || String(result.stderr).trim().slice(0,400)}; no action replay`);
+  return JSON.parse(result.stdout);
+}
+function backupWorkspaceState(ctx) {
+  // Different devices/reconnections can share one history directory within a second.
+  const r = spawnSync(process.execPath, [path.join(root, 'tools/backup.mjs'), stateFile(ctx), '--label', `workspace-${crypto.randomUUID()}`], { windowsHide: true, encoding: 'utf8', timeout: 10000 });
+  require(!r.error && r.status === 0, `Workspace state backup failed; state retained: ${r.error?.message || (r.stdout + r.stderr).trim() || `exit ${r.status}`}`);
+  log(r.stdout.trim());
+}
+// Called while holding the phone readiness gate. Only probes/reconnects transport;
+// never replays actions, starts a broker, closes live displays, or clears credentials.
+export function reconcileWorkspaceState(ctx, { probe = rpcSync } = {}) {
   const state = readWorkspaceState(ctx);
-  if (!state) return;
-  // Only invoked by phone's existing lockscreen verifier or main-screen UI command.
-  // The process receives no credentials; all DPAPI decryption/input stays in phone.mjs.
+  if (!state) return null;
+  try {
+    const ping = probe(state.port, { op: 'ping' }, 2500);
+    require(ping.instance === state.instance, 'Workspace broker identity changed; no automatic takeover');
+    return state;
+  } catch (error) {
+    if (/identity changed/.test(error.message)) throw error;
+    log(`Workspace transport probe failed; checking device ownership before recovery (${error.message}).`);
+  }
+  // Both successful commands are mandatory; inability to inspect is NOT absence.
+  const sockets = ctx.adb(['shell', 'cat', '/proc/net/unix']);
+  const processes = ctx.adb(['shell', 'ps', '-A', '-o', 'PID,NAME,ARGS']);
+  require(/Num\s+RefCount/.test(sockets) && /PID\s+NAME\s+(?:ARGS|CMD)/.test(processes), 'Cannot establish broker process/socket state; no fallback');
+  const socket = /@pi_phone_workspaces_v1(?:\r?\n|$)/.test(sockets);
+  const processAlive = /com\.lop\.phone\.WorkspaceServer/.test(processes);
+  if (!socket && !processAlive) {
+    backupWorkspaceState(ctx);
+    fs.unlinkSync(stateFile(ctx));
+    log('Broker process and owned socket are both absent; archived stale workspace mapping. Main-phone UI can use the ordinary reader; workspace actions remain stopped.');
+    return null;
+  }
+  require(socket && processAlive, 'Broker process/socket disagree; no second UI connection or automatic restart');
+  const port = Number(ctx.adb(['forward', 'tcp:0', 'localabstract:pi_phone_workspaces_v1']).trim());
+  require(Number.isInteger(port) && port > 0, 'Cannot allocate replacement workspace forward');
+  try {
+    const ping = probe(port, { op: 'ping' }, 2500);
+    require(ping.instance === state.instance && ping.version === state.version, 'Workspace broker identity changed; no automatic takeover');
+    backupWorkspaceState(ctx);
+    const next = { ...state, port };
+    fs.writeFileSync(stateFile(ctx), JSON.stringify(next, null, 2) + '\n');
+    require(readWorkspaceState(ctx).port === port, 'Workspace mapping readback failed');
+    log('Repaired lost ADB forward to the verified existing broker; no broker restart or action replay.');
+    return next;
+  } catch (error) {
+    try { ctx.adb(['forward', '--remove', `tcp:${port}`]); } catch (cleanup) { log(`Replacement forward cleanup failed: ${cleanup.message}`); }
+    throw error;
+  }
+}
+export function attachWorkspaceUi(ctx, ordinaryUi) {
+  if (!readWorkspaceState(ctx)) return;
+  // Reconciliation is lazy so it runs inside the existing cross-process gate.
   ctx.dumpUi = () => {
-    const result = spawnSync(process.execPath, [self, '--internal-rpc', String(state.port)], {
-      windowsHide: true, encoding: 'utf8', timeout: 25000, maxBuffer: 8 * 1024 * 1024,
-      input: JSON.stringify({ op: 'main-ui', instance: state.instance }),
-    });
-    require(!result.error && result.status === 0, 'Shared UI broker unavailable; no second UiAutomation connection or credential retry. Stop workspaces before recovering.');
-    const xml = JSON.parse(result.stdout).xml;
+    const state = reconcileWorkspaceState(ctx);
+    if (!state) {
+      require(typeof ordinaryUi === 'function', 'Broker expired; ordinary main-phone UI reader was not supplied');
+      delete ctx.dumpUi;
+      return ordinaryUi();
+    }
+    const xml = rpcSync(state.port, { op: 'main-ui', instance: state.instance }).xml;
     require(typeof xml === 'string' && xml.includes('<hierarchy') && xml.includes('</hierarchy>'), 'Shared UI broker returned no complete hierarchy');
     return xml;
   };
@@ -115,11 +175,11 @@ async function prepare(ready) {
 }
 async function start(ctx) {
   // Cross-process startup lease; holds the old gate only during installation/connection.
-  let state = readWorkspaceState(ctx);
+  let state = reconcileWorkspaceState(ctx);
   if (state) {
     const ping = await rpc(state.port, { op: 'ping' });
     require(ping.instance === state.instance, 'Workspace broker identity changed; stop stale mapping explicitly');
-    return { ...ping, port: state.port, alreadyRunning: true };
+    return { ...requireWorkspaceCapacity(ping), port: state.port, alreadyRunning: true };
   }
   const artifactDir = path.join(root, 'runtime/android/phone-workspaces');
   const jar = path.join(artifactDir, 'phone-workspaces.jar');
@@ -144,7 +204,7 @@ async function start(ctx) {
   let port;
   try {
     state = readWorkspaceState(ctx);
-    if (state) return await rpc(state.port, { op: 'ping' });
+    if (state) return requireWorkspaceCapacity(await rpc(state.port, { op: 'ping' }));
     ctx.adb(['push', jar, remoteJar]);
     const remoteHash = ctx.adb(['shell', 'sha256sum', remoteJar]).trim().split(/\s/)[0];
     require(remoteHash === meta.sha256, 'Phone server upload hash mismatch');
@@ -170,6 +230,7 @@ async function start(ctx) {
       throw Error(`Workspace server did not become ready: ${last?.message}\n${diagnostic}`);
     }
     require(ping.version === meta.commit, 'Server/CI commit mismatch');
+    requireWorkspaceCapacity(ping);
     state = { serial: ctx.device.serial, port, instance: ping.instance, version: ping.version };
     fs.writeFileSync(stateFile(ctx), JSON.stringify(state, null, 2) + '\n', { flag: 'wx' });
     return { ...ping, port };
@@ -181,14 +242,15 @@ async function start(ctx) {
 export async function workspaceCommand(ctx, args, ready) {
   const request = parseWorkspaceCommand(args);
   if (request.op === 'help') {
-    console.log('phone workspace start | list | stop\nphone workspace open NAME PACKAGE | close NAME\nphone workspace observe A [B] | snapshot NAME | screenshot NAME NEW.png\nphone workspace click NAME REF SNAPSHOT\nphone workspace text NAME REF TEXT SNAPSHOT\nphone workspace tap NAME X Y SNAPSHOT\nphone workspace swipe NAME X Y END_X END_Y DURATION_MS SNAPSHOT\nphone workspace back NAME SNAPSHOT | enter NAME SNAPSHOT\nTwo isolated app leases. Every action consumes a <=10s snapshot. No main-display, clipboard or keyboard fallback.');
+    console.log('phone workspace start | list | stop\nphone workspace open NAME PACKAGE | close NAME\nphone workspace observe NAME [NAME ... up to 10] | snapshot NAME | screenshot NAME NEW.png\nphone workspace click NAME REF SNAPSHOT\nphone workspace text NAME REF TEXT SNAPSHOT\nphone workspace tap NAME X Y SNAPSHOT\nphone workspace swipe NAME X Y END_X END_Y DURATION_MS SNAPSHOT\nphone workspace back NAME SNAPSHOT | enter NAME SNAPSHOT\nUp to 10 isolated app leases, created only by open and released by close/stop. Every action consumes a <=10s snapshot. No main-display, clipboard or keyboard fallback.');
     return;
   }
   if (request.op === 'start') { console.log(JSON.stringify(await prepare(() => ready(() => start(ctx))))); return; }
-  const state = readWorkspaceState(ctx);
+  let state;
+  if (request.op === 'stop') state = reconcileWorkspaceState(ctx);
+  else await prepare(() => ready(() => { state = reconcileWorkspaceState(ctx); }));
   if (!state && request.op === 'stop') { console.log(JSON.stringify({ stopped: true, alreadyStopped: true })); return; }
-  require(state, 'Workspaces not started; run phone workspace start');
-  if (request.op !== 'stop') await prepare(ready);
+  require(state, 'Workspaces not started or expired; run phone workspace start. No workspace action was replayed on the main display.');
   // stop is cleanup-only: it cannot input, read content, unlock, or move tasks to main.
   const output = request.output; delete request.output;
   if (output) require(!fs.existsSync(path.resolve(output)), 'Screenshot output already exists; choose a new filename');

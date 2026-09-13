@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Deterministic shell-only UI broker. No model calls, clipboard, network listener or app data copies. */
 public final class WorkspaceServer {
-    static final int MAX_WORKSPACES = 2;
+    static final int MAX_WORKSPACES = 10;
     static final String SOCKET = "pi_phone_workspaces_v1";
     final ShellContext context;
     final UiAutomation ui;
@@ -42,7 +42,8 @@ public final class WorkspaceServer {
     final HandlerThread frames = new HandlerThread("phone-workspace-frames");
     final Map<String, Workspace> workspaces = new LinkedHashMap<>();
     final Object injectionLock = new Object(); // Complete touch gestures are atomic across the shared injector.
-    final ExecutorService observations = Executors.newFixedThreadPool(MAX_WORKSPACES);
+    final ExecutorService observations = new ThreadPoolExecutor(MAX_WORKSPACES, MAX_WORKSPACES, 0, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(MAX_WORKSPACES * 2));
     final String version;
     final String instance = UUID.randomUUID().toString();
     volatile boolean running = true;
@@ -160,7 +161,7 @@ public final class WorkspaceServer {
         require(pkg.matches("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+"), "INVALID_PACKAGE");
         Workspace old = workspaces.get(name);
         if (old != null) { require(old.pkg.equals(pkg), "WORKSPACE_ALREADY_ASSIGNED"); assertTarget(old); return old; }
-        require(workspaces.size() < MAX_WORKSPACES, "WORKSPACE_CAPACITY: two UI slots; queue additional tasks");
+        require(workspaces.size() < MAX_WORKSPACES, "WORKSPACE_CAPACITY: " + MAX_WORKSPACES + " UI slots; close completed workspaces or queue additional tasks");
         for (Workspace w : workspaces.values()) require(!w.pkg.equals(pkg), "APP_ALREADY_LEASED: " + pkg);
         String main = mainPackage(); require(!main.equals(pkg), "MAIN_DISPLAY_APP_BUSY: leave the app on main before allocating it");
         Intent intent = context.getPackageManager().getLaunchIntentForPackage(pkg);
@@ -258,15 +259,26 @@ public final class WorkspaceServer {
     }
     JSONObject observe(JSONArray names) throws Exception {
         require(names.length() >= 1 && names.length() <= MAX_WORKSPACES, "INVALID_OBSERVE_COUNT");
-        Set<String> unique = new HashSet<>(); List<Future<JSONObject>> pending = new ArrayList<>();
-        long started = System.currentTimeMillis();
+        Set<String> unique = new HashSet<>(); List<Workspace> targets = new ArrayList<>();
+        // Validate the entire batch before any snapshot token is replaced.
         for (int i = 0; i < names.length(); i++) {
-            String name = names.getString(i); require(unique.add(name), "DUPLICATE_WORKSPACE");
-            Workspace w = get(name); pending.add(observations.submit(() -> snapshot(w)));
+            String name = names.getString(i); require(unique.add(name), "DUPLICATE_WORKSPACE"); targets.add(get(name));
         }
-        JSONArray results = new JSONArray();
-        for (Future<JSONObject> task : pending) results.put(task.get(15, TimeUnit.SECONDS));
-        return new JSONObject().put("observations", results).put("elapsedMs", System.currentTimeMillis() - started);
+        List<Future<JSONObject>> pending = new ArrayList<>();
+        long started = System.currentTimeMillis(), deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+        try {
+            for (Workspace w : targets) pending.add(observations.submit(() -> snapshot(w)));
+            JSONArray results = new JSONArray();
+            for (Future<JSONObject> task : pending) {
+                long left = deadline - System.nanoTime(); require(left > 0, "OBSERVATION_TIMEOUT: observe again before deciding");
+                results.put(task.get(left, TimeUnit.NANOSECONDS));
+            }
+            return new JSONObject().put("observations", results).put("elapsedMs", System.currentTimeMillis() - started);
+        } catch (RejectedExecutionException e) {
+            throw new IllegalStateException("OBSERVATION_CAPACITY: bounded read queue is full; no action was replayed");
+        } finally {
+            for (Future<JSONObject> task : pending) if (!task.isDone()) task.cancel(true);
+        }
     }
     void fresh(Workspace w, String token) throws Exception {
         assertTarget(w);
@@ -363,7 +375,8 @@ public final class WorkspaceServer {
     }
     JSONObject dispatch(JSONObject r) throws Exception {
         String op = r.getString("op");
-        if (op.equals("ping")) return new JSONObject().put("version", version).put("instance", instance).put("pid", android.os.Process.myPid());
+        if (op.equals("ping")) return new JSONObject().put("version", version).put("instance", instance)
+                .put("pid", android.os.Process.myPid()).put("maxWorkspaces", MAX_WORKSPACES);
         require(instance.equals(r.optString("instance")), "BROKER_IDENTITY_CHANGED: explicit reconnect required");
         if (op.equals("list")) return list();
         if (op.equals("main-ui")) return mainUi();
@@ -410,7 +423,9 @@ public final class WorkspaceServer {
     }
     void run() throws Exception {
         listener = new LocalServerSocket(SOCKET);
-        ThreadPoolExecutor clients = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16));
+        int clientThreads = MAX_WORKSPACES + 2; // Ten independent callers plus ordinary UI/control traffic.
+        ThreadPoolExecutor clients = new ThreadPoolExecutor(clientThreads, clientThreads, 0, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(clientThreads * 2));
         while (running) {
             LocalSocket socket = listener.accept();
             try { clients.execute(() -> serve(socket)); }

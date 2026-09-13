@@ -27,8 +27,13 @@ export function chooseDevice(devices, serial) {
 export function parsePolicy(text) {
   const delegate = text.match(/KeyguardServiceDelegate[\s\S]*?(?=\n\S|$)/)?.[0] || '';
   const showing = delegate.match(/\bshowing=(true|false)/) || text.match(/\b(?:mKeyguardShowing|mShowingLockscreen)=(true|false)/);
-  const awake = text.match(/\bmAwake=(true|false)/);
-  return { locked: showing ? showing[1] === 'true' : null, awake: awake ? awake[1] === 'true' : null };
+  const legacyAwake = text.match(/\bmAwake=(true|false)/);
+  const interactive = delegate.match(/\binteractiveState=(\w+)/)?.[1];
+  const screen = delegate.match(/\bscreenState=(\w+)/)?.[1];
+  const awake = interactive && screen
+    ? interactive === 'INTERACTIVE_STATE_AWAKE' && screen === 'SCREEN_STATE_ON'
+    : legacyAwake ? legacyAwake[1] === 'true' : null;
+  return { locked: showing ? showing[1] === 'true' : null, awake };
 }
 export function credentialField(xml, kind) {
   const nodes = xml.match(/<node\b[^>]*>/g) || [];
@@ -58,7 +63,7 @@ export function dumpUi(adb) {
 }
 export function secretCommand(secret) {
   if (typeof secret !== 'string' || !/^[\x21-\x7e]{4,64}$/.test(secret) || secret.includes('%s')) throw Error('Unsupported credential format; no input sent.');
-  return `input text '${secret.replaceAll("'", "'\\''")}'\n`;
+  return `input -d 0 text '${secret.replaceAll("'", "'\\''")}'\n`;
 }
 function run(file, args, options = {}) {
   const r = spawnSync(file, args, { windowsHide: true, encoding: 'utf8', timeout: 12000, maxBuffer: 16 * 1024 * 1024, ...options });
@@ -105,57 +110,98 @@ export function exclusive(ctx, work) {
 }
 export function ensureReady(ctx) {
   const { adb, policy, dir, device } = ctx;
+  const wait = ctx.sleep || sleep;
   const blocked = path.join(dir, 'unlock-blocked');
-  const verified = () => {
-    const state = policy();
-    if (state.locked === null) throw Error('Unknown keyguard state; refusing credential input and phone operation.');
-    if (!state.locked) {
-      if (fs.existsSync(blocked)) { fs.unlinkSync(blocked); log('Observed unlocked phone; clearing failed-attempt latch.'); }
-      return true;
-    }
-    return false;
+  const started = Date.now();
+  let stage = 'wake', credential;
+  const state = () => {
+    const s = policy();
+    if (typeof s.locked !== 'boolean') throw Error('Unknown keyguard state; refusing credential input and phone operation.');
+    if (typeof s.awake !== 'boolean') throw Error('Unknown screen/interactive state; refusing credential input and phone operation.');
+    return s;
   };
-  adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']);
-  sleep(350);
-  if (verified()) return { serial: device.serial, locked: false, ready: true };
-  if (fs.existsSync(blocked)) throw Error('Previous unlock did not verify. Automatic input blocked; manually unlock or re-enroll the correct credential.');
+  const complete = s => {
+    if (s.locked || !s.awake) return null;
+    if (fs.existsSync(blocked)) { fs.unlinkSync(blocked); log('Observed awake, unlocked phone; clearing submission guard.'); }
+    return { serial: device.serial, locked: false, awake: true, ready: true };
+  };
+  const wake = () => {
+    adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']);
+    for (let i = 0; i < 12; i++) { const s = state(); if (s.awake) return s; wait(100); }
+    throw Error('Screen did not become interactive; no credential sent, no retry guard created.');
+  };
   const credentialPath = path.join(dir, 'credential.json');
-  if (!fs.existsSync(credentialPath)) throw Error('Phone connected but locked; credential not enrolled. Use phone enroll pin (or password) in your own terminal.');
-  const dismiss = adb(['shell', 'wm', 'dismiss-keyguard']);
-  if (/error|exception/i.test(dismiss)) log('Keyguard dismissal was declined; checking the credential screen instead.');
-  const size = adb(['shell', 'wm', 'size']).match(/(?:Override|Physical) size: (\d+)x(\d+)/g)?.at(-1)?.match(/(\d+)x(\d+)/);
-  if (!size) throw Error('Cannot determine screen dimensions; no credential sent.');
-  const [, w, h] = size.map(Number);
-  adb(['shell', 'input', 'swipe', String(Math.round(w / 2)), String(Math.round(h * .8)), String(Math.round(w / 2)), String(Math.round(h * .25)), '300']);
-  sleep(500);
-  if (verified()) return { serial: device.serial, locked: false, ready: true };
-  // Only metadata is read here. Decrypt only after confirming a known SystemUI entry field.
-  const meta = JSON.parse(fs.readFileSync(credentialPath, 'utf8').replace(/^\uFEFF/, ''));
-  const xml = ctx.dumpUi ? ctx.dumpUi() : dumpUi(adb);
-  const field = credentialField(xml, meta.kind);
-  if (!field || /(?:try again in|too many attempts|重试|秒后|分钟后)/i.test(xml)) throw Error('No supported SystemUI credential field, or lockout shown; no credential sent.');
-  if (verified()) return { serial: device.serial, locked: false, ready: true };
-  adb(['shell', 'input', 'tap', String(field.x), String(field.y)]);
-  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(tools, 'phone-credential.ps1'), '-Action', 'read', '-Path', credentialPath, '-Serial', device.serial];
-  let credential;
-  try { credential = JSON.parse(run(ps, args, { sensitive: true }).replace(/^\uFEFF/, '')); }
-  catch { throw Error('Cannot decrypt/parse local credential (details redacted); no credential sent.'); }
-  if (credential.kind === 'pin' && !/^\d{4,16}$/.test(credential.secret)) throw Error('Invalid stored PIN; no credential sent.');
-  const input = secretCommand(credential.secret);
-  // Persist BEFORE sending; a crash or subsequent invocation must not repeat a failed PIN.
-  fs.writeFileSync(blocked, `Attempt started ${new Date().toISOString()}\n`, { flag: 'wx' });
-  if (policy().locked !== true) throw Error('Keyguard changed before clearing entry; no credential sent.');
-  adb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END', ...Array(64).fill('KEYCODE_DEL')]);
-  if (policy().locked !== true) throw Error('Keyguard changed before input; no credential sent.');
-  adb(['shell'], { input, sensitive: true });
-  credential.secret = '';
-  sleep(700);
-  if (!verified()) adb(['shell', 'input', 'keyevent', 'KEYCODE_ENTER']);
-  for (let i = 0; i < 6; i++) {
-    if (verified()) { log('Credential unlock verified.'); return { serial: device.serial, locked: false, ready: true }; }
-    sleep(400);
-  }
-  throw Error('Unlock failed verification. No retry; manually unlock and check the saved credential.');
+  // Preparation may be repeated; a potentially submitted credential may NEVER be repeated.
+  // In particular, MIUI's 10s keyguard timer can expire during UI dump or DPAPI.
+  try {
+    let ready = complete(wake());
+    if (ready) return ready;
+    if (fs.existsSync(blocked)) throw Error('Previous credential submission was not verified. Automatic input blocked; manually unlock or explicitly re-enroll the correct credential.');
+    if (!fs.existsSync(credentialPath)) throw Error('Phone connected but locked; credential not enrolled. Use phone enroll pin (or password) in your own terminal.');
+    const meta = JSON.parse(fs.readFileSync(credentialPath, 'utf8').replace(/^\uFEFF/, ''));
+    for (let preparation = 0; preparation < 3; preparation++) {
+      stage = 'prepare';
+      if (preparation) wake();
+      ready = complete(state()); if (ready) return ready;
+      const dismiss = adb(['shell', 'wm', 'dismiss-keyguard']);
+      if (/error|exception/i.test(dismiss)) log('Keyguard dismissal declined; inspecting the credential screen without sending credentials.');
+      wait(200);
+      const xml = ctx.dumpUi ? ctx.dumpUi() : dumpUi(adb);
+      let s = state(); ready = complete(s); if (ready) return ready;
+      if (!s.awake) { log(`stage=prepare reason=screen-slept preparation=${preparation + 1}; no credential sent, waking and reacquiring UI.`); continue; }
+      const field = credentialField(xml, meta.kind);
+      if (/(?:try again in|too many attempts|重试|秒后|分钟后)/i.test(xml)) throw Error('Lockout shown; no credential sent.');
+      if (!field) throw Error('No supported SystemUI credential field; no credential sent.');
+      stage = 'decrypt';
+      if (!credential) {
+        const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(tools, 'phone-credential.ps1'), '-Action', 'read', '-Path', credentialPath, '-Serial', device.serial];
+        try { credential = ctx.loadCredential ? ctx.loadCredential() : JSON.parse(run(ps, args, { sensitive: true }).replace(/^\uFEFF/, '')); }
+        catch { throw Error('Cannot decrypt/parse local credential (details redacted); no credential sent.'); }
+        if (credential.kind !== meta.kind || (credential.kind === 'pin' && !/^\d{4,16}$/.test(credential.secret))) throw Error('Invalid stored credential; no credential sent.');
+      }
+      const input = secretCommand(credential.secret);
+      s = state(); ready = complete(s); if (ready) return ready;
+      if (!s.awake) { log('stage=decrypt reason=screen-slept; no credential sent, waking and reacquiring UI.'); continue; }
+      stage = 'clear-entry';
+      adb(['shell', 'input', '-d', '0', 'tap', String(field.x), String(field.y)]);
+      s = state(); ready = complete(s); if (ready) return ready;
+      if (!s.awake) { log('stage=focus reason=screen-slept; no credential sent, reacquiring UI.'); continue; }
+      adb(['shell', 'input', '-d', '0', 'keyevent', 'KEYCODE_MOVE_END', ...Array(meta.kind === 'pin' ? 16 : 64).fill('KEYCODE_DEL')]);
+      s = state(); ready = complete(s); if (ready) return ready;
+      if (!s.awake) { log('stage=clear-entry reason=screen-slept; no credential sent, reacquiring UI.'); continue; }
+      // The guard starts only at dispatch, not during preparation. Device-side checks
+      // close the host-to-device gap; a proven skip is safe to recover, an ambiguous
+      // transport failure leaves the guard intact. No secret is placed in argv/logs.
+      stage = 'dispatch';
+      fs.writeFileSync(blocked, JSON.stringify({ version: 2, stage, at: new Date().toISOString() }) + '\n', { flag: 'wx' });
+      const script = `if dumpsys power | grep -q 'mWakefulness=Awake' && dumpsys window policy | grep -q 'showing=true'; then\n${input}input_status=$?\nif [ "$input_status" -ne 0 ]; then printf 'phone-dispatch:input-error\\n'; exit "$input_status"; fi\nprintf 'phone-dispatch:sent\\n'\nelse\nprintf 'phone-dispatch:skipped\\n'\nfi\n`;
+      const result = adb(['shell'], { input: script, sensitive: true }).trim();
+      if (result === 'phone-dispatch:skipped') {
+        fs.unlinkSync(blocked);
+        log('stage=dispatch reason=device-state-changed; device confirmed no input sent, reacquiring UI.');
+        continue;
+      }
+      if (result !== 'phone-dispatch:sent') throw Error('Credential dispatch result unknown; submission guard retained, no retry.');
+      stage = 'verify';
+      fs.writeFileSync(blocked, JSON.stringify({ version: 2, stage: 'submitted', at: new Date().toISOString() }) + '\n');
+      wait(500);
+      s = state(); ready = complete(s);
+      if (ready) { log(`Credential unlock verified in ${Date.now() - started}ms.`); return ready; }
+      // Enter is not a credential retry. Never send it to a sleeping or unlocked display.
+      if (s.awake && s.locked) adb(['shell', 'input', '-d', '0', 'keyevent', 'KEYCODE_ENTER']);
+      for (let i = 0; i < 32; i++) {
+        s = state(); ready = complete(s);
+        if (ready) { log(`Credential unlock verified in ${Date.now() - started}ms.`); return ready; }
+        if (!s.awake) throw Error('Screen slept after credential submission; submission guard retained, no retry.');
+        wait(250);
+      }
+      throw Error('Unlock failed verification after credential submission. Guard retained; no credential retry.');
+    }
+    throw Error('Preparation repeatedly lost an interactive screen; no credential sent and no persistent block created.');
+  } catch (error) {
+    log(`stage=${stage} elapsed_ms=${Date.now() - started} submission_guard=${fs.existsSync(blocked)} reason=${error.message}`);
+    throw error;
+  } finally { if (credential) credential.secret = ''; }
 }
 function enroll(ctx, kind, stdin) {
   if (!['pin', 'password'].includes(kind)) throw Error('Supported lock types: pin, password. Pattern not supported.');
@@ -187,7 +233,7 @@ export async function main(args = process.argv.slice(2)) {
     console.log(JSON.stringify({ ...ctx.device, ...ctx.policy(), credentialEnrolled: fs.existsSync(path.join(ctx.dir, 'credential.json')), automaticInputBlocked: fs.existsSync(path.join(ctx.dir, 'unlock-blocked')) }));
     return;
   }
-  if (command !== 'enroll') attachWorkspaceUi(ctx);
+  if (command !== 'enroll') attachWorkspaceUi(ctx, () => dumpUi(ctx.adb));
   if (command === 'workspace') return workspaceCommand(ctx, rest, work => exclusive(ctx, () => { ensureReady(ctx); return work ? work() : undefined; }));
   return exclusive(ctx, () => {
     if (command === 'enroll') return enroll(ctx, rest[0] || 'pin', rest.includes('--stdin'));
