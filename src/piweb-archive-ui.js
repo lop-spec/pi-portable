@@ -795,9 +795,9 @@
       button: "View account pool usage",
       remaining: "left",
       used: "Used",
-      resets: "Reset credits",
+      resets: "Reset card balance (not current redemption eligibility)",
       resetAt: "Resets",
-      resetCountShort: "Credits",
+      resetCountShort: "Reset cards",
       current: "Current",
       cached: "Cached",
       switchAccount: "Switch",
@@ -821,9 +821,9 @@
       button: "查看轮转账号池额度",
       remaining: "剩余",
       used: "已用",
-      resets: "重置次数",
+      resets: "重置卡余额（不是当前可立即使用的次数）",
       resetAt: "重置时间",
-      resetCountShort: "次数",
+      resetCountShort: "重置卡",
       current: "当前",
       cached: "缓存",
       switchAccount: "切换",
@@ -847,9 +847,9 @@
       button: "檢視輪轉帳號池額度",
       remaining: "剩餘",
       used: "已用",
-      resets: "重置次數",
+      resets: "重置卡餘額（不是目前可立即使用的次數）",
       resetAt: "重置時間",
-      resetCountShort: "次數",
+      resetCountShort: "重置卡",
       current: "目前",
       cached: "快取",
       switchAccount: "切換",
@@ -1050,7 +1050,8 @@
     meta.className = "pi-account-usage-meta";
     appendText(meta, "pi-account-usage-remaining-compact", `${text.remaining} ${account.remainingPercent == null ? "—" : `${account.remainingPercent}%`}`);
     appendText(meta, "", account.usedPercent == null ? text.unavailable : `${text.used} ${account.usedPercent}%`);
-    appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
+    const resetCards = appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
+    resetCards.title = text.resets;
     const reset = appendText(meta, "", account.resetAt ? exactReset(account.resetAt) : `${text.resetAt} —`);
     if (account.resetAt) {
       const full = exactReset(account.resetAt, true);

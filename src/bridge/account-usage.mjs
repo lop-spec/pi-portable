@@ -7,6 +7,7 @@ import path from "node:path";
 
 export const ACCOUNT_USAGE_REFRESH_MS = 4 * 60_000;
 export const ACCOUNT_USAGE_FRESH_MS = 5 * 60_000;
+const ACCOUNT_USAGE_CACHE_VERSION = 2; // v1 mixed applicable reset counts with card balances.
 
 function safeMessage(error) {
   const status = Number(error?.statusCode || 0);
@@ -54,19 +55,25 @@ function normalizeResetAt(value) {
   return new Date(milliseconds).toISOString();
 }
 
+function resetCreditCount(value) {
+  const numeric = typeof value === "number" || (typeof value === "string" && value.trim() !== "")
+    ? Number(value) : NaN;
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null;
+}
+
 export function parseAccountUsagePayload(value) {
   const primary = value?.rate_limit?.primary_window || {};
   const usedValue = Number(primary.used_percent);
   if (!Number.isFinite(usedValue)) throw new Error("usage response has no primary quota");
   const usedPercent = Math.min(100, Math.max(0, Math.round(usedValue)));
-  const resetValue = value?.rate_limit_reset_credits?.applicable_available_count
-    ?? value?.rate_limit_reset_credits?.available_count;
-  const resetNumber = resetValue === null || resetValue === undefined ? null : Number(resetValue);
+  // available_count is the banked card balance. applicable_available_count can
+  // be zero while cards remain; it describes current redemption eligibility.
+  const resetCredits = resetCreditCount(value?.rate_limit_reset_credits?.available_count);
   return {
     usedPercent,
     remainingPercent: Math.max(0, 100 - usedPercent),
     resetAt: normalizeResetAt(primary.resets_at ?? primary.reset_at),
-    resetCredits: Number.isFinite(resetNumber) ? Math.max(0, Math.trunc(resetNumber)) : null,
+    resetCredits,
     allowed: value?.rate_limit?.allowed !== false,
     planType: String(value?.plan_type || ""),
   };
@@ -84,9 +91,7 @@ function cleanCachedRecord(record) {
     usedPercent: Math.min(100, Math.max(0, Math.round(used))),
     remainingPercent: Math.min(100, Math.max(0, Math.round(remaining))),
     resetAt: normalizeResetAt(record.resetAt),
-    resetCredits: record.resetCredits !== null && record.resetCredits !== undefined && Number.isFinite(Number(record.resetCredits))
-      ? Math.max(0, Math.trunc(Number(record.resetCredits)))
-      : null,
+    resetCredits: resetCreditCount(record.resetCredits),
     allowed: record.allowed !== false,
     planType: String(record.planType || ""),
     fetchedAt: new Date(fetchedAtMs).toISOString(),
@@ -100,6 +105,10 @@ function readCache(cacheFile, log) {
   try {
     const value = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
     const records = Array.isArray(value?.accounts) ? value.accounts.map(cleanCachedRecord).filter(Boolean) : [];
+    if (value?.version !== ACCOUNT_USAGE_CACHE_VERSION && records.length) {
+      for (const record of records) record.resetCredits = null;
+      log("重置卡缓存口径更新：旧次数未验证为余额，显示未知并等待刷新；其他额度缓存保留");
+    }
     return new Map(records.map((record) => [record.id, record]));
   } catch (error) {
     log(`账号额度缓存读取失败：${safeMessage(error)}`);
@@ -115,7 +124,7 @@ function writeCache(cacheFile, records, log) {
   const temporary = `${cacheFile}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    fs.writeFileSync(temporary, JSON.stringify({ version: 1, accounts }, null, 2) + "\n", "utf8");
+    fs.writeFileSync(temporary, JSON.stringify({ version: ACCOUNT_USAGE_CACHE_VERSION, accounts }, null, 2) + "\n", "utf8");
     fs.renameSync(temporary, cacheFile);
   } catch (error) {
     log(`账号额度缓存落盘失败：${safeMessage(error)}`);
@@ -197,6 +206,7 @@ export function createAccountUsageMonitor(options) {
         const previous = records.get(item.member.id) || null;
         if (!item.error) {
           successes += 1;
+          if (item.usage.resetCredits === null) log(`账号重置卡余额不可用：${item.member.id} available_count 缺失或无效，显示未知而非 0`);
           records.set(item.member.id, {
             id: item.member.id,
             email: item.identity.email || previous?.email || "",
@@ -271,9 +281,7 @@ export function createAccountUsageMonitor(options) {
         remainingPercent: record?.remainingPercent !== null && record?.remainingPercent !== undefined && Number.isFinite(Number(record.remainingPercent))
           ? Number(record.remainingPercent)
           : null,
-        resetCredits: record?.resetCredits !== null && record?.resetCredits !== undefined && Number.isFinite(Number(record.resetCredits))
-          ? Number(record.resetCredits)
-          : null,
+        resetCredits: resetCreditCount(record?.resetCredits),
         resetAt: record?.resetAt || null,
         allowed: record ? record.allowed !== false : false,
         planType: String(record?.planType || ""),

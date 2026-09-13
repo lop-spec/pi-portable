@@ -55,7 +55,10 @@ test("quota control is half-area compact, cached, keyboard accessible, and opens
   assert.match(quotaUi, /switchAccount: "切换"/u);
   assert.match(quotaUi, /className = "pi-account-usage-switch"/u);
   assert.match(quotaUi, /remaining: "剩余"/u);
-  assert.match(quotaUi, /resets: "重置次数"/u);
+  assert.match(quotaUi, /resets: "重置卡余额（不是当前可立即使用的次数）"/u);
+  assert.match(quotaUi, /resetCountShort: "重置卡"/u);
+  assert.match(quotaUi, /account\.resetCredits \?\? "—"/u, "unknown balances must not be displayed as zero");
+  assert.match(quotaUi, /resetCards\.title = text\.resets/u);
   assert.match(quotaUi, /resetAt: "重置时间"/u);
   assert.match(quotaUi, /account\.email/u);
   assert.match(quotaUi, /console\.error\("\[pi-web account usage\] refresh failed:/u, "refresh degradation must never be silent");
@@ -88,7 +91,7 @@ test("UI proxy serves a sanitized same-origin quota snapshot", async () => {
         ok: true,
         enabled: true,
         modelTokensConsumed: 0,
-        accounts: [{ id: "acct2", email: "acct2@gmail.com", remainingPercent: 91 }],
+        accounts: [{ id: "acct2", email: "acct2@gmail.com", remainingPercent: 91, resetCredits: 2 }],
       }), { status: 200, headers: { "content-type": "application/json" } });
     },
   });
@@ -99,6 +102,7 @@ test("UI proxy serves a sanitized same-origin quota snapshot", async () => {
   const body = JSON.parse(response.body);
   assert.equal(body.modelTokensConsumed, 0);
   assert.equal(body.accounts[0].email, "acct2@gmail.com");
+  assert.equal(body.accounts[0].resetCredits, 2, "real card balance must survive the same-origin proxy unchanged");
   assert.equal(response.headers["cache-control"], "no-store");
   fs.rmSync(temporary, { recursive: true, force: true });
 });
