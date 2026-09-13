@@ -34,6 +34,11 @@ export const PEER_OF = { yangyong: "desktop-3egb4lb", "desktop-3egb4lb": "yangyo
 const SSH_USER = "lop";
 const SSH_OPTS = ["-i", "C:/Users/lop/.ssh/id_ed25519", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR"];
 const CHECKABLE_RE = /\.(mjs|cjs|js)$/iu;
+// Explicit transport override for hosts whose SFTP subsystem is unavailable; never silently retry.
+const SCP_PROTOCOL = process.env.PI_PEER_SCP_PROTOCOL || "sftp";
+if (!["sftp", "scp"].includes(SCP_PROTOCOL)) throw new Error("PI_PEER_SCP_PROTOCOL must be sftp or scp");
+const SCP_PROTOCOL_ARGS = SCP_PROTOCOL === "scp" ? ["-O"] : [];
+if (SCP_PROTOCOL === "scp") console.log("peer-sync: explicit classic SCP transport (PI_PEER_SCP_PROTOCOL=scp); backup/hash verification unchanged");
 
 const norm = (p) => String(p).replace(/\\/g, "/").replace(/\/+$/u, "");
 const lower = (p) => norm(p).toLowerCase();
@@ -76,10 +81,10 @@ function ssh(host, body, { allowFail = false } = {}) {
   return String(r.stdout || "");
 }
 function scpTo(host, local, remote) {
-  execFileSync("scp", ["-q", ...SSH_OPTS, local, `${SSH_USER}@${host}:${norm(remote)}`], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  execFileSync("scp", [...SCP_PROTOCOL_ARGS, "-q", ...SSH_OPTS, local, `${SSH_USER}@${host}:${norm(remote)}`], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 function scpFrom(host, remote, local) {
-  execFileSync("scp", ["-q", ...SSH_OPTS, `${SSH_USER}@${host}:${norm(remote)}`, local], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  execFileSync("scp", [...SCP_PROTOCOL_ARGS, "-q", ...SSH_OPTS, `${SSH_USER}@${host}:${norm(remote)}`, local], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 }
 
 /** 对端：目录保证存在；已有文件做 .bak-<ts>-<label> 备份；返回每个文件一行（BAK 路径 / NEW / FAIL）。 */

@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/almogdepaz/pi-async-compaction",
+  "version": "0.1.8",
+  "commit": "5b9a70b678f23b7250f66b97789cb2777061cf3c",
+  "npmIntegrity": "sha512-03s/aZX1REpKn6hROlUaNxOYiyLNJJcgX20IyjaJbC9JNV3ZYBG8Bu8sJVnDeqxRq7wa2oPDp40rjnX1PgCpAg==",
+  "sha256": {
+    "LICENSE": "f782a3ba09e24118b5de53799b4d599750bc60d90a2942f22d512e5695e65e42",
+    "package.json": "385735030a14ab55dd784fcd31b0c76f2e4e67c5581bebccbf3523dde5904f5d",
+    "src/adapter.ts": "3ec23a7786e24e1b4608e4ac301062b497d8416d679a1ec34ec623a646201549",
+    "src/constants.ts": "b9f38caee5d69be4e68d2fada35442cc9bcbb38f47e53b1b9387c6c7f9bf27aa",
+    "src/core.ts": "ec435f178d1ed7d861ed795956f8bd75cfe99268ec8ea71d306ce7c187cc5865",
+    "src/diagnostics.ts": "da1d30d183c56d729e92e39a32d3d148c9cc3afd87709b75fb2a32419022bf45",
+    "src/index.ts": "be544be63e8d8fac8143df67f54d663e86c7164e29d6c8f73d4206e60001bdf7",
+    "src/job.ts": "e3232a5a5b5ea71c4319dd9fbdce99596bbc0d86d335f6f36604661e128fbafd",
+    "src/preparation.ts": "5417917db13ba8cd4bd2d19c8bfec313de625d94f97c0f9e82a5e1a60c54d264",
+    "src/runtime-state.ts": "118306915b3bacc5b86ee9cec3b0d843185119265ec81392590af15c3c9b00b3",
+    "src/types.ts": "0b45903748b386ab879ad3bf839fc5a95461d3eed8ee7db5b790b6981b043b7f",
+    "src/utils.ts": "a8084e71d6f523ea812600b1a63d41b8cc2dbe815ffc054d05fe353bd9d71b1c",
+    "src/validation.ts": "45e13489d36556105751de94d4c3733068696caeebc7a4d8d246d2586016869f"
+  }
+}

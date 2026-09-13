@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "startTokens": 128000,
+  "thinkingLevel": "low",
+  "timeoutMs": 300000,
+  "firstToolCompaction": true
+}

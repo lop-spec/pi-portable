@@ -1,0 +1,8 @@
+{
+  "name": "lop-pi-async-compaction",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tool-phase, independent 128K, main-model low adapter for unchanged pi-async-compaction v0.1.8",
+  "pi": { "extensions": ["./index.ts"] }
+}
