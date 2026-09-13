@@ -1,3 +1,128 @@
+// Small native pause/resume button beside the goal status. Its body portal never
+// changes React-owned status text or children; commands own the actual mode.
+(() => {
+  "use strict";
+  if (window.__piFollowupResumeUi) return;
+  window.__piFollowupResumeUi = true;
+  const modes = { "目标 · 彻底": "thorough", "目标 · 达标": "target", "目标 · 根因": "root-cause", "目标 · 根治": "root-fix", "计划": "plan" };
+  const pending = new Set();
+  const modeOf = text => modes[String(text || "").trim().match(/^自动追问\s*·\s*(.*?)\s*·\s*(?:已暂停|待发送|\d+\/\d+)$/u)?.[1]];
+  const paused = text => /·\s*已暂停$/u.test(String(text || "").trim());
+  let button, anchor, resize;
+  const session = () => new URL(location.href).searchParams.get("session");
+  let frame = 0, note;
+  function notify(message, error = false) {
+    if (!note) {
+      note = document.createElement("div");
+      note.id = "pi-followup-resume-notice";
+      note.style.cssText = "position:fixed;bottom:48px;left:50%;transform:translateX(-50%);z-index:1000;max-width:90vw;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px";
+      note.tabIndex = 0;
+      note.title = "点击关闭";
+      note.addEventListener("click", () => { note.hidden = true; });
+      note.addEventListener("keydown", event => { if (event.key === "Escape") note.hidden = true; });
+      document.body.appendChild(note);
+    }
+    note.setAttribute("role", error ? "alert" : "status");
+    note.textContent = message;
+    note.hidden = false;
+  }
+  async function command(id, body) {
+    const response = await fetch(`/api/agent/${encodeURIComponent(id)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+    });
+    const result = await response.json();
+    if (!response.ok || result.error || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+    return result.data;
+  }
+  async function toggle(element) {
+    const id = session(), mode = modeOf(element.textContent);
+    if (!id || !mode || pending.has(id)) return;
+    const action = paused(element.textContent) ? "resume" : "pause";
+    const ensureCurrent = () => { if (session() !== id || !element.isConnected) throw new Error("会话已切换，操作已取消"); };
+    pending.add(id); refresh();
+    try {
+      const state = await command(id, { type: "get_state" });
+      const status = state.extensionStatuses?.find(item => item.key === "lop-followup");
+      if (modeOf(status?.text) !== mode || paused(status?.text) !== (action === "resume")) throw new Error("目标状态已变化，请以最新状态为准");
+      let result = await command(id, { type: "get_commands" });
+      const supported = value => value.commands?.some(item => item.name === "lop-followup-control" && item.source === "extension");
+      if (!supported(result)) {
+        ensureCurrent();
+        console.info("[lop-followup-ui] loading controls reason=old-extension-runtime");
+        // Official resource reload replaces future handlers; it does not abort
+        // the agent. The extension restores its saved goal in paused state.
+        await command(id, { type: "reload" });
+        result = await command(id, { type: "get_commands" });
+      }
+      if (!supported(result)) throw new Error("目标控制扩展未加载，未发送操作命令");
+      ensureCurrent();
+      await command(id, { type: "prompt", message: `/lop-followup-control ${action} ${mode}` });
+      const updated = await command(id, { type: "get_state" });
+      const text = updated.extensionStatuses?.find(item => item.key === "lop-followup")?.text;
+      if (action === "pause" ? !paused(text) : text && (paused(text) || /待发送/u.test(text))) throw new Error("目标状态未切换，请稍后重试");
+      if (session() === id) notify(action === "pause" ? "目标已暂停，当前执行不中断。" : "已恢复上次目标并继续执行。");
+    } catch (error) {
+      console.error("[lop-followup-ui] toggle failed:", error);
+      if (session() === id) notify(`目标切换失败：${error instanceof Error ? error.message : String(error)}`, true);
+    } finally { pending.delete(id); refresh(); }
+  }
+  function refresh() {
+    const next = [...document.querySelectorAll(".extension-status-text")].find(text => modeOf(text.textContent));
+    if (next !== anchor) {
+      resize?.disconnect(); anchor = next;
+      if (anchor) {
+        resize?.observe(anchor);
+        const shelf = anchor.closest?.(".extension-status-shelf");
+        if (shelf) resize?.observe(shelf);
+      }
+    }
+    if (!anchor || !session()) { if (button) button.hidden = true; return; }
+    if (!button) {
+      button = document.createElement("button");
+      button.id = "pi-followup-toggle";
+      button.type = "button";
+      button.addEventListener("click", () => { if (anchor && !button.disabled) void toggle(anchor); });
+      document.body.appendChild(button);
+    }
+    // The native status span is flex:1 and stretches across the whole footer.
+    // Measure the last rendered text fragment, not that full-width element.
+    const range = document.createRange();
+    range.selectNodeContents(anchor);
+    const rect = [...range.getClientRects()].filter(item => item.width && item.height).at(-1);
+    button.hidden = !rect || rect.bottom <= 0 || rect.top >= innerHeight;
+    if (button.hidden) return;
+    button.disabled = pending.has(session());
+    const isPaused = paused(anchor.textContent);
+    button.textContent = isPaused ? "▶" : "⏸";
+    button.setAttribute("aria-label", isPaused ? "恢复目标" : "暂停目标");
+    button.setAttribute("aria-busy", String(button.disabled));
+    button.title = button.disabled ? "正在切换目标状态…" : isPaused ? "恢复上次目标并立即继续" : "暂停目标（不中断当前执行）";
+    button.style.left = `${Math.max(4, Math.min(rect.right + 6, innerWidth - 28))}px`;
+    button.style.top = `${Math.max(0, Math.min(rect.top + (rect.height - 24) / 2, innerHeight - 24))}px`;
+  }
+  function schedule() {
+    if (!frame) frame = requestAnimationFrame(() => { frame = 0; refresh(); });
+  }
+  function start() {
+    const style = document.createElement("style");
+    style.textContent = '#pi-followup-toggle{position:fixed;z-index:800;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font-size:12px;cursor:pointer}#pi-followup-toggle[hidden]{display:none}#pi-followup-toggle:hover,#pi-followup-toggle:focus-visible{color:var(--accent);border-color:var(--accent)}#pi-followup-toggle:disabled{cursor:wait;opacity:.6}';
+    document.head.appendChild(style);
+    resize = new ResizeObserver(schedule);
+    new MutationObserver(records => {
+      if (records.some(record => (record.target.nodeType === 3 ? record.target.parentElement : record.target)?.closest?.(".extension-status-shelf") || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 && (node.matches?.(".extension-status-shelf") || node.querySelector?.(".extension-status-shelf"))))) schedule();
+    }).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+    window.addEventListener("popstate", schedule);
+    window.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    document.fonts?.addEventListener("loadingdone", schedule);
+    document.addEventListener("scroll", schedule, { capture: true, passive: true });
+    refresh();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
+})();
+
 // Shared, event-driven geometry for the three portal controls. Never poll the
 // transcript or mutate React-owned children. A single frame serves all clients.
 (() => {
@@ -5,7 +130,9 @@
   if (window.__piUiLayout) return;
   const clients = new Set();
   const anchors = new Set();
-  const selector = '.sidebar-container,[data-pi-archive-slot],.model-selector.is-toolbar,[role="dialog"],[aria-modal="true"]';
+  // A sibling footer can move the composer without resizing the model anchor
+  // or its ancestors. Observe its insertion/removal and widget/status height.
+  const selector = '.sidebar-container,[data-pi-archive-slot],.model-selector.is-toolbar,.extension-status-shelf,[role="dialog"],[aria-modal="true"]';
   const owned = '#pi-session-archive-control-host,#pi-account-usage-host,#pi-account-usage-panel,#pi-service-tier-button,#pi-service-tier-panel,[data-pi-session-archive-toast]';
   let frame = 0, rebind = true, modal = false;
   const resize = new ResizeObserver(() => schedule());
