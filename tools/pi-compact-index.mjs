@@ -8,7 +8,7 @@ import readline from "node:readline";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createIndexWriter, defaultIndexPath, makeRecord, mergeIndex, parseIndex } from "../src/extensions/lop-compact.ts";
+import { createIndexWriter, defaultIndexPath, makeRecord, mergeIndex, parseIndex, readPruned, mergePruned } from "../src/extensions/lop-compact.ts";
 import { SITES, PEER_OF, localSiteName } from "./peer-sync.mjs";
 
 const execute = promisify(execFile);
@@ -16,7 +16,8 @@ const defaultSessionsDir = () => path.join(process.env.PI_CODING_AGENT_DIR || pa
 const sha = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 export function indexSnapshot(indexPath = defaultIndexPath()) {
   const bytes = fs.existsSync(indexPath) ? fs.readFileSync(indexPath) : Buffer.alloc(0);
-  return { indexPath, hash: sha(bytes), bytes: bytes.length, records: parseIndex(bytes.toString("utf8")).records };
+  const pruned = readPruned(indexPath);
+  return { indexPath, hash: sha(bytes), stateHash: sha(JSON.stringify(pruned)), pruned, bytes: bytes.length, records: parseIndex(bytes.toString("utf8")).records };
 }
 
 export async function readCompaction(file, wantedId, { since = -Infinity, until = Infinity, onCompact } = {}) {
@@ -83,7 +84,8 @@ export async function exportIndexBundle(options) {
   const scan = await collectCompactions(options);
   if (scan.failed.length) throw new Error(`incomplete-source-scan; sync cancelled: ${JSON.stringify(scan.failed)}`);
   const { records: recent, ...stats } = scan;
-  return { ...stats, recent, existing: indexSnapshot(options.indexPath).records };
+  const snapshot = indexSnapshot(options.indexPath);
+  return { ...stats, recent, existing: snapshot.records, pruned: snapshot.pruned };
 }
 
 // stdin carries code / Goal records over the authorized SSH connection, never shell arguments.
@@ -94,7 +96,7 @@ async function peerCall(peer, action, payload) {
 console.log=(...args)=>process.stderr.write(args.join(' ')+'\\n');
 (async()=>{const t=await import(${JSON.stringify(toolUrl)});const p=${JSON.stringify(payload)};let result;
 if(${JSON.stringify(action)}==='export')result=await t.exportIndexBundle({...p,sessionsDir:${JSON.stringify(path.join(peer.agent, "sessions"))}});
-else {await t.importIndexRecords(p.records);result=t.indexSnapshot();}
+else {await t.importIndexRecords(p.records,undefined,p.pruned);result=t.indexSnapshot();}
 process.stdout.write(JSON.stringify(result));})().catch(e=>{console.error(String(e.stack||e));process.exitCode=1;});`;
   const job = execute("ssh", ["-i", "C:/Users/lop/.ssh/id_ed25519", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "LogLevel=ERROR", `lop@${peer.host}`, `"${peer.node}" -`], { windowsHide: true, timeout: 60000, maxBuffer: 64 * 1024 * 1024 });
   job.child.stdin.on("error", e => console.error(`[compact-sync] stdin ${e.message}`));
@@ -104,8 +106,37 @@ process.stdout.write(JSON.stringify(result));})().catch(e=>{console.error(String
   return JSON.parse(output.stdout);
 }
 
-export async function importIndexRecords(records, indexPath) {
-  return createIndexWriter({ indexPath }).update(records);
+export async function importIndexRecords(records, indexPath, pruned = []) {
+  return createIndexWriter({ indexPath }).update(records, pruned);
+}
+
+// Explicit semantic review only. All candidates must be classified, with no fabricated keys.
+// The current assistant or the authorized daily job decides value; no heuristic top-N deletion.
+export function validateReview(review, candidates, maxEntries = 50) {
+  if (!review || !Array.isArray(review.keep) || !Array.isArray(review.remove)) throw new Error("missing-compact-review");
+  const keys = new Set(candidates.map(r => r.key)), seen = new Set();
+  if (keys.size !== candidates.length) throw new Error("duplicate-review-candidates");
+  const pruned = mergePruned(review.remove);
+  if (pruned.length !== review.remove.length) throw new Error("duplicate-review-removal");
+  for (const key of [...review.keep, ...pruned.map(r => r.key)]) {
+    if (!keys.has(key) || seen.has(key)) throw new Error("unknown-or-duplicate-review-key");
+    seen.add(key);
+  }
+  if (seen.size !== keys.size) throw new Error("incomplete-compact-review");
+  if (review.keep.length > maxEntries) throw new Error("compact-review-over-50; refine-by-value-not-truncation");
+  return pruned;
+}
+export async function applyReview(review, candidates, indexPath) {
+  const removals = validateReview(review, candidates);
+  // Writers preserve unreviewed concurrent additions, and never rewrite retained Goal text.
+  await importIndexRecords([], indexPath, removals);
+  const after = indexSnapshot(indexPath);
+  const retained = new Map(after.records.map(r => [r.key, r]));
+  for (const old of candidates) if (review.keep.includes(old.key) && !after.pruned.some(r => r.key === old.key)) {
+    const now = retained.get(old.key);
+    if (!now || now.text.trimEnd() !== old.text.trimEnd() || now.compactId !== old.compactId) throw new Error("retained-compact-original-changed");
+  }
+  return { ...after, reviewed: candidates.length, removed: removals.length };
 }
 
 export async function syncRecent({ days = 7, until = Date.now(), sessionsDir = defaultSessionsDir(), indexPath = defaultIndexPath() } = {}) {
@@ -115,22 +146,24 @@ export async function syncRecent({ days = 7, until = Date.now(), sessionsDir = d
   console.log(JSON.stringify({ phase: "sync-start", since: new Date(since).toISOString(), until: new Date(until).toISOString(), peer: peer.host }));
   const [local, remote] = await Promise.all([exportIndexBundle({ sessionsDir, indexPath, since, until }), peerCall(peer, "export", { since, until })]);
   // Native recent records take precedence over legacy Markdown framing whitespace.
-  let records = parseIndex(mergeIndex("", [...local.existing, ...remote.existing, ...local.recent, ...remote.recent])).records;
+  let pruned = mergePruned(local.pruned, remote.pruned);
+  let records = parseIndex(mergeIndex("", [...local.existing, ...remote.existing, ...local.recent, ...remote.recent], pruned)).records;
   const expected = new Set(records.map(r => r.key));
   const deadline = Date.now() + 90000;
   while (Date.now() < deadline) {
-    await importIndexRecords(records, indexPath);
+    await importIndexRecords(records, indexPath, pruned);
     let here = indexSnapshot(indexPath);
-    const there = await peerCall(peer, "import", { records: here.records });
-    await importIndexRecords(there.records, indexPath); // Preserve concurrent additions from either side.
+    const there = await peerCall(peer, "import", { records: here.records, pruned: here.pruned });
+    await importIndexRecords(there.records, indexPath, there.pruned); // Union additions AND reviewed exclusions.
     here = indexSnapshot(indexPath);
-    for (const key of expected) if (!here.records.some(r => r.key === key) || !there.records.some(r => r.key === key)) throw new Error(`sync-missing-record:${key}`);
-    if (here.hash === there.hash) {
+    const excluded = new Set(mergePruned(here.pruned, there.pruned).map(r => r.key));
+    for (const key of expected) if (!excluded.has(key) && (!here.records.some(r => r.key === key) || !there.records.some(r => r.key === key))) throw new Error(`sync-missing-record:${key}`);
+    if (here.hash === there.hash && here.stateHash === there.stateHash) {
       const recent = here.records.filter(r => r.time >= since && r.time <= until);
-      return { since: new Date(since).toISOString(), until: new Date(until).toISOString(), indexPath, bytes: here.bytes, sha256: here.hash, identical: true, totalCompacts: here.records.length, recentCompacts: recent.length, priorOlderRetained: here.records.length - recent.length, sources: [local, remote].map(s => ({ machine: s.machine, files: s.files, allCompactsScanned: s.compactions, recentCompacts: s.indexed, fallback: s.fallback, failed: s.failed })), failed: [] };
+      return { since: new Date(since).toISOString(), until: new Date(until).toISOString(), indexPath, bytes: here.bytes, sha256: here.hash, identical: true, pruned: here.pruned.length, stateHash: here.stateHash, totalCompacts: here.records.length, recentCompacts: recent.length, priorOlderRetained: here.records.length - recent.length, sources: [local, remote].map(s => ({ machine: s.machine, files: s.files, allCompactsScanned: s.compactions, recentCompacts: s.indexed, fallback: s.fallback, failed: s.failed })), failed: [] };
     }
     console.error(`[compact-sync] RETRY index changed during merge or local notes differ; local=${here.hash} peer=${there.hash}`);
-    records = here.records;
+    records = here.records; pruned = here.pruned;
     await new Promise(r => setTimeout(r, 250));
   }
   throw new Error("sync-not-converged; preserved both indexes, see per-index logs");

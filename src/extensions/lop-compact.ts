@@ -10,9 +10,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "goal-index-v2";
+export const VERSION = "goal-index-v3-pruning";
 const LEGACY_HEADER = "# Pi compact 会话索引\n\n每会话保留最新成功 compact 的完整 Goal 原文，不限字数；仅作历史线索。按来源路径和 Compact ID 可提取 summary 全文。状态截至压缩时间，不代表后续消息或当前运行态。\n\n";
-export const INDEX_HEADER = "# Pi compact 会话索引\n\n保留每条成功 compact 的完整 Goal 原文，不限字数，按机器＋会话 ID＋Compact ID 去重；双端按条目取并集，近期回填不删除已有旧条目。按来源机器、路径和 Compact ID 提取 summary 全文。仅作历史线索，状态截至对应压缩时间，不代表后续消息或当前运行态。\n\n";
+const V2_HEADER = "# Pi compact 会话索引\n\n保留每条成功 compact 的完整 Goal 原文，不限字数，按机器＋会话 ID＋Compact ID 去重；双端按条目取并集，近期回填不删除已有旧条目。按来源机器、路径和 Compact ID 提取 summary 全文。仅作历史线索，状态截至对应压缩时间，不代表后续消息或当前运行态。\n\n";
+export const INDEX_HEADER = "# Pi compact 会话索引\n\n按长期复用价值精选，维护后不超过50条，不凑上限。保留条目的完整 Goal 原文及机器、会话、Compact ID、来源路径，不二次总结。已清理键由同目录 pi-compact.md.pruned.json 管理，双机合并与回填不得复活。仅作历史线索；按来源机器、路径和 Compact ID 提取 summary 全文，历史状态不代表当前运行态。\n\n";
 const execute = promisify(execFile);
 const digest = (value: string | Buffer) => crypto.createHash("sha256").update(value).digest("hex");
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -117,7 +118,25 @@ export function parseIndex(text: string) {
   return { records, prefix, suffix: records.length ? text.slice(endOfLast).replace(/^(?:\r?\n){0,2}/, "") : "", notes };
 }
 
-export function mergeIndex(original: string, records: IndexRecord[]) {
+export type PrunedRecord = { key: string; reason: string };
+export function mergePruned(...sets: PrunedRecord[][]): PrunedRecord[] {
+  const all = new Map<string, PrunedRecord>();
+  for (const entries of sets) {
+    if (!Array.isArray(entries)) throw new Error("invalid-pruned-state");
+    for (const r of entries) {
+      if (!r || !/^[a-f0-9]{64}$/.test(r.key) || typeof r.reason !== "string" || !r.reason.trim() || r.reason.length > 300) throw new Error("invalid-pruned-record");
+      const previous = all.get(r.key);
+      if (!previous || r.reason < previous.reason) all.set(r.key, { key: r.key, reason: r.reason });
+    }
+  }
+  return [...all.values()].sort((a, b) => a.key.localeCompare(b.key, "en"));
+}
+export function readPruned(indexPath: string): PrunedRecord[] {
+  const file = `${indexPath}.pruned.json`;
+  try { return mergePruned(JSON.parse(fs.readFileSync(file, "utf8"))); }
+  catch (e: any) { if (e.code === "ENOENT") return []; throw e; }
+}
+export function mergeIndex(original: string, records: IndexRecord[], pruned: PrunedRecord[] = []) {
   const existing = parseIndex(original);
   const all = new Map<string, IndexRecord>();
   for (const r of [...existing.records, ...records]) {
@@ -126,8 +145,9 @@ export function mergeIndex(original: string, records: IndexRecord[]) {
     if (previous && (previous.time !== r.time || previous.text.trimEnd() !== r.text.trimEnd() || previous.section !== r.section)) throw new Error(`conflicting-compact-record:${r.key}`);
     all.set(r.key, r);
   }
-  const prefix = (existing.prefix || INDEX_HEADER).replace(LEGACY_HEADER, INDEX_HEADER);
-  const sorted = [...all.values()].sort((a, b) => b.time - a.time || a.key.localeCompare(b.key, "en"));
+  const prefix = (existing.prefix || INDEX_HEADER).replace(LEGACY_HEADER, INDEX_HEADER).replace(V2_HEADER, INDEX_HEADER);
+  const excluded = new Set(mergePruned(pruned).map(r => r.key));
+  const sorted = [...all.values()].filter(r => !excluded.has(r.key)).sort((a, b) => b.time - a.time || a.key.localeCompare(b.key, "en"));
   return prefix + (prefix.endsWith("\n") ? "" : "\n") + sorted.map(r => renderRecord(r) + (existing.notes.get(r.key) || "")).join("") + existing.suffix;
 }
 
@@ -185,22 +205,45 @@ export function createIndexWriter(options: { indexPath?: string; backupTool?: st
     }
   }
 
-  async function write(records: IndexRecord[]) {
+  async function write(records: IndexRecord[], removals: PrunedRecord[]) {
     await fsp.mkdir(path.dirname(indexPath), { recursive: true });
     const token = await acquireLock();
     const temp = `${indexPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    const prunedPath = `${indexPath}.pruned.json`, prunedTemp = `${temp}.pruned`;
     try {
       const before = await readOptional(indexPath);
-      const after = Buffer.from(mergeIndex(before?.toString("utf8") || "", records));
-      if (before?.equals(after)) return { status: "unchanged", indexPath, bytes: after.length };
+      const priorPruned = await readOptional(prunedPath);
+      const pruned = mergePruned(priorPruned ? JSON.parse(priorPruned.toString("utf8")) : [], removals);
+      const prunedBytes = Buffer.from(JSON.stringify(pruned, null, 2) + "\n");
+      const stateChanged = pruned.length > 0 && !priorPruned?.equals(prunedBytes);
+      const after = Buffer.from(mergeIndex(before?.toString("utf8") || "", records, pruned));
+      const excluded = new Set(pruned.map(r => r.key));
+      const suppressed = [...parseIndex(before?.toString("utf8") || "").records, ...records].filter(r => excluded.has(r.key));
+      if (suppressed.length) log(`PRUNED_SUPPRESSED count=${new Set(suppressed.map(r => r.key)).size} reason=reviewed-low-value`);
+      if (before?.equals(after) && !stateChanged) return { status: "unchanged", indexPath, bytes: after.length };
       if (before) {
         // Invoke the same implementation as `bak <file>`; hidden, no shell or model tool call.
         const backup = await execute(process.execPath, [options.backupTool || findBackupTool(), indexPath, "--label", `compact-${crypto.randomUUID()}`], { windowsHide: true, timeout: 15000, maxBuffer: 16384 });
         if (!backup.stdout.startsWith("OK ")) throw new Error("backup-did-not-confirm-success");
         log(backup.stdout.trim());
       }
+      if (stateChanged && priorPruned) {
+        const backup = await execute(process.execPath, [options.backupTool || findBackupTool(), prunedPath, "--label", `compact-${crypto.randomUUID()}`], { windowsHide: true, timeout: 15000, maxBuffer: 16384 });
+        if (!backup.stdout.startsWith("OK ")) throw new Error("pruned-backup-did-not-confirm-success");
+        log(backup.stdout.trim());
+      }
+      const currentPruned = await readOptional(prunedPath);
+      if ((priorPruned === undefined) !== (currentPruned === undefined) || (priorPruned && !priorPruned.equals(currentPruned!))) throw new Error("pruned-state-changed-outside-lock");
       const current = await readOptional(indexPath);
       if ((before === undefined) !== (current === undefined) || (before && !before.equals(current!))) throw new Error("index-changed-outside-lock: refusing-overwrite");
+      // Persist exclusions first: a crash between files is repaired by the next writer.
+      // No source session is changed; both files share this writer's lock and backup gate.
+      if (stateChanged) {
+        const state = await fsp.open(prunedTemp, "wx");
+        try { await state.writeFile(prunedBytes); await state.sync(); } finally { await state.close(); }
+        await fsp.rename(prunedTemp, prunedPath);
+        if (!(await fsp.readFile(prunedPath)).equals(prunedBytes)) throw new Error("pruned-readback-mismatch");
+      }
       const file = await fsp.open(temp, "wx");
       try { await file.writeFile(after); await file.sync(); } finally { await file.close(); }
       await fsp.rename(temp, indexPath);
@@ -209,14 +252,14 @@ export function createIndexWriter(options: { indexPath?: string; backupTool?: st
       log(`UPDATED compacts=${records.length} bytes=${after.length} file=${indexPath}`);
       return { status: "updated", indexPath, bytes: after.length };
     } finally {
-      await fsp.unlink(temp).catch((e: any) => { if (e.code !== "ENOENT") log(`TEMP_CLEANUP_FAILED ${e.message}`); });
+      for (const file of [temp, prunedTemp]) await fsp.unlink(file).catch((e: any) => { if (e.code !== "ENOENT") log(`TEMP_CLEANUP_FAILED ${e.message}`); });
       if ((await readOptional(lockPath))?.toString() === token) await fsp.unlink(lockPath);
     }
   }
   return {
     indexPath, log,
-    update(records: IndexRecord[]) {
-      const job = pending.then(() => write(records));
+    update(records: IndexRecord[], removals: PrunedRecord[] = []) {
+      const job = pending.then(() => write(records, removals));
       pending = job.catch(() => undefined); // A failed export must not poison subsequent exports.
       return job;
     },

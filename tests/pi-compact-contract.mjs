@@ -10,7 +10,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { defaultIndexPath, extractGoal, makeRecord, mergeIndex, parseIndex, renderRecord, createIndexWriter, registerCompactExport } from "../src/extensions/lop-compact.ts";
-import { readCompaction, backfill, collectCompactions, indexSnapshot } from "../tools/pi-compact-index.mjs";
+import { readCompaction, backfill, collectCompactions, indexSnapshot, validateReview, applyReview, importIndexRecords } from "../tools/pi-compact-index.mjs";
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -183,6 +183,42 @@ await check("seven-day-inclusive-boundaries-all-compacts-and-two-way-union", asy
   const hash = indexSnapshot(one).hash;
   await a.update(scan.records); await b.update(scan.records);
   assert.equal(indexSnapshot(one).hash, hash); assert.equal(indexSnapshot(two).hash, hash);
+});
+
+await check("semantic-review-complete-classification-and-50-ceiling", () => {
+  const candidates = Array.from({ length: 51 }, (_, i) => record(`candidate-${i}`));
+  const review = { keep: candidates.slice(0, 50).map(r => r.key), remove: [{ key: candidates[50].key, reason: "superseded by an independently retained topic" }] };
+  assert.equal(validateReview(review, candidates).length, 1);
+  assert.throws(() => validateReview({ keep: candidates.map(r => r.key), remove: [] }, candidates), /over-50/);
+  assert.throws(() => validateReview({ keep: [], remove: [] }, candidates), /incomplete/);
+  assert.throws(() => validateReview({ ...review, keep: [...review.keep, review.keep[0]] }, candidates), /duplicate/);
+  assert.throws(() => validateReview({ keep: ['a'.repeat(64)], remove: [] }, candidates), /unknown/);
+  assert.throws(() => validateReview({ ...review, remove: [{ key: candidates[50].key, reason: '' }] }, candidates), /invalid-pruned/);
+});
+await check("reviewed-exclusions-win-two-way-union-backfill-and-concurrent-additions", async () => {
+  const one = path.join(temp, 'pruned-one.md'), two = path.join(temp, 'pruned-two.md');
+  const old = record('low-value'), good = record('useful'), concurrent = record('unreviewed-concurrent');
+  await importIndexRecords([old, good], one); await importIndexRecords([old, good], two);
+  const candidates = indexSnapshot(one).records;
+  await importIndexRecords([concurrent], one);
+  const review = { keep: [good.key], remove: [{ key: old.key, reason: 'duplicate progress already covered' }] };
+  await applyReview(review, candidates, one);
+  assert.deepEqual(new Set(indexSnapshot(one).records.map(r => r.key)), new Set([good.key, concurrent.key]));
+  let a = indexSnapshot(one); await importIndexRecords(a.records, two, a.pruned);
+  let b = indexSnapshot(two); await importIndexRecords(b.records, one, b.pruned);
+  await importIndexRecords([old, good], one); // stale event or recent native backfill
+  a = indexSnapshot(one); b = indexSnapshot(two);
+  assert.equal(a.hash, b.hash); assert.equal(a.stateHash, b.stateHash);
+  assert.equal(a.records.find(r => r.key === good.key).text, good.text);
+  assert.ok(!a.records.some(r => r.key === old.key));
+  const hash = a.hash; await applyReview(review, candidates, one); assert.equal(indexSnapshot(one).hash, hash);
+  // Failure before any write must preserve both files.
+  const beforeIndex = fs.readFileSync(one), beforePruned = fs.readFileSync(one+'.pruned.json');
+  await assert.rejects(createIndexWriter({ indexPath: one, backupTool: path.join(temp, 'missing-backup.mjs') }).update([], [{ key: good.key, reason: 'test' }]), /Command failed/);
+  assert.ok(fs.readFileSync(one).equals(beforeIndex)); assert.ok(fs.readFileSync(one+'.pruned.json').equals(beforePruned));
+  fs.writeFileSync(one+'.pruned.json', '{invalid');
+  await assert.rejects(createIndexWriter({ indexPath: one, backupTool }).update([old]));
+  assert.ok(fs.readFileSync(one).equals(beforeIndex));
 });
 
 // Optional installed-SDK mode is explicit; no network, provider calls or fake production sessions.
