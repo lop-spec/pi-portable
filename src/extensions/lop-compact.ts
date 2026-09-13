@@ -10,12 +10,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "goal-index-v1";
-export const INDEX_HEADER = "# Pi compact 会话索引\n\n每会话保留最新成功 compact 的完整 Goal 原文，不限字数；仅作历史线索。按来源路径和 Compact ID 可提取 summary 全文。状态截至压缩时间，不代表后续消息或当前运行态。\n\n";
+export const VERSION = "goal-index-v2";
+const LEGACY_HEADER = "# Pi compact 会话索引\n\n每会话保留最新成功 compact 的完整 Goal 原文，不限字数；仅作历史线索。按来源路径和 Compact ID 可提取 summary 全文。状态截至压缩时间，不代表后续消息或当前运行态。\n\n";
+export const INDEX_HEADER = "# Pi compact 会话索引\n\n保留每条成功 compact 的完整 Goal 原文，不限字数，按机器＋会话 ID＋Compact ID 去重；双端按条目取并集，近期回填不删除已有旧条目。按来源机器、路径和 Compact ID 提取 summary 全文。仅作历史线索，状态截至对应压缩时间，不代表后续消息或当前运行态。\n\n";
 const execute = promisify(execFile);
 const digest = (value: string | Buffer) => crypto.createHash("sha256").update(value).digest("hex");
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const oneLine = (value: unknown) => String(value).replace(/[\r\n]/g, " ");
+const recordKey = (machine: string, sessionId: string, compactId: string) => digest(`${machine.toLowerCase()}\0${sessionId}\0${compactId}`);
 
 export function defaultIndexPath() {
   if (process.env.PI_COMPACT_INDEX_FILE) return path.resolve(process.env.PI_COMPACT_INDEX_FILE);
@@ -76,34 +78,57 @@ export function makeRecord(entry: Compaction, sessionId: string, sessionFile: st
   const time = typeof entry.timestamp === "number" ? entry.timestamp : Date.parse(entry.timestamp);
   if (!Number.isFinite(time)) throw new Error("invalid-compaction-timestamp");
   const excerpt = extractGoal(entry.summary);
-  return { key: digest(`${machine.toLowerCase()}\0${sessionId}`), machine, sessionId, sessionFile: path.resolve(sessionFile), compactId: entry.id, time, ...excerpt };
+  return { key: recordKey(machine, sessionId, entry.id), machine, sessionId, sessionFile: path.resolve(sessionFile), compactId: entry.id, time, ...excerpt };
 }
 
 export function renderRecord(r: IndexRecord) {
   const id = Buffer.from(r.compactId).toString("base64url");
   const end = `<!-- /pi-compact ${r.key} -->`;
   if (r.text.includes(end)) throw new Error("index-marker-in-goal: source left untouched");
-  return `<!-- pi-compact ${r.key} ${r.time} ${id} -->\n## ${oneLine(r.machine)} / ${oneLine(r.sessionId)}\n压缩：${new Date(r.time).toISOString()} · Compact ID：${oneLine(r.compactId)}\n来源：\`${oneLine(r.sessionFile)}\`\n\n### ${r.section}（原文）\n${r.fallback ? `提取说明：${r.fallback}\n` : ""}\n${r.text}${r.text.endsWith("\n") ? "" : "\n"}${end}\n\n`;
+  return `<!-- pi-compact ${r.key} ${r.time} ${id} ${r.text.length} -->\n## ${oneLine(r.machine)} / ${oneLine(r.sessionId)}\n压缩：${new Date(r.time).toISOString()} · Compact ID：${oneLine(r.compactId)}\n来源：\`${oneLine(r.sessionFile)}\`\n\n### ${r.section}（原文）\n${r.fallback ? `提取说明：${r.fallback}\n` : ""}\n${r.text}${r.text.endsWith("\n") ? "" : "\n"}${end}\n\n`;
+}
+
+export function parseIndex(text: string) {
+  const records: IndexRecord[] = [], notes = new Map<string, string>();
+  const header = /^<!-- pi-compact ([a-f0-9]{64}) (\d+) ([A-Za-z0-9_-]+)(?: (\d+))? -->\r?$/gm;
+  let match: RegExpExecArray | null, prefix = text, endOfLast = 0;
+  while ((match = header.exec(text))) {
+    const gap = text.slice(endOfLast, match.index);
+    if (!records.length) prefix = gap;
+    else if (gap.trim()) notes.set(records.at(-1)!.key, gap);
+    const close = `<!-- /pi-compact ${match[1]} -->`;
+    const end = text.indexOf(close, header.lastIndex);
+    if (end < 0) throw new Error(`index-block-not-closed:${match[1]}`);
+    const body = text.slice(header.lastIndex, end);
+    const identity = body.match(/^## (.+?) \/ (.+)\r?$/m);
+    const source = body.match(/^来源：`([^`]+)`\r?$/m);
+    const section = body.match(/^### (Goal|Original Request)（原文）\r?\n(?:提取说明：([^\r\n]*)\r?\n)?\r?\n/m);
+    if (!identity || !source || !section) throw new Error(`invalid-index-metadata:${match[1]}`);
+    const compactId = Buffer.from(match[3], "base64url").toString();
+    const key = recordKey(identity[1], identity[2], compactId);
+    if (match[1] !== key && match[1] !== digest(`${identity[1].toLowerCase()}\0${identity[2]}`)) throw new Error("index-identity-mismatch");
+    const content = body.slice(section.index! + section[0].length);
+    const goal = match[4] === undefined ? content : content.slice(0, Number(match[4]));
+    if (match[4] !== undefined && (goal.length !== Number(match[4]) || content.slice(goal.length).trim())) throw new Error("index-goal-length-mismatch");
+    records.push({ key, machine: identity[1], sessionId: identity[2], sessionFile: source[1], compactId, time: Number(match[2]), text: goal, section: section[1], fallback: section[2] || "" });
+    endOfLast = end + close.length;
+    header.lastIndex = endOfLast;
+  }
+  return { records, prefix, suffix: records.length ? text.slice(endOfLast).replace(/^(?:\r?\n){0,2}/, "") : "", notes };
 }
 
 export function mergeIndex(original: string, records: IndexRecord[]) {
-  let text = original || INDEX_HEADER;
-  for (const r of records) {
-    const start = new RegExp(`^<!-- pi-compact ${r.key} (\\d+) ([A-Za-z0-9_-]+) -->\\r?$`, "gm");
-    const matches = [...text.matchAll(start)];
-    if (matches.length > 1) throw new Error(`duplicate-index-session:${r.key}`);
-    const block = renderRecord(r);
-    if (!matches.length) { text += `${text.endsWith("\n") ? "" : "\n"}${block}`; continue; }
-    const match = matches[0];
-    if (Number(match[1]) > r.time) continue; // Delayed delivery must not roll back a newer checkpoint.
-    const begin = match.index!;
-    const close = `<!-- /pi-compact ${r.key} -->`;
-    const end = text.indexOf(close, begin);
-    if (end < 0) throw new Error(`index-block-not-closed:${r.key}`);
-    const suffix = text.slice(end + close.length).replace(/^(?:\r?\n){0,2}/, "");
-    text = text.slice(0, begin) + block + suffix;
+  const existing = parseIndex(original);
+  const all = new Map<string, IndexRecord>();
+  for (const r of [...existing.records, ...records]) {
+    if (r.key !== recordKey(r.machine, r.sessionId, r.compactId) || !path.isAbsolute(r.sessionFile) || !Number.isFinite(r.time)) throw new Error("invalid-incoming-index-record");
+    const previous = all.get(r.key);
+    if (previous && (previous.time !== r.time || previous.text.trimEnd() !== r.text.trimEnd() || previous.section !== r.section)) throw new Error(`conflicting-compact-record:${r.key}`);
+    all.set(r.key, r);
   }
-  return text;
+  const prefix = (existing.prefix || INDEX_HEADER).replace(LEGACY_HEADER, INDEX_HEADER);
+  const sorted = [...all.values()].sort((a, b) => b.time - a.time || a.key.localeCompare(b.key, "en"));
+  return prefix + (prefix.endsWith("\n") ? "" : "\n") + sorted.map(r => renderRecord(r) + (existing.notes.get(r.key) || "")).join("") + existing.suffix;
 }
 
 async function readOptional(file: string) {
@@ -181,7 +206,7 @@ export function createIndexWriter(options: { indexPath?: string; backupTool?: st
       await fsp.rename(temp, indexPath);
       if (digest(await fsp.readFile(indexPath)) !== digest(after)) throw new Error("index-readback-mismatch");
       for (const r of records) if (r.fallback) log(`FALLBACK session=${r.sessionId} compact=${r.compactId} reason=${r.fallback}`);
-      log(`UPDATED sessions=${records.length} bytes=${after.length} file=${indexPath}`);
+      log(`UPDATED compacts=${records.length} bytes=${after.length} file=${indexPath}`);
       return { status: "updated", indexPath, bytes: after.length };
     } finally {
       await fsp.unlink(temp).catch((e: any) => { if (e.code !== "ENOENT") log(`TEMP_CLEANUP_FAILED ${e.message}`); });

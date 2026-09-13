@@ -1,15 +1,16 @@
-// Hard gates: verbatim unlimited Goal; one record/session; precise source ID; backups;
+// Hard gates: verbatim unlimited Goal; one record/machine/session/compact; exact 7-day coverage; backups;
 // cross-process writes; failed I/O cannot affect Pi; only session_compact is subscribed.
 // No model requests, provider credentials, session rewrites or live-process restarts.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { defaultIndexPath, extractGoal, makeRecord, mergeIndex, createIndexWriter, registerCompactExport } from "../src/extensions/lop-compact.ts";
-import { readCompaction, backfill } from "../tools/pi-compact-index.mjs";
+import { defaultIndexPath, extractGoal, makeRecord, mergeIndex, parseIndex, renderRecord, createIndexWriter, registerCompactExport } from "../src/extensions/lop-compact.ts";
+import { readCompaction, backfill, collectCompactions, indexSnapshot } from "../tools/pi-compact-index.mjs";
 
 const execute = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,17 +59,31 @@ await check("explicit-missing-goal-fallback", () => {
   assert.match(missing.fallback, /source-reference-only/);
   assert.throws(() => extractGoal(""), /empty/);
 });
-await check("one-entry-per-session-preserve-others-and-notes", () => {
+await check("every-compact-per-session-preserve-others-and-notes", () => {
   const a = record("A"), b = record("B");
   const original = mergeIndex("用户既有说明，不得丢失。\n\n", [a, b]) + "用户尾注。\n";
   const next = mergeIndex(original, [record("A", "c2", 2000, "## Goal\n新目标全文\n## Progress\n其他")]);
-  assert.equal((next.match(/^## test-host \/ A$/gm) || []).length, 1);
+  assert.equal((next.match(/^## test-host \/ A$/gm) || []).length, 2);
+  assert.ok(next.includes(a.text), "earlier Goal must not be overwritten by the latest compact");
   assert.equal((next.match(/^## test-host \/ B$/gm) || []).length, 1);
   assert.ok(next.startsWith("用户既有说明"));
   assert.ok(next.endsWith("用户尾注。\n"));
   assert.ok(next.includes(b.text));
   assert.equal(mergeIndex(next, [a]), next, "older completion cannot roll back latest");
   assert.equal(mergeIndex(next, [record("A", "c2", 2000, "## Goal\n新目标全文\n## Progress\n其他")]), next);
+});
+await check("v1-migration-unlimited-goal-and-machine-dedup", () => {
+  const a = record("legacy", "original", 1000, "## Goal\n原文不带末尾换行");
+  const oldKey = crypto.createHash("sha256").update("test-host\0legacy").digest("hex");
+  const v1 = renderRecord(a).replaceAll(a.key, oldKey).replace(` ${a.text.length} -->`, " -->");
+  const next = mergeIndex(v1, [a, record("legacy", "second", 2000)]);
+  assert.equal(parseIndex(next).records.length, 2);
+  assert.equal(parseIndex(next).records.find(r => r.compactId === "original").text, a.text);
+  const other = makeRecord({ id: a.compactId, timestamp: a.time, summary: "## Goal\n另一台机器" }, a.sessionId, a.sessionFile, "other-host");
+  assert.equal(parseIndex(mergeIndex(next, [other])).records.length, 3);
+  assert.throws(() => mergeIndex(next, [{ ...a, text: "同一个 Compact ID 却有冲突原文" }]), /conflicting-compact-record/);
+  const b = record("B");
+  assert.equal(mergeIndex(mergeIndex("", [a]), [b]), mergeIndex(mergeIndex("", [b]), [a]), "union order must not affect canonical bytes");
 });
 await check("backup-readback-idempotence-and-failure", async () => {
   const file = path.join(temp, "io/pi-compact.md");
@@ -130,7 +145,7 @@ await check("only-success-hook-nonblocking-no-input-mutation", async () => {
   const source = fs.readFileSync(path.join(root, "src/extensions/lop-compact.ts"), "utf8");
   assert.doesNotMatch(source, /pi\.(?:sendMessage|sendUserMessage|registerTool|registerCommand|setActiveTools|exec)|pi\.on\("(?:context|before_agent_start|before_provider_request|tool_call|session_before_compact|agent_end|input)"/);
 });
-await check("jsonl-exact-source-backfill-one-latest-per-session", async () => {
+await check("jsonl-exact-source-backfill-every-compact", async () => {
   const dir = path.join(temp, "sessions/--real-cwd--"); fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "one.jsonl");
   const entries = [{ type: "session", id: "source-1" }, { type: "compaction", id: "c1", timestamp: 1, summary: "## Goal\nfirst\n## Progress\nold" }, { type: "compaction", id: "c2", timestamp: 2, summary: "## Goal\n完整最新目标。\n## Progress\n最后" }];
@@ -140,9 +155,34 @@ await check("jsonl-exact-source-backfill-one-latest-per-session", async () => {
   await assert.rejects(readCompaction(file, "missing"), /matches=0/);
   const index = path.join(temp, "backfill.md");
   const result = await backfill({ sessionsDir: path.dirname(dir), indexPath: index });
-  assert.equal(result.indexed, 1); assert.equal(result.compactions, 2); assert.deepEqual(result.failed, []);
+  assert.equal(result.indexed, 2); assert.equal(result.compactions, 2); assert.deepEqual(result.failed, []);
+  assert.equal(indexSnapshot(index).records.length, 2);
   assert.match(fs.readFileSync(index, "utf8"), /Compact ID：c2/);
   assert.ok(fs.readFileSync(file).equals(before), "original session file remains read-only");
+});
+
+await check("seven-day-inclusive-boundaries-all-compacts-and-two-way-union", async () => {
+  const dir = path.join(temp, "seven-day/--session--"); fs.mkdirSync(dir, { recursive: true });
+  const until = Date.parse("2026-09-13T12:00:00Z"), since = until - 7 * 86400000;
+  const times = [since - 1, since, since + 1, until, until + 1];
+  const source = path.join(dir, "window.jsonl");
+  fs.writeFileSync(source, [{ type: "session", id: "window-session" }, ...times.map((t, i) => ({ type: "compaction", id: `window-${i}`, timestamp: new Date(t).toISOString(), summary: `## Goal\n逐字原文 ${i}\n\n## Progress\n后续` }))].map(e => JSON.stringify(e)).join("\n") + "\n");
+  const before = fs.readFileSync(source);
+  const scan = await collectCompactions({ sessionsDir: path.dirname(dir), since, until });
+  assert.deepEqual(scan.failed, []); assert.equal(scan.compactions, 5); assert.equal(scan.indexed, 3);
+  assert.deepEqual(scan.records.map(r => r.compactId), ["window-1", "window-2", "window-3"]);
+  for (const r of scan.records) assert.equal(r.text, extractGoal((await readCompaction(source, r.compactId)).compact.summary).text);
+  assert.ok(fs.readFileSync(source).equals(before));
+  const one = path.join(temp, "union-one.md"), two = path.join(temp, "union-two.md");
+  const a = createIndexWriter({ indexPath: one, backupTool }), b = createIndexWriter({ indexPath: two, backupTool });
+  const older = record("retained-older", "c1", since - 86400000);
+  await a.update([older, ...scan.records.slice(0, 2)]); await b.update(scan.records.slice(2));
+  await a.update(indexSnapshot(two).records); await b.update(indexSnapshot(one).records);
+  assert.equal(indexSnapshot(one).hash, indexSnapshot(two).hash);
+  assert.equal(indexSnapshot(one).records.length, 4, "old records retained, all three recent checkpoints present");
+  const hash = indexSnapshot(one).hash;
+  await a.update(scan.records); await b.update(scan.records);
+  assert.equal(indexSnapshot(one).hash, hash); assert.equal(indexSnapshot(two).hash, hash);
 });
 
 // Optional installed-SDK mode is explicit; no network, provider calls or fake production sessions.
