@@ -1,5 +1,5 @@
 // 同步 pi CLI home(~/.pi/agent/extensions)与仓库常驻扩展源。
-// 常驻扩展:lop-pretool.ts(只允许或拒绝，不改写工具)、lop-followup.ts(默认关闭的追问模式)两份文件复制,
+// 常驻扩展:lop-pretool.ts(只允许或拒绝)、lop-followup.ts(默认关闭)、lop-compact.ts(仅成功事件落盘)文件复制,
 // 以及 browser-agent 目录 junction(浏览器工具,2026-09-05 lop 明确恢复;junction 单源,改仓即改 live)。
 // 旧 lop-chain.ts / lop-swarm 已退役,本脚本不再创建,发现残留只报告不动手。
 // 用法: node tools/sync-cli-home.mjs [--check]
@@ -12,7 +12,7 @@ const REPO_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const AGENT_HOME = process.env.PI_CODING_AGENT_DIR || path.join(process.env.USERPROFILE || process.env.HOME, ".pi", "agent");
 const CLI_EXT = path.join(AGENT_HOME, "extensions");
 const BACKUP = path.join(REPO_SRC, "../tools/backup.mjs");
-const RESIDENT = ["pretool/native-import.cjs", "lop-pretool.ts", "extensions/lop-followup.ts"];
+const RESIDENT = ["pretool/native-import.cjs", "lop-pretool.ts", "extensions/lop-followup.ts", "extensions/lop-compact.ts"];
 const RESIDENT_DIRS = ["browser-agent"];
 const RETIRED = ["lop-chain.ts", "lop-swarm"];
 const check = process.argv.includes("--check");
