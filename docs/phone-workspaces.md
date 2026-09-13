@@ -54,6 +54,29 @@ node --test tests/phone.test.mjs tests/phone-workspaces.test.mjs
 
 Device acceptance: step through 2→4→6→10 distinct nonzero displays, verify correct package trees, independent node actions and reads, rejected same-package/eleventh-slot/stale-snapshot operations, unchanged physical-screen package/focus, working main-screen XML readback, and stop releasing every owned display. These must be measured on the target device; compile success is not device acceptance.
 
+## Verified ten-slot smoke test (2026-09-13)
+
+Device: 2602BRT18C / Android 16 (API 36). Installed broker commit `93e24ccc0021571e6b10d8bbb448dfb26bbf4894`, [successful cloud run](https://github.com/lop-spec/pi-portable/actions/runs/34743707984). JAR: 16119 bytes; SHA256 `c6756592d07cbd7ced4372bef545fad9af2211c97b3c9ab401d5c61ded82dc0c`. The 37 host tests passed in CI and on both managed Windows hosts; source, manifest and JAR were synchronized with backup/hash readback, excluding credentials and live mappings.
+
+The old two-slot broker was detected and left untouched until the user authorized closing its workspaces. After explicit stop/start, the new broker reported `maxWorkspaces: 10` and initially had zero displays.
+
+The final acceptance run used three joint-read samples at each stage:
+
+| Resident Apps | Joint read, host end-to-end | Broker PSS sample |
+| --- | --- | --- |
+| 2 | 361–368 ms | 99838 KiB |
+| 4 | 277–389 ms | 117684 KiB |
+| 6 | 243–338 ms | 127293 KiB |
+| 10 | 562–665 ms | 147489 KiB (about 144 MiB) |
+
+- Predeclared smoke-test gates: each batch ≤6 seconds, broker PSS ≤512 MiB, available system memory ≥512 MiB, Android thermal status ≤2, and physical-screen focus 0. All stages passed. At ten Apps, available memory was 2592272 KiB (about 2.47 GiB); every sampled thermal status was 0. App process memory is **additional** to broker PSS. These samples do not establish sustained throughput, temperature or battery limits.
+- Ten distinct nonzero displays returned package-correct trees: calculator, clock, settings, weather, downloads, Google Translate, calendar, file explorer, Google DocumentsUI and Xiaomi app store. Compass (`com.miui.compass`) and notes (`com.miui.notes`) were rejected with `APP_NOT_ON_TARGET_DISPLAY`; their attempted displays were released, with no main-screen fallback. Compatibility is App-specific, not universal.
+- With all ten resident, concurrent calculator text input and clock navigation passed. The eleventh workspace, duplicate-App lease, consumed and cross-workspace snapshot tokens were rejected. This tests ten concurrent reads and two independent actions under ten-App residency, not ten simultaneous gestures.
+- The physical-screen App remained unchanged within each run (the launcher in the first run, a browser App in the final run); sampled `mTopFocusedDisplayId` stayed 0, and `phone ui` worked while ten displays were resident. Simultaneous human typing and user-triggered migration of a leased App remain unverified.
+- Calculator expression and clock alarm tab were restored. All test displays and the broker were stopped. WindowManager teardown is asynchronous: the first cleanup test checked too early; the corrected test only observed removal, without replaying stop. Final readback found one closing display at 277 ms and no owned displays at 765 ms, within the unchanged requirement to release every test display (an explicit 8-second observation deadline). No runtime input or isolation gate was relaxed.
+
+There is still no automatic thermal controller or idle auto-stop. Close completed workspaces; ten is a tested admission ceiling for this utility-App sample, not ten independent Android systems or a promise for ten heavy Apps.
+
 ## Historical two-slot baseline (2026-09-12, local time)
 
 - Device: 2602BRT18C / Android 16 (API 36). Broker CI commit `8792d31ce8d37a3421ae729ffe8c8ee140346052`, [successful cloud run](https://github.com/lop-spec/pi-portable/actions/runs/34376514732). Artifact SHA256: `87cdfb22b1f7bf78c00250317cdab726363c7b8eb78a7c79be0ae3a12d64b3ef`.
