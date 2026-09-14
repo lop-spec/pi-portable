@@ -6,7 +6,8 @@
          "32": "icons/icon-32.png",
          "48": "icons/icon-48.png"
       },
-      "default_title": "Playwright Extension"
+      "default_title": "Playwright Extension",
+      "default_popup": "status.html"
    },
    "background": {
       "service_worker": "lib/background.mjs",
@@ -25,6 +26,6 @@
    "name": "Playwright Extension — Pi Background",
    "permissions": [ "debugger", "activeTab", "tabs", "tabGroups" ],
    "minimum_chrome_version": "110",
-   "version_name": "0.4.0 + Pi background 2",
-   "version": "0.4.0.2"
+   "version_name": "0.4.0 + Pi single fixed tab",
+   "version": "0.4.0.3"
 }

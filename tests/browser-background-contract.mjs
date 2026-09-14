@@ -3,16 +3,20 @@ import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {patchBackgroundBootstrap} from '../src/browser-agent/background-mcp-patch.mjs';
 import {backgroundConfig} from '../src/browser-agent/vendor/playwright-extension/pi-background-config.mjs';
+import {createFixedTabStore,FIXED_TAB_KEY,retireConnectionPages} from '../src/browser-agent/vendor/playwright-extension/pi-background-tab.mjs';
+import {parseBackgroundInvitation} from '../src/browser-agent/vendor/playwright-extension/pi-background-service.mjs';
 const vendor=new URL('../src/browser-agent/vendor/playwright-extension/',import.meta.url);
 const manifest=JSON.parse(await fs.readFile(new URL('manifest.json',vendor),'utf8'));
 const extensionId=createHash('sha256').update(Buffer.from(manifest.key,'base64')).digest('hex').slice(0,32).split('').map(c=>String.fromCharCode(97+parseInt(c,16))).join('');
 assert.equal(extensionId,backgroundConfig.extensionId);
 assert(!manifest.permissions.includes('offscreen'));
+assert(!manifest.permissions.includes('storage'),'No new permission grants needed');
 assert.equal(manifest.minimum_chrome_version,'110');
-assert.equal(manifest.update_url,undefined,'Store updates must not silently restore foreground behavior');
+assert.equal(manifest.update_url,undefined);
 const source=await fs.readFile(new URL('lib/background.mjs',vendor),'utf8');
 assert(!source.includes('chrome.windows.update('));
-assert(source.includes('active: false'));
+assert(!source.includes('chrome.tabs.group('));
+assert(!source.includes('chrome.tabGroups.update('));
 assert(source.includes('["Page.bringToFront", "Target.activateTarget"].includes(args[1])'));
 const fixture=`class Relay {
       async _openConnectPageInBrowser(clientName) {
@@ -32,87 +36,69 @@ assert(changed.includes('await globalThis.__piOpenBackgroundExtension(href)'));
 assert(!changed.includes('.spawn)'));
 assert.throws(()=>patchBackgroundBootstrap(fixture.replace('stdio: "ignore"','stdio: "pipe"')),/refusing foreground fallback/);
 assert.throws(()=>patchBackgroundBootstrap('unknown upstream'),/Unsupported/);
-const calls=[];let windows=[{id:7,focused:true}];
-const originalFetch=globalThis.fetch, originalTimeout=globalThis.setTimeout;
-globalThis.fetch=async url=>({ok:true,json:async()=>String(url).endsWith('pi-background-pairing.json')?{token:'x'.repeat(43)}:{tickets:[]}});
-globalThis.setTimeout=()=>0;
-const event={addListener(){}};
-globalThis.chrome={
-  runtime:{id:extensionId,getURL:p=>`chrome-extension://${extensionId}/${p}`,getPlatformInfo:async()=>({}),onInstalled:event,onStartup:event,onMessage:event,sendMessage:async()=>{}},
-  tabs:{onActivated:event,query:async()=>[],create:async args=>{calls.push(args);return {id:55};}},
-  windows:{onFocusChanged:event,getAll:async()=>windows},
+const ownUrl=`chrome-extension://${extensionId}/connect.html`;
+const invite=ownUrl+'?mcpRelayUrl='+encodeURIComponent('ws://127.0.0.1:50001/extension/test')+'&protocolVersion=2';
+assert.equal(parseBackgroundInvitation(invite).clientName,'Pi Thorium');
+assert.throws(()=>parseBackgroundInvitation(invite.replace('127.0.0.1','example.com')),/Rejected non-local/);
+assert.throws(()=>parseBackgroundInvitation(invite.replace('Version=2','Version=3')),/Unsupported/);
+let nextId=10,created=0;let windows=[{id:7,focused:true}];
+const tabs=new Map([[1,{id:1,url:ownUrl+'?old',active:false,pinned:true}],[2,{id:2,url:ownUrl+'?active',active:true,pinned:true}],[3,{id:3,url:'https://example.com/user',active:false,pinned:false}]]);
+const storage={};const calls=[];const event={addListener(){},removeListener(){}};
+const api={
+ runtime:{getURL:p=>`chrome-extension://${extensionId}/${p}`,onMessage:event},
+ storage:{local:{get:async key=>({[key]:storage[key]}),set:async data=>Object.assign(storage,data)}},
+ windows:{getAll:async()=>windows},
+ action:{onClicked:event,setBadgeText:async()=>{},setTitle:async()=>{},setBadgeBackgroundColor:async()=>{}},
+ tabGroups:{query:async()=>[]},
+ debugger:{detach:async()=>{},attach:async()=>{},sendCommand:async()=>({}),onEvent:event,onDetach:event},
+ tabs:{onUpdated:event,onRemoved:event,onCreated:event,
+  get:async id=>{if(!tabs.has(id))throw new Error('No tab');return {...tabs.get(id)};},
+  query:async filter=>[...tabs.values()].filter(t=>!filter.url||t.url.startsWith(ownUrl)).map(t=>({...t})),
+  update:async(id,args)=>{assert.equal(args.active,undefined);calls.push(['update',id,args]);Object.assign(tabs.get(id),args);return {...tabs.get(id)};},
+  create:async args=>{assert.equal(args.active,false);created++;const tab={id:++nextId,...args};tabs.set(tab.id,tab);return {...tab};},
+  remove:async id=>{calls.push(['remove',id]);tabs.delete(id);},
+  ungroup:async()=>{},
+ },
 };
-try {
-  const service=await import(new URL('pi-background-service.mjs?contract',vendor));
-  const url=chrome.runtime.getURL('connect.html')+'?mcpRelayUrl='+encodeURIComponent('ws://127.0.0.1:50001/extension/test');
-  assert.equal((await service.openBackgroundConnection(url)).success,true);
-  assert.deepEqual(calls,[{windowId:7,url,active:false,pinned:true}]);
-  windows=[];
-  await assert.rejects(service.openBackgroundConnection(url),/No existing normal/);
-  assert.equal(calls.length,1,'No normal window must fail closed, not launch one');
-  await assert.rejects(service.openBackgroundConnection(url.replace('127.0.0.1','example.com')),/Rejected non-local/);
-  const ownUrl=chrome.runtime.getURL('connect.html');
-  const tabs=new Map([
-    [1,{id:1,url:ownUrl+'?connection=old',pinned:false}],
-    [2,{id:2,url:ownUrl+'?connection=pinned',pinned:true}],
-    [3,{id:3,url:'https://example.com/Welcome',pinned:false}],
-    [4,{id:4,url:chrome.runtime.getURL('status.html'),pinned:false}],
-    [5,{id:5,url:'https://example.com/navigated',pinned:false}],
-  ]);
-  const updates=[];
-  chrome.tabs.query=async filter=>{
-    assert.deepEqual(filter,{url:ownUrl+'*'});
-    return [...tabs.values()].map(tab=>tab.id===5?{...tab,url:ownUrl}:tab);
-  };
-  chrome.tabs.get=async id=>tabs.get(id);
-  chrome.tabs.update=async (id,options)=>{
-    assert.deepEqual(options,{pinned:true},'Pinning must not activate or navigate');
-    updates.push(id); Object.assign(tabs.get(id),options); return tabs.get(id);
-  };
-  assert((await fs.readFile(new URL('connect.html',vendor),'utf8')).includes('src="/pi-background-pin.mjs"'));
-  const pinModule=await import(new URL('pi-background-pin.mjs?contract',vendor));
-  assert.equal(await pinModule.pinConnectionTabs(),1);
-  assert.deepEqual(updates,[1],'Only owned, unpinned connection pages may change');
-  tabs.set(6,{id:6,url:ownUrl+'?connection=reconnect',pinned:false});
-  assert.equal(await pinModule.pinConnectionTabs(),1);
-  assert.deepEqual(updates,[1,6]);
-  assert.equal(await pinModule.pinConnectionTabs(),0,'Already pinned pages are no-ops');
-  tabs.set(7,{id:7,url:ownUrl,pinned:false});
-  chrome.tabs.update=async()=>{throw new Error('pin rejected');};
-  await assert.rejects(pinModule.pinConnectionTabs(),/pin rejected/);
-  tabs.delete(7);
-  chrome.runtime.sendMessage=async()=>({ready:true});
-  assert.equal(await pinModule.initializePinning(),0);
-  chrome.runtime.sendMessage=async()=>undefined;
-  await assert.rejects(pinModule.initializePinning(),/reload the extension once/);
-  assert(!(await fs.readFile(new URL('pi-background-pin.mjs',vendor),'utf8')).includes('chrome.runtime.reload('),'Connection pages must not interrupt other clients with automatic reloads');
-  // Execute the actual vendor grouping implementation: a connection page must
-  // stay pinned, while navigation to an ordinary page restores normal grouping.
-  let groupTab={id:1,url:ownUrl,pinned:false};let grouped=0;
-  const groupApi={...chrome,tabs:{
-    get:async()=>groupTab,
-    update:async(id,options)=>{assert.deepEqual(options,{pinned:true});groupTab.pinned=true;return groupTab;},
-    group:async()=>{grouped++;groupTab.pinned=false;return 99;},
-  },tabGroups:{update:async()=>{}}};
-  const start=source.indexOf('var ConnectedTabGroup = class');
-  assert(start>=0,'Vendor class boundary must match');
-  const Group=new Function('chrome','isConnectionPage','retryOnDrag','CONNECTED_BADGE',source.slice(start,source.indexOf('async function ungroupTabs',start))+';return ConnectedTabGroup;')(groupApi,pinModule.isConnectionPage,fn=>fn(),{});
-  const group=Object.create(Group.prototype);
-  Object.assign(group,{_groupId:null,_groupTabIds:new Set(),groupStyle:{},_connection:{attachedTabs:new Set([1]),detachTab:id=>group._connection.attachedTabs.delete(id)}});
-  await group._addTabToGroup(1);
-  assert.equal(grouped,0);assert.equal(groupTab.pinned,true);
-  assert.deepEqual(group.connectedTabIds(),[1],'Ungrouped control pages must remain connection-owned');
-  let navigationRegrouped=false;
-  group._updateBadge=()=>{};
-  group._addTabToGroup=()=>{navigationRegrouped=true;};
-  group._onTabUpdated(1,{url:'https://example.com'},groupTab);
-  assert(navigationRegrouped,'Navigation must reconsider pinned control pages');
-  delete group._addTabToGroup;
-  groupTab={id:1,url:'https://example.com',pinned:true};
-  await group._addTabToGroup(1);
-  assert.equal(grouped,1);assert.equal(groupTab.pinned,false);
-  group.releaseTab(1);assert.deepEqual(group.connectedTabIds(),[]);
-  assert(source.includes('case "pi-connection-pinning-ready":'));
-  console.log('PASS background connection, pinning/reconnect/ownership/navigation, control-page group exemption, ordinary-page regrouping, no activation');
-}finally{delete globalThis.chrome;globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;}
+const identity={get:async()=>storage[FIXED_TAB_KEY],set:async id=>{storage[FIXED_TAB_KEY]=id;}};
+const store=createFixedTabStore(api,identity);
+const fixed=await store.ensure();
+assert.equal(fixed.id,2);assert.equal(fixed.url,'about:blank');assert.equal(created,0);
+assert.equal(await retireConnectionPages(fixed.id,api),1);assert(tabs.has(3),'Never remove user websites');
+for(let i=0;i<5;i++)assert.equal((await createFixedTabStore(api,identity).ensure()).id,2,'Stable across worker/store recreation');
+await api.tabs.update(2,{url:'https://example.com/work'});
+assert.equal((await store.ensure()).url,'https://example.com/work','Reconnect must retain website and DOM');
+assert.equal(storage[FIXED_TAB_KEY],2);
+tabs.delete(2);
+const recovered=await store.ensure();assert.equal(created,1);assert.notEqual(recovered.id,3);
+assert.equal((await store.ensure()).id,recovered.id);
+tabs.delete(recovered.id);windows=[];
+await assert.rejects(store.ensure(),/No existing normal/);assert.equal(created,1);
+windows=[{id:7}];
+// A query/get race must not discard a user page that has navigated away.
+const query=api.tabs.query;
+api.tabs.query=async filter=>filter.url?[{id:3,url:ownUrl}]:query(filter);
+assert.equal(await retireConnectionPages(999,api),0);assert(tabs.has(3));api.tabs.query=query;
+// Execute the actual vendor classes, not a substitute implementation.
+const classes=new Function('chrome','createFixedTabStore','retireConnectionPages','startBackgroundService','WebSocket',
+ source.replace(/^import .*;\r?\n/gm,'').replace('new PlaywrightExtension();','')+';return {RelayConnection,ConnectedTabGroup,PlaywrightExtension};'
+)(api,()=>store,id=>retireConnectionPages(id,api),()=>{}, {OPEN:1});
+const sent=[];const ws={readyState:1,send:x=>sent.push(JSON.parse(x)),close(){}};
+const relay=new classes.RelayConnection(ws);
+for(const method of ['chrome.tabs.create','chrome.tabs.remove'])await assert.rejects(relay._handleCommand({method,params:[{}]}),/Single fixed-tab/);
+for(const method of ['Target.createTarget','Target.closeTarget','Page.close'])await assert.rejects(relay._handleCommand({method:'chrome.debugger.sendCommand',params:[{},method]}),/Single fixed-tab/);
+assert.deepEqual(await relay._handleCommand({method:'chrome.debugger.sendCommand',params:[{},'Page.bringToFront']}),{});
+const group=new classes.ConnectedTabGroup(relay,{id:3},'test',{},()=>false);
+relay._notifyTabAttached(3);
+await group._addTabToGroup(3);
+group._onTabUpdated(3,{url:'https://example.com/next',groupId:4},{id:3,groupId:4});
+assert.deepEqual(group.connectedTabIds(),[3],'User group edits must not detach the fixed tab');
+group.close('test');assert(tabs.has(3),'Disconnect must preserve tab');
+const extension=new classes.PlaywrightExtension();
+extension._backgroundStarting=true;
+await assert.rejects(extension._connectBackground({}),/busy/);
+extension._backgroundStarting=false;extension._connections.set(1,{});
+await assert.rejects(extension._connectBackground({}),/busy/);
+assert.equal(created,1,'Denied connection must not create a tab');
+console.log('PASS singleton tab migration/reconnect/recovery/ownership, no grouping or foreground activation, busy rejection, CDP lifecycle guards');
 await import('./browser-worker-contract.mjs');

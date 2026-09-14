@@ -37,8 +37,9 @@ const server=http.createServer(async(req,res)=>{
     }
     if(url.pathname.startsWith('/ticket/')){const t=tickets.get(url.pathname.slice(8));return t?reply(200,{status:t.status,error:t.error,tabId:t.tabId}):reply(404,{error:'Invitation not found'});}
     if(url.pathname==='/event'&&req.method==='POST'){
-      if(!['tab-activated','window-focused'].includes(body.kind))return reply(400,{error:'Invalid event'});
-      events.push({seq:++sequence,at:body.at,kind:body.kind,tabId:body.tabId,windowId:body.windowId});if(events.length>300)events.shift();return reply(200,{ok:true});
+      if(!['tab-activated','window-focused','single-tab-state'].includes(body.kind))return reply(400,{error:'Invalid event'});
+      events.push({seq:++sequence,at:body.at,kind:body.kind,tabId:body.tabId,windowId:body.windowId,
+        ...(body.kind==='single-tab-state'?{tabCount:body.tabCount,connectionTabCount:body.connectionTabCount,playwrightGroupCount:body.playwrightGroupCount,activeTabs:body.activeTabs}:{})});if(events.length>300)events.shift();return reply(200,{ok:true});
     }
     if(url.pathname==='/diagnostics')return reply(200,{sequence,lastPoll,events});
     log('unknown-route',{path:url.pathname});reply(404,{error:'Unknown route'});

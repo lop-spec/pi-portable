@@ -40,6 +40,7 @@ export class ExtensionBrowserRuntime {
     try { token = JSON.parse(await fs.readFile(this.authFile,'utf8')).token; }
     catch(error) { await this.log('extension-auth-unavailable',{reason:error.code || error.message}); throw new Error('Playwright extension token is not configured for this machine; no native CDP or isolated browser fallback is allowed.'); }
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid Playwright extension token format');
+    this.redact = text => String(text).replaceAll(token,'<redacted>');
     const executable = resolveThoriumExecutable();
     if (!executable) { await this.log('extension-thorium-unavailable'); throw new Error('Daily Thorium executable not found; no fallback browser will be started.'); }
     const bundle = path.join(path.dirname(await resolvePlaywrightModule()), 'lib', 'coreBundle.js');
@@ -91,6 +92,7 @@ export class ExtensionBrowserRuntime {
     if(name==='browser_run_code')name=this.runCodeTool;
     if(!this.toolNames.has(name))throw new Error(`Installed Playwright extension API does not provide ${name}`);
     const result=await this.request('tools/call',{name,arguments:args},timeoutMs);
+    for(const item of result.content||[])if(item.type==='text')item.text=this.redact(item.text);
     if(result.isError){const reason=(result.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');await this.log('extension-tool-failed',{tool:name,reason:reason.slice(0,400)});throw new Error(reason);}
     return result;
   }
@@ -120,9 +122,15 @@ export class ExtensionBrowserRuntime {
       case 'wait': if(p.ref||p.selector||p.role||p.targetText){await run(`await ${this.locator(p)}.waitFor({state:'visible',timeout:${timeout}});`);result=await snap();}else result=await this.call('browser_wait_for',{time:(p.milliseconds??1000)/1000},timeout);break;
       case 'screenshot': result=await this.call('browser_take_screenshot',{type:'png',fullPage:p.fullPage??false},timeout);break;
       case 'tabs': result=await this.call('browser_tabs',{action:'list'},timeout);break;
-      case 'select_tab': result=await this.call('browser_tabs',{action:'select',index:p.tabIndex},timeout);break;
-      case 'new_tab': await this.call('browser_tabs',{action:'new'},timeout);result=p.url?await this.call('browser_navigate',{url:p.url},timeout):await snap();break;
-      case 'close_tab': result=await this.call('browser_tabs',{action:'close'},timeout);break;
+      case 'select_tab':
+        if(p.tabIndex!==0)throw new Error('Single fixed-tab mode: only tabIndex 0 is available');
+        result=await snap();break;
+      case 'new_tab':
+        await this.log('fixed-tab-reused',{reason:'new_tab maps to navigation in single fixed-tab mode'});
+        result=p.url?await this.call('browser_navigate',{url:p.url},timeout):await snap();break;
+      case 'close_tab':
+        await this.log('fixed-tab-retained',{reason:'close_tab clears the page without deleting the fixed tab'});
+        result=await this.call('browser_navigate',{url:'about:blank'},timeout);break;
       case 'close': await this.detach();return {content:[{type:'text',text:'Extension connection detached; daily Thorium and its login state were retained.'}],details:{action:p.action,mode:this.status().mode}};
       default: throw new Error(`Unsupported browser action: ${p.action}`);
     }
@@ -133,7 +141,7 @@ export class ExtensionBrowserRuntime {
       const links=[...text.matchAll(/\[Snapshot\]\(([^)]+\.yml)\)/g)];
       for(const link of links){const file=path.resolve(link[1]);const relative=path.relative(this.outputDir,file);if(relative.startsWith('..')||path.isAbsolute(relative)||!/^page-[^/\\]+\.yml$/.test(path.basename(file)))continue;try{text+='\n\n'+(await fs.readFile(file,'utf8')).slice(0,45000);}catch(error){await this.log('extension-snapshot-read-failed',{reason:error.code,file});}}
       if(text.length>60000){const file=path.join(this.outputDir,`result-${Date.now()}.txt`);await fs.writeFile(file,text,'utf8');await this.log('extension-result-truncated',{file,chars:text.length});text=text.slice(0,60000)+`\n[Truncated; full text: ${file}]`;}
-      content.push({type:'text',text});
+      content.push({type:'text',text:this.redact?.(text)??text});
     }
     await this.log('extension-action',{action:p.action});
     return {content,details:{action:p.action,mode:this.status().mode}};

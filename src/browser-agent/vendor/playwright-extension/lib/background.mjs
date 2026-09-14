@@ -1,4 +1,6 @@
-// Modified for Pi: background-only bootstrap, inactive new tabs, and suppressed CDP foreground requests.
+// Modified for Pi: one persistent tab, no connection pages/groups, and no foreground requests.
+import {createFixedTabStore, retireConnectionPages} from '../pi-background-tab.mjs';
+import {startBackgroundService} from '../pi-background-service.mjs';
 // Based on Microsoft Playwright Extension 0.4.0; original license and notices retained.
 //#region src/relayConnection.ts
 /**
@@ -201,7 +203,14 @@ var RelayConnection = class {
 	async _handleCommand(message) {
 		if (!ALLOWED_CHROME_COMMANDS.has(message.method)) throw new Error(`Unknown method: ${message.method}`);
 		const args = message.params ?? [];
-		if (message.method === "chrome.tabs.create") args[0] = { ...args[0], active: false };
+		if (["chrome.tabs.create", "chrome.tabs.remove"].includes(message.method)) {
+			console.warn("[pi-background] blocked tab lifecycle command in single-tab mode", message.method);
+			throw new Error("Single fixed-tab mode: use navigation to reuse the current tab; disconnect instead of closing it");
+		}
+		if (message.method === "chrome.debugger.sendCommand" && ["Target.createTarget", "Target.closeTarget", "Page.close"].includes(args[1])) {
+			console.warn("[pi-background] blocked CDP tab lifecycle command", args[1]);
+			throw new Error("Single fixed-tab mode: creating or closing tabs is disabled");
+		}
 		if (message.method === "chrome.debugger.sendCommand" && ["Page.bringToFront", "Target.activateTarget"].includes(args[1])) {
 			console.info("[pi-background] suppressed foreground command", args[1]);
 			return {};
@@ -374,6 +383,7 @@ var ConnectedTabGroup = class {
 		this._connection.ontabattached = (tabId) => this._onTabAttached(tabId);
 		this._connection.ontabdetached = (tabId) => this._onTabDetached(tabId);
 		this._onTabUpdatedListener = this._onTabUpdated.bind(this);
+		this._groupTabIds.add(selectedTab.id); // Logical ownership only; never a Chrome tab group.
 		this._onTabRemovedListener = this._onTabRemoved.bind(this);
 		chrome.tabs.onUpdated.addListener(this._onTabUpdatedListener);
 		chrome.tabs.onRemoved.addListener(this._onTabRemovedListener);
@@ -392,27 +402,11 @@ var ConnectedTabGroup = class {
 		this._connection.detachTab(tabId);
 	}
 	_onTabUpdated(tabId, changeInfo, tab) {
-		if (changeInfo.groupId !== void 0) this._onTabGroupChanged(tabId, tab);
 		if (changeInfo.url === void 0) return;
 		if (this._connection.attachedTabs.has(tabId)) {
 			this._updateBadge(tabId, CONNECTED_BADGE);
 			this._addTabToGroup(tabId);
 		} else if (this._groupTabIds.has(tabId) && !isNonDebuggableUrl(changeInfo.url)) this._connection.attachTab(tab);
-	}
-	_onTabGroupChanged(tabId, tab) {
-		const inOurGroup = this._groupId !== null && tab.groupId === this._groupId;
-		if (inOurGroup === this._groupTabIds.has(tabId)) return;
-		if (inOurGroup) {
-			if (this._isTabReserved(tabId)) {
-				ungroupTabs([tabId]);
-				return;
-			}
-			this._groupTabIds.add(tabId);
-			if (!isNonDebuggableUrl(tab.url)) this._connection.attachTab(tab);
-		} else {
-			this._groupTabIds.delete(tabId);
-			if (this._connection.attachedTabs.has(tabId)) this._connection.detachTab(tabId);
-		}
 	}
 	_onTabRemoved(tabId) {
 		this._groupTabIds.delete(tabId);
@@ -427,9 +421,8 @@ var ConnectedTabGroup = class {
 	_onConnectionClose() {
 		chrome.tabs.onUpdated.removeListener(this._onTabUpdatedListener);
 		chrome.tabs.onRemoved.removeListener(this._onTabRemovedListener);
-		const groupTabs = [...this._groupTabIds];
 		this._groupTabIds.clear();
-		if (groupTabs.length) ungroupTabs(groupTabs);
+		// The fixed tab remains open and ungrouped across disconnects.
 		this.onclose?.();
 	}
 	async _updateBadge(tabId, { text, color, title }) {
@@ -451,26 +444,8 @@ var ConnectedTabGroup = class {
 		} catch (error) {}
 	}
 	async _addTabToGroup(tabId) {
-		if (this._groupTabIds.has(tabId)) return;
-		try {
-			const tab = await chrome.tabs.get(tabId);
-			if (isConnectionPage(tab)) {
-				if (!tab.pinned) await chrome.tabs.update(tabId, { pinned: true });
-				return; // Grouping would unpin the connection page again.
-			}
-			await retryOnDrag(async () => {
-				if (this._groupId === null) {
-					this._groupId = await chrome.tabs.group({ tabIds: [tabId] });
-					await chrome.tabGroups.update(this._groupId, this.groupStyle);
-				} else await chrome.tabs.group({
-					groupId: this._groupId,
-					tabIds: [tabId]
-				});
-			});
-			this._groupTabIds.add(tabId);
-		} catch (error) {
-			console.error("[pi-background] tab-pin-or-group-failed", tabId, error.message);
-		}
+		// Retain upstream logical ownership/reattach semantics without tabGroups APIs.
+		this._groupTabIds.add(tabId);
 	}
 };
 async function ungroupTabs(tabIds) {
@@ -521,26 +496,47 @@ async function retryOnDrag(fn) {
 var PlaywrightExtension = class {
 	_connections = /* @__PURE__ */ new Map();
 	_lastConnectionId = 0;
-	_pendingConnections = new PendingConnections();
 	_cleanupPromise;
+	_fixedTabs = createFixedTabStore();
+	_backgroundStarting = false;
 	constructor() {
 		chrome.runtime.onMessage.addListener(this._onMessage.bind(this));
-		chrome.action.onClicked.addListener(this._onActionClicked.bind(this));
 		this._cleanupPromise = cleanupStalePlaywrightGroups();
+		startBackgroundService(invitation => this._connectBackground(invitation));
+	}
+	async _connectBackground({relayUrl, clientName}) {
+		if (this._backgroundStarting || this._connections.size) {
+			console.warn("[pi-background] fixed-tab-busy; refusing a second client");
+			throw new Error("The fixed browser tab is busy in another Pi session; disconnect that session first");
+		}
+		this._backgroundStarting = true;
+		let connection;
+		try {
+			await this._cleanupPromise;
+			const tab = await this._fixedTabs.ensure();
+			await retireConnectionPages(tab.id);
+			connection = await openRelayConnection(relayUrl);
+			const id = ++this._lastConnectionId;
+			const group = new ConnectedTabGroup(connection, tab, clientName, {}, () => false);
+			group.onclose = () => this._connections.delete(id);
+			this._connections.set(id, group);
+			console.info("[pi-background] connected to fixed tab without activation or grouping", tab.id);
+			return {success:true, tabId:tab.id};
+		} catch (error) {
+			connection?.close("Background connection failed");
+			throw error;
+		} finally { this._backgroundStarting = false; }
 	}
 	_onMessage(message, sender, sendResponse) {
 		switch (message.type) {
 			case "pi-connection-pinning-ready":
 				sendResponse({ ready: true });
 				return false;
-			case "connectionRequested": {
-				const selectorTabId = sender.tab.id;
-				this._releaseConnectPage(selectorTabId).then(() => {
-					this._pendingConnections.create(selectorTabId, message.mcpRelayUrl);
-					sendResponse({ success: true });
-				});
-				return true;
-			}
+			case "connectionRequested":
+			case "connectToTab":
+				console.info("[pi-background] retired connection-page request rejected");
+				sendResponse({success:false,error:"Connection pages are retired; use the fixed-tab background bridge"});
+				return false;
 			case "getTabs":
 				this._getTabs(sender.tab?.id).then((tabs) => sendResponse({
 					success: true,
@@ -551,14 +547,6 @@ var PlaywrightExtension = class {
 					error: error.message
 				}));
 				return true;
-			case "connectToTab": {
-				const selectedTab = message.tab ?? sender.tab;
-				this._connectTab(sender.tab.id, selectedTab, message.clientName).then(() => sendResponse({ success: true }), (error) => sendResponse({
-					success: false,
-					error: error.message
-				}));
-				return true;
-			}
 			case "getConnectionStatus":
 				sendResponse({ connections: [...this._connections].map(([id, group]) => ({
 					id,
@@ -573,31 +561,6 @@ var PlaywrightExtension = class {
 			case "keepalive": return false;
 		}
 	}
-	async _connectTab(selectorTabId, tab, clientName) {
-		try {
-			await this._cleanupPromise;
-			this._releaseTab(selectorTabId);
-			if (tab.id !== selectorTabId && this._connectedTabIds().has(tab.id)) throw new Error("This tab is already connected to another client");
-			const connection = await this._pendingConnections.take(selectorTabId);
-			if (!connection) throw new Error("Pending client connection closed");
-			const id = ++this._lastConnectionId;
-			const group = new ConnectedTabGroup(connection, tab, clientName, uniqueGroupStyle(clientName, [...this._connections.values()].map((group) => group.groupStyle)), (tabId) => this._pendingConnections.has(tabId));
-			group.onclose = () => this._connections.delete(id);
-			this._connections.set(id, group);
-			console.info("[pi-background] connected without activating tab or window", tab.id);
-			if (tab.id !== selectorTabId) await chrome.tabs.remove(selectorTabId).catch(() => {});
-		} catch (error) {
-			debugLog(`Failed to connect tab ${tab.id}:`, error.message);
-			throw error;
-		}
-	}
-	async _releaseConnectPage(tabId) {
-		this._releaseTab(tabId);
-		await ungroupTabs([tabId]);
-	}
-	_releaseTab(tabId) {
-		for (const group of this._connections.values()) group.releaseTab(tabId);
-	}
 	async _getTabs(selectorTabId) {
 		const tabs = await chrome.tabs.query({});
 		const connectedTabIds = this._connectedTabIds();
@@ -606,14 +569,6 @@ var PlaywrightExtension = class {
 	_connectedTabIds() {
 		return new Set([...this._connections.values()].flatMap((group) => group.connectedTabIds()));
 	}
-	async _onActionClicked() {
-		await chrome.tabs.create({
-			url: chrome.runtime.getURL("status.html"),
-			active: true
-		});
-	}
 };
 new PlaywrightExtension();
-import { isConnectionPage } from "../pi-background-pin.mjs";
-import "../pi-background-service.mjs";
 //#endregion

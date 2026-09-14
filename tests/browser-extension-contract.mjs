@@ -24,6 +24,14 @@ try {
   assert(calls.some(x=>x.name==='browser_run_code'&&x.args.code.includes('page.locator(')));
   await runtime.execute({action:'tabs'});
   assert.deepEqual(calls.at(-1).args,{action:'list'});
+  calls.length=0;
+  await runtime.execute({action:'new_tab',url:'https://example.com/reuse'});
+  assert.deepEqual(calls,[{name:'browser_navigate',args:{url:'https://example.com/reuse'}}]);
+  await runtime.execute({action:'close_tab'});
+  assert.deepEqual(calls.at(-1),{name:'browser_navigate',args:{url:'about:blank'}});
+  await runtime.execute({action:'select_tab',tabIndex:0});
+  assert.equal(calls.at(-1).name,'browser_snapshot');
+  await assert.rejects(runtime.execute({action:'select_tab',tabIndex:1}),/only tabIndex 0/);
   await assert.rejects(runtime.execute({action:'goto',url:'javascript:alert(1)'}),/navigation is allowed/);
   const source=await fs.readFile(new URL('../src/browser-agent/index.ts',import.meta.url),'utf8');
   assert(source.includes('extension-runtime.mjs'));
