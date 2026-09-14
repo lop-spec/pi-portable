@@ -69,6 +69,9 @@ jobs:
           node-version: "22.19.0"
 
       - name: Verify portable contracts
+        # Loopback transport fixtures must not inherit the runner's Windows proxy.
+        env:
+          CODEX_FOLLOW_SYSTEM_PROXY: "0"
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
