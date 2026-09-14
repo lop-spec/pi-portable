@@ -7,6 +7,20 @@ import { importFreshModule } from './fresh-module.mjs';
 const { resolvePlaywrightModule } = await importFreshModule(new URL('./runtime.mjs', import.meta.url));
 const { readDailyBrowserSelection, resolveDailyBrowserExecutable, resolveDailyPlaywrightModule } = await importFreshModule(new URL('./daily-browser.mjs', import.meta.url));
 
+// Follow the installed official tool schema instead of guessing by version.
+export function adaptToolArguments(schema,args) {
+  if(!schema?.properties)throw new Error('Installed Playwright tool schema is unavailable');
+  const result={...args},properties=schema.properties;
+  if(result.ref!==undefined && !properties.ref) {
+    if(!properties.target)throw new Error('Unsupported Playwright element-target contract');
+    result.target=result.ref;delete result.ref;
+  }
+  for(const key of schema.required||[]) {
+    if(result[key]===undefined && properties[key]?.default!==undefined)result[key]=properties[key].default;
+  }
+  return result;
+}
+
 // Official Playwright MCP over stdio. It owns the extension/CDP relay; no native CDP,
 // browser launch fallback, Cookie copying, or custom browser protocol is used here.
 export class ExtensionBrowserRuntime {
@@ -76,6 +90,9 @@ export class ExtensionBrowserRuntime {
     child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})+'\n');
     const listed=await this.request('tools/list',{},15000);
     this.toolNames=new Set(listed.tools.map(tool=>tool.name));
+    this.toolSchemas=new Map(listed.tools.map(tool=>[tool.name,tool.inputSchema]));
+    const targetTools=listed.tools.filter(tool=>tool.inputSchema?.properties?.target&&!tool.inputSchema.properties.ref).map(tool=>tool.name);
+    if(targetTools.length)await this.log('extension-argument-alias',{requested:'ref',actual:'target',tools:targetTools,reason:'Installed official schema uses target for refs and selectors'});
     this.runCodeTool=this.toolNames.has('browser_run_code')?'browser_run_code':'browser_run_code_unsafe';
     if(this.runCodeTool!=='browser_run_code')await this.log('extension-tool-alias',{requested:'browser_run_code',actual:this.runCodeTool,reason:'Official installed Playwright API uses the renamed tool'});
     await this.log('extension-mcp-ready',{pid:child.pid,profileDir:this.profileDir});
@@ -92,7 +109,7 @@ export class ExtensionBrowserRuntime {
     await this.ensureStarted();
     if(name==='browser_run_code')name=this.runCodeTool;
     if(!this.toolNames.has(name))throw new Error(`Installed Playwright extension API does not provide ${name}`);
-    const result=await this.request('tools/call',{name,arguments:args},timeoutMs);
+    const result=await this.request('tools/call',{name,arguments:adaptToolArguments(this.toolSchemas.get(name),args)},timeoutMs);
     for(const item of result.content||[])if(item.type==='text')item.text=this.redact(item.text);
     if(result.isError){const reason=(result.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');await this.log('extension-tool-failed',{tool:name,reason:reason.slice(0,400)});throw new Error(reason);}
     return result;

@@ -1,4 +1,4 @@
-// One bounded source change to the installed official Playwright bundle.
+// Bounded in-memory changes to the installed official Playwright bundle.
 // Unsupported upstream layouts fail closed instead of launching a foreground browser.
 export function patchBackgroundBootstrap(source) {
   const marker='async _openConnectPageInBrowser(clientName) {';
@@ -17,4 +17,13 @@ export function patchBackgroundBootstrap(source) {
   if(matches.length!==1)throw new Error('Unsupported Playwright browser launch shape; refusing foreground fallback');
   const replaced=body.replace(spawn,'await globalThis.__piOpenBackgroundExtension(href);');
   return source.slice(0,start)+replaced+source.slice(end);
+}
+
+// Extension CDP sets noDefaults=true, suppressing Playwright's standard page
+// focus emulation. Restore only that override for the bridge's fixed target so
+// background rAF/actionability can run; never activate a real tab or window.
+export function patchBackgroundFocusEmulation(source) {
+  const pattern=/if \(this\._isMainFrame\(\) && !skipDefaultOverrides\)(\s+promises\d*\.push\(this\._client\.send\("Emulation\.setFocusEmulationEnabled", \{ enabled: true \}\)\);)/g;
+  if([...source.matchAll(pattern)].length!==1)throw new Error('Unsupported Playwright focus-emulation layout; refusing foreground or forced-click fallback');
+  return source.replace(pattern,'if (this._isMainFrame())$1');
 }

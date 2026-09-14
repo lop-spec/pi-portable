@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {createInterface} from 'node:readline';
-import {patchBackgroundBootstrap} from './background-mcp-patch.mjs';
+import {patchBackgroundBootstrap,patchBackgroundFocusEmulation} from './background-mcp-patch.mjs';
 import {backgroundConfig} from './vendor/playwright-extension/pi-background-config.mjs';
 const [bundle,outputDir]=process.argv.slice(2);
 const token=process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
@@ -24,7 +24,8 @@ globalThis.__piOpenBackgroundExtension=async url=>{
   throw new Error('Background extension did not accept the invitation; no foreground fallback was attempted');
 };
 try {
-  const source=patchBackgroundBootstrap(await fs.readFile(bundle,'utf8'));
+  const source=patchBackgroundFocusEmulation(patchBackgroundBootstrap(await fs.readFile(bundle,'utf8')));
+  log('standard page focus emulation restored for the fixed target; no foreground activation');
   const module={exports:{}};
   // Evaluate the trusted, installed Apache-licensed bundle with its original module paths.
   // No dependency files are overwritten, and no browser process is launched by this entrypoint.

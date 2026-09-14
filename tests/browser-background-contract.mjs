@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
-import {patchBackgroundBootstrap} from '../src/browser-agent/background-mcp-patch.mjs';
+import {patchBackgroundBootstrap,patchBackgroundFocusEmulation} from '../src/browser-agent/background-mcp-patch.mjs';
 import {backgroundConfig} from '../src/browser-agent/vendor/playwright-extension/pi-background-config.mjs';
 import {createFixedTabStore,FIXED_TAB_KEY,retireConnectionPages} from '../src/browser-agent/vendor/playwright-extension/pi-background-tab.mjs';
 import {parseBackgroundInvitation} from '../src/browser-agent/vendor/playwright-extension/pi-background-service.mjs';
@@ -39,6 +39,11 @@ assert.match(patchBackgroundBootstrap(v163),/__piOpenBackgroundExtension\(href\)
 assert.throws(()=>patchBackgroundBootstrap(v163.replace('this._token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;','this._token = undefined;')),/invitation contract/);
 assert.throws(()=>patchBackgroundBootstrap(fixture.replace('stdio: "ignore"','stdio: "pipe"')),/refusing foreground fallback/);
 assert.throws(()=>patchBackgroundBootstrap('unknown upstream'),/Unsupported/);
+const focusFixture='if (this._isMainFrame() && !skipDefaultOverrides)\n  promises2.push(this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true }));';
+assert.equal(patchBackgroundFocusEmulation(focusFixture),focusFixture.replace(' && !skipDefaultOverrides',''));
+assert.throws(()=>patchBackgroundFocusEmulation('unknown'),/Unsupported/);
+assert.throws(()=>patchBackgroundFocusEmulation(focusFixture+'\n'+focusFixture),/Unsupported/);
+assert.throws(()=>patchBackgroundFocusEmulation(focusFixture.replace('enabled: true','enabled: false')),/Unsupported/);
 const ownUrl=`chrome-extension://${extensionId}/connect.html`;
 const invite=ownUrl+'?mcpRelayUrl='+encodeURIComponent('ws://127.0.0.1:50001/extension/test')+'&protocolVersion=2';
 assert.equal(parseBackgroundInvitation(invite).clientName,'Pi Thorium');
