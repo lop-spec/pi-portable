@@ -128,10 +128,62 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   await f.emit('session_shutdown'); assert.equal(f.requests[0].signal.aborted, true); f.finish(); await tick();
   console.log('PASS: no empty request/marker, deferred first job, shutdown cancellation');
 }
-for (const scenario of ['model_select', 'thinking_level_select', 'session_tree', 'session_shutdown']) {
+// Fixed-low jobs must survive main-thinking changes both before and after becoming ready.
+// Missing select events also exercise the validation path independently of event suppression.
+for (const phase of ['pending', 'ready']) for (const notify of [true, false]) {
+  const f = fixture(); await f.emit('tool_execution_start', f.currentTool);
+  if (phase === 'ready') { f.finish(); await until(() => f.logs.some(e => e.event === 'ready'), 'ready before switching'); }
+  for (const level of ['medium', 'high']) {
+    f.add({ type: 'thinking_level_change', thinkingLevel: level });
+    if (notify) await f.emit('thinking_level_select', { level });
+    assert.equal(f.requests[0].signal.aborted, false, `${phase}: main thinking must not abort low summary`);
+  }
+  if (phase === 'pending') { f.finish(); await until(() => f.logs.some(e => e.event === 'ready'), 'ready after switching'); }
+  const tail = f.message('user', `RETAIN_TAIL_${phase}_${notify}`);
+  f.setIdle(true); await f.emit('agent_settled');
+  await until(() => f.logs.some(e => e.event === 'persisted'), 'thinking-independent apply');
+  assert.deepEqual(f.metrics(), { aborts: 0, compacts: 1, synchronousFallbacks: 0 });
+  assert.equal(f.requests.length, 1, 'no replacement request'); assert.equal(f.requests[0].level, 'low');
+  assert.equal(sdk.buildSessionContext(f.branch).thinkingLevel, 'high', 'main selection must remain effective');
+  assert.ok(JSON.stringify(sdk.buildSessionContext(f.branch).messages).includes(tail.message.content));
+  assert.ok(!f.logs.some(e => e.event === 'invalidated' || e.event === 'native-fallback'));
+  assert.ok(f.logs.some(e => e.reason === 'fixed-summary-thinking'), 'retention/alignment must be observable');
+}
+{
+  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.finish();
+  await until(() => f.logs.some(e => e.event === 'ready'), 'ready for native hook');
+  f.add({ type: 'thinking_level_change', thinkingLevel: 'medium' });
+  const result = await f.emit('session_before_compact', { preparation: { settings: { enabled: true, reserveTokens: 4096, keepRecentTokens: 128 } }, reason: 'threshold' });
+  assert.ok(result?.compaction, 'native hook must reuse low summary even without select event');
+  assert.equal(f.requests.length, 1);
+}
+console.log('PASS: pending/ready main-thinking switches, missing-event validation, native hook reuse; low summary single request, tail/main selection unchanged');
+for (const phase of ['pending', 'ready']) for (const scenario of ['model_select', 'session_tree', 'session_shutdown']) {
   const f = fixture({ tokens: 128000 }); await f.emit('tool_execution_start', f.currentTool);
+  // Keep ready fixtures below the forced-application watermark.
+  if (phase === 'ready') { f.setTokens(5000); f.finish(); await until(() => f.logs.some(e => e.event === 'ready'), 'ready before invalidation'); }
   await f.emit(scenario); f.finish(); await tick();
-  assert.equal(f.requests[0].signal.aborted, true, scenario); assert.equal(f.metrics().compacts, 0);
+  if (phase === 'pending') assert.equal(f.requests[0].signal.aborted, true, scenario);
+  assert.ok(f.logs.some(e => e.event === 'invalidated'), `${phase}/${scenario}`);
+  assert.equal(f.metrics().compacts, 0);
+}
+for (const reason of ['session_changed', 'model_changed', 'settings_changed', 'first_kept_missing', 'snapshot_leaf_missing', 'too_large', 'custom_instructions']) {
+  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.finish();
+  await until(() => f.logs.some(e => e.event === 'ready'), 'ready for safety checks');
+  const settings = { enabled: true, reserveTokens: 4096, keepRecentTokens: 128 };
+  if (reason === 'session_changed') f.ctx.sessionManager.getSessionId = () => 'another-session';
+  if (reason === 'model_changed') f.ctx.model = { ...model, id: 'different-model' };
+  if (reason === 'settings_changed') settings.keepRecentTokens++;
+  if (reason === 'first_kept_missing') f.branch.splice(f.branch.findIndex(e => e.id === f.requests[0].prep.firstKeptEntryId), 1);
+  if (reason === 'snapshot_leaf_missing') {
+    const callIndex = f.branch.findIndex(e => e.type === 'message' && e.message.content?.some?.(b => b.id === f.currentTool.toolCallId));
+    f.branch.splice(callIndex - 1, 1);
+  }
+  if (reason === 'too_large') f.ctx.model = { ...model, contextWindow: 4097 };
+  f.add({ type: 'thinking_level_change', thinkingLevel: 'medium' });
+  const result = await f.emit('session_before_compact', { preparation: { settings }, reason: 'threshold', customInstructions: reason === 'custom_instructions' ? 'Different focus' : undefined });
+  assert.equal(result, undefined, reason);
+  assert.ok(f.logs.some(e => e.event === 'invalidated' && e.reason === reason), `safety retained: ${reason}`);
 }
 {
   const f = fixture({ tokens: 128000, queued: true }); await f.emit('tool_execution_start', f.currentTool); f.finish(); await tick();
@@ -153,4 +205,4 @@ for (const scenario of ['model_select', 'thinking_level_select', 'session_tree',
   const f = fixture({ build: async () => { throw Error('fixture provider failure'); } }); await f.emit('tool_execution_start', f.currentTool); await tick();
   assert.ok(f.logs.some(e => e.event === 'failed')); assert.equal(f.metrics().compacts, 0);
 }
-console.log('PASS: model/thinking/tree/shutdown invalidation, queue protection, native fallback, timeout, failure logging; upstream hashes unchanged');
+console.log('PASS: model/session/settings/boundary/budget/instructions/tree/shutdown invalidation, queue protection, native fallback, timeout, failure logging; upstream hashes unchanged');

@@ -75,6 +75,20 @@ export function install(pi: ExtensionAPI, overrides: {
   let state: RuntimeState | undefined;
   let previousSkip = "";
   const emit = (record: Record<string, unknown>) => log({ sessionId: context?.sessionManager.getSessionId(), ...record });
+  // Every job in this adapter runs at fixed low. Only rebase upstream's main-thinking
+  // validation metadata; leave the snapshot boundary, model, session, settings and result intact.
+  function alignReadyThinking(ctx: ExtensionContext, current = state): void {
+    const ready = current?.status === "ready" ? current.ready : undefined;
+    if (!ready || !current || ready.sessionId !== ctx.sessionManager.getSessionId()) return;
+    const thinkingLevel = getThinkingLevel(ctx.sessionManager.getBranch());
+    if (ready.thinkingLevel === thinkingLevel) return;
+    current.ready = { ...ready, thinkingLevel, result: { ...ready.result, details: {
+      ...ready.result.details,
+      asyncPrefixCompaction: { ...ready.result.details.asyncPrefixCompaction, thinkingLevel },
+    } } };
+    emit({ event: "thinking-validation-aligned", reason: "fixed-summary-thinking", jobId: ready.jobId,
+      previousLevel: ready.thinkingLevel, level: thinkingLevel, summaryThinkingLevel: "low" });
+  }
   const skip = (reason: string) => {
     const key = `${context?.sessionManager.getSessionId()}:${reason}`;
     if (key !== previousSkip) emit({ event: "skipped", reason });
@@ -119,10 +133,22 @@ export function install(pi: ExtensionAPI, overrides: {
       triggerCompaction: (c, onError) => c.compact({ onError }),
     };
   }
-  // Pinned upstream owns all state, validation, native application and resume behavior.
-  // Only its automatic start subscription is moved from turn_end to tool_execution_start.
+  // Pinned upstream owns lifecycle, snapshot safety, native application and resume.
+  // Adapt only tool-phase triggering and main-thinking invalidation for fixed-low jobs.
   const facade = Object.create(pi) as ExtensionAPI;
   facade.on = ((event: string, handler: any) => {
+    if (event === "thinking_level_select") return pi.on("thinking_level_select", (event, ctx) => {
+      context = ctx;
+      if (state?.status !== "pending" && state?.status !== "ready") return;
+      emit({ event: "thinking-change-retained", reason: "fixed-summary-thinking", jobId: state.jobId,
+        status: state.status, previousLevel: event.previousLevel, level: event.level, summaryThinkingLevel: "low" });
+      alignReadyThinking(ctx);
+    });
+    if (event === "session_before_compact") return pi.on("session_before_compact", (event, ctx) => {
+      context = ctx;
+      alignReadyThinking(ctx);
+      return handler(event, ctx);
+    });
     if (event !== "turn_end") return (pi.on as any)(event, handler);
     return pi.on("tool_execution_start", (event, ctx) => {
       context = ctx;
@@ -133,11 +159,16 @@ export function install(pi: ExtensionAPI, overrides: {
   }) as ExtensionAPI["on"];
   registerAsyncCompaction(facade, adapter, {
     commandName: "async-compact-now",
-    onLifecycleEvent: event => emit({ ...event }),
+    onLifecycleEvent: event => {
+      emit({ ...event });
+      // Completion can race the select event; align before upstream's immediate apply validation.
+      if (event.event === "ready" && context) alignReadyThinking(context);
+    },
   }, {
     startAsyncJob: (ctx, current, options = { force: false }) => {
       context = ctx;
       state = current;
+      alignReadyThinking(ctx, current);
       if (!config.enabled || process.env.PI_ASYNC_PREFIX_COMPACTION === "0") { skip("disabled"); return "disabled"; }
       const first = config.firstToolCompaction && !hasFirstClaim(ctx);
       if (!options.force) {
@@ -155,12 +186,16 @@ export function install(pi: ExtensionAPI, overrides: {
       } else if (outcome !== "ready_reused") skip(outcome);
       return outcome;
     },
-    applyReadyCompaction: (ctx, current) => applyReadyCompaction(ctx, current, jobDeps(ctx)),
+    applyReadyCompaction: (ctx, current) => {
+      context = ctx;
+      alignReadyThinking(ctx, current);
+      return applyReadyCompaction(ctx, current, jobDeps(ctx));
+    },
   });
   pi.on("session_start", (_event, ctx) => {
     if (state && (state.status === "pending" || state.status === "ready")) markStale(state, InvalidationReason.SESSION_CHANGED);
     context = ctx;
-    emit({ event: "loaded", upstream: "0.1.8", ...config, nativeCompaction: settingsFor(ctx) });
+    emit({ event: "loaded", upstream: "0.1.8", ...config, mainThinkingInvalidatesSummary: false, nativeCompaction: settingsFor(ctx) });
   });
   pi.on("session_before_compact", (event, ctx) => {
     context = ctx;
@@ -174,7 +209,7 @@ export function install(pi: ExtensionAPI, overrides: {
   pi.registerCommand("async-compact-status", {
     description: "Show tool-phase async compaction settings/state (no model request)",
     handler: async (_args, ctx) => {
-      const text = JSON.stringify({ ...config, status: state?.status ?? "idle", firstJobStarted: hasFirstClaim(ctx), nativeCompaction: settingsFor(ctx) });
+      const text = JSON.stringify({ ...config, mainThinkingInvalidatesSummary: false, status: state?.status ?? "idle", firstJobStarted: hasFirstClaim(ctx), nativeCompaction: settingsFor(ctx) });
       if (ctx.hasUI) ctx.ui.notify(text, "info"); else console.log(text);
     },
   });
