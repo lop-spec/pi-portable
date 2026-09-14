@@ -34,23 +34,24 @@ function extensionDataRoot() {
 export default async function browserAgentExtension(pi: ExtensionAPI) {
   const { ExtensionBrowserRuntime } = await importFreshModule(new URL("./extension-runtime.mjs", import.meta.url));
   const runtime = new ExtensionBrowserRuntime({ dataRoot: extensionDataRoot() });
+  const browserName = runtime.browser.name; // daily Thorium by default; explicitly paired Quark on the peer.
   pi.registerTool({
     name: "browser",
-    label: "Thorium Background Browser",
+    label: `${browserName} Background Browser`,
     description: [
-      "Operate the user's daily Thorium through a background-only fork of the official Playwright Extension CDP bridge. Reuse its login state without activating windows or tabs.",
+      `Operate the user's daily ${browserName} through a background-only fork of the official Playwright Extension CDP bridge. Reuse its login state without activating windows or tabs.`,
       "Never connect to native remote-debugging ports, open an isolated browser, copy website login data, or silently fall back to another browser.",
       "Actions: open/goto/snapshot/text/eval/click/type/press/wait/screenshot/tabs/select_tab/new_tab/close_tab/close.",
       "Always reuse one dedicated fixed tab, with no tab groups or connection pages. new_tab navigates the fixed tab; close_tab clears it; select_tab only accepts index 0. Concurrent sessions fail busy instead of taking over.",
       "Prefer text or eval for reading; snapshot supplies refs (such as f1e4); screenshot is a visual fallback only.",
       "Use snapshot refs for click/type, otherwise selectors or accessible role/name. A login redirect alone does not identify its cause.",
-      "Only http(s) and about:blank navigation is accepted. close disconnects the extension worker, retaining Thorium and its login state.",
+      `Only http(s) and about:blank navigation is accepted. close disconnects the extension worker, retaining ${browserName} and its login state.`,
     ].join(" "),
-    promptSnippet: "Read and operate logged-in webpages in daily Thorium through the background-only Playwright Extension",
+    promptSnippet: `Read and operate logged-in webpages in daily ${browserName} through the background-only Playwright Extension`,
     promptGuidelines: [
       "Use browser through the installed background-only Playwright Extension. Never activate a window/tab, use native remote-debugging windows, or launch an isolated browser.",
       "The browser extension token is machine-local; never print it, copy website credentials, or synchronize credentials to another machine.",
-      "Prefer browser text/eval and snapshot refs. Do not infer login expiry from a redirect alone. Session shutdown only disconnects the MCP worker, never closes the user's Thorium process.",
+      `Prefer browser text/eval and snapshot refs. Do not infer login expiry from a redirect alone. Session shutdown only disconnects the MCP worker, never closes the user's ${browserName} process.`,
     ],
     parameters: BrowserParameters,
     executionMode: "sequential",
@@ -70,10 +71,10 @@ export default async function browserAgentExtension(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("browser-close", {
-    description: "Disconnect the extension worker without closing Thorium",
+    description: `Disconnect the extension worker without closing ${browserName}`,
     handler: async (_args, ctx) => {
       await runtime.detach();
-      ctx.ui.notify("Extension disconnected; Thorium and its login state retained.", "info");
+      ctx.ui.notify(`Extension disconnected; ${browserName} and its login state retained.`, "info");
     },
   });
   pi.on("session_shutdown", async () => { await runtime.detach(); });

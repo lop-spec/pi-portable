@@ -34,6 +34,9 @@ const fixture=`class Relay {
 const changed=patchBackgroundBootstrap(fixture);
 assert(changed.includes('await globalThis.__piOpenBackgroundExtension(href)'));
 assert(!changed.includes('.spawn)'));
+const v163=fixture.replace('class Relay {','class Relay { constructor() { this._token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN; }').replace('const token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;','url3.searchParams.set("token", this._token);');
+assert.match(patchBackgroundBootstrap(v163),/__piOpenBackgroundExtension\(href\)/);
+assert.throws(()=>patchBackgroundBootstrap(v163.replace('this._token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;','this._token = undefined;')),/invitation contract/);
 assert.throws(()=>patchBackgroundBootstrap(fixture.replace('stdio: "ignore"','stdio: "pipe"')),/refusing foreground fallback/);
 assert.throws(()=>patchBackgroundBootstrap('unknown upstream'),/Unsupported/);
 const ownUrl=`chrome-extension://${extensionId}/connect.html`;

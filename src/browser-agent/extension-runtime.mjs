@@ -5,14 +5,15 @@ import {fileURLToPath} from 'node:url';
 import {ensureBackgroundBroker} from './background-client.mjs';
 import { importFreshModule } from './fresh-module.mjs';
 const { resolvePlaywrightModule } = await importFreshModule(new URL('./runtime.mjs', import.meta.url));
-const { resolveThoriumExecutable, dailyThoriumProfile } = await importFreshModule(new URL('../thorium-browser.mjs', import.meta.url));
+const { readDailyBrowserSelection, resolveDailyBrowserExecutable, resolveDailyPlaywrightModule } = await importFreshModule(new URL('./daily-browser.mjs', import.meta.url));
 
 // Official Playwright MCP over stdio. It owns the extension/CDP relay; no native CDP,
 // browser launch fallback, Cookie copying, or custom browser protocol is used here.
 export class ExtensionBrowserRuntime {
   constructor({ dataRoot }) {
     this.dataRoot = dataRoot;
-    this.profileDir = dailyThoriumProfile();
+    this.browser = readDailyBrowserSelection({dataRoot});
+    this.profileDir = this.browser.profileDir;
     this.authFile = path.join(dataRoot, 'browser-agent', 'extension-auth.json');
     this.outputDir = path.join(dataRoot, 'browser-agent', 'extension-output');
     this.logFile = path.join(dataRoot, 'browser-agent', 'browser.log');
@@ -23,7 +24,7 @@ export class ExtensionBrowserRuntime {
   }
   status() {
     return { running: !!this.child && this.child.exitCode === null, pid: this.child?.pid ?? null,
-      mode: 'thorium-background-extension', profileDir: this.profileDir, resident: true };
+      mode: `${this.browser.id}-background-extension`, browser: this.browser.name, profileDir: this.profileDir, resident: true };
   }
   async log(event, details = {}) {
     try { await fs.mkdir(path.dirname(this.logFile), {recursive:true}); await fs.appendFile(this.logFile, JSON.stringify({at:new Date().toISOString(), event, ...details})+'\n'); }
@@ -41,9 +42,9 @@ export class ExtensionBrowserRuntime {
     catch(error) { await this.log('extension-auth-unavailable',{reason:error.code || error.message}); throw new Error('Playwright extension token is not configured for this machine; no native CDP or isolated browser fallback is allowed.'); }
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid Playwright extension token format');
     this.redact = text => String(text).replaceAll(token,'<redacted>');
-    const executable = resolveThoriumExecutable();
-    if (!executable) { await this.log('extension-thorium-unavailable'); throw new Error('Daily Thorium executable not found; no fallback browser will be started.'); }
-    const bundle = path.join(path.dirname(await resolvePlaywrightModule()), 'lib', 'coreBundle.js');
+    const executable = resolveDailyBrowserExecutable(this.browser);
+    if (!executable) { await this.log('extension-browser-unavailable',{browser:this.browser.id}); throw new Error(`Daily ${this.browser.name} executable not found; no fallback browser will be started.`); }
+    const bundle = path.join(path.dirname(await resolveDailyPlaywrightModule(this.browser,resolvePlaywrightModule)), 'lib', 'coreBundle.js');
     await ensureBackgroundBroker({dataRoot:this.dataRoot,authFile:this.authFile,token});
     await fs.mkdir(this.outputDir,{recursive:true});
     const child = spawn(process.execPath,[fileURLToPath(new URL('./background-mcp-worker.mjs',import.meta.url)),bundle,this.outputDir],{
@@ -71,7 +72,7 @@ export class ExtensionBrowserRuntime {
     const fail=error=>{if(this.child!==child)return;this.child=null;for(const request of this.pending.values()){clearTimeout(request.timer);request.reject(error);}this.pending.clear();};
     child.on('error',error=>{void this.log('extension-mcp-start-failed',{reason:error.message});fail(error);});
     child.on('exit',(code)=>{void this.log('extension-mcp-exit',{pid:child.pid,code});fail(new Error(`Playwright extension MCP exited (${code})`));});
-    await this.request('initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'Pi Thorium',version:'1'}},15000);
+    await this.request('initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:`Pi ${this.browser.name}`,version:'1'}},15000);
     child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})+'\n');
     const listed=await this.request('tools/list',{},15000);
     this.toolNames=new Set(listed.tools.map(tool=>tool.name));
@@ -131,7 +132,7 @@ export class ExtensionBrowserRuntime {
       case 'close_tab':
         await this.log('fixed-tab-retained',{reason:'close_tab clears the page without deleting the fixed tab'});
         result=await this.call('browser_navigate',{url:'about:blank'},timeout);break;
-      case 'close': await this.detach();return {content:[{type:'text',text:'Extension connection detached; daily Thorium and its login state were retained.'}],details:{action:p.action,mode:this.status().mode}};
+      case 'close': await this.detach();return {content:[{type:'text',text:`Extension connection detached; daily ${this.browser.name} and its login state were retained.`}],details:{action:p.action,mode:this.status().mode}};
       default: throw new Error(`Unsupported browser action: ${p.action}`);
     }
     const content=[];
@@ -151,7 +152,7 @@ export class ExtensionBrowserRuntime {
     this.child=null;
     for(const request of this.pending.values()){clearTimeout(request.timer);request.reject(new Error('Extension connection detached'));}this.pending.clear();
     child.stdin.end();
-    // Only the agent-owned MCP worker is stopped, never Thorium or its tabs.
+    // Only the agent-owned MCP worker is stopped, never the daily browser or its tabs.
     child.kill();
     await this.log('extension-detach',{pid:child.pid});
     return {detached:true};

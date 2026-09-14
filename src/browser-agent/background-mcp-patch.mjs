@@ -7,7 +7,11 @@ export function patchBackgroundBootstrap(source) {
   const end=source.indexOf('\n      stop() {',start);
   if(end<0||end-start>6000)throw new Error('Unsupported Playwright bootstrap method boundary');
   const body=source.slice(start,end);
-  if(!body.includes('url3.toString()')||!body.includes('PLAYWRIGHT_MCP_EXTENSION_TOKEN'))throw new Error('Unsupported Playwright extension invitation contract');
+  // 1.63 moved the same environment token into the relay constructor. Accept
+  // that bounded layout as well, but still require authenticated invitations.
+  const constructor=source.slice(Math.max(0,start-6000),start);
+  const tokenInConstructor=constructor.includes('this._token = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;') && body.includes('url3.searchParams.set("token", this._token);');
+  if(!body.includes('url3.toString()')||!(body.includes('PLAYWRIGHT_MCP_EXTENSION_TOKEN')||tokenInConstructor))throw new Error('Unsupported Playwright extension invitation contract');
   const spawn=/\(0, import_child_process\d+\.spawn\)\(executablePath, args, \{\s*windowsHide: true,\s*detached: true,\s*shell: false,\s*stdio: "ignore"\s*\}\);/g;
   const matches=[...body.matchAll(spawn)];
   if(matches.length!==1)throw new Error('Unsupported Playwright browser launch shape; refusing foreground fallback');
