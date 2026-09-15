@@ -31,6 +31,9 @@ export function integrateContextActions({ get, set, change, prepend, template })
   const s = get(sidebar), a = s.indexOf(renameStart), b = s.indexOf(renameEnd, a);
   if (a < 0 || b < a) throw new Error('hover rename block missing');
   change(sidebar, s.slice(a, b), '');
+  // Portalled actions/dialogs belong to the project dropdown; outside-click must
+  // not unmount the originating project row while its confirmation is open.
+  change(sidebar, '    const handler = (e: MouseEvent) => {\n      if (dropdownRef.current', '    const handler = (e: MouseEvent) => {\n      if ((e.target as Element)?.closest?.("[data-pi-context-menu], [data-pi-project-dialog]")) return;\n      if (dropdownRef.current');
   // Archive remains the sole hover shortcut, occupying a fixed 32px slot.
   change(sidebar, '{hovered && !session.transient && (', '{!session.transient && (');
   change(sidebar, '<div style={{ display: "flex", gap: 4, flexShrink: 0 }}>\n              <button\n                onClick={handleDeleteClick}', '<div style={{ display: "flex", gap: 4, flexShrink: 0, visibility: hovered ? "visible" : "hidden" }}>\n              <button\n                onClick={handleDeleteClick}');

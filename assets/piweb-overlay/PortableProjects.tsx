@@ -23,7 +23,7 @@ export async function projectRequest(url: string, body: unknown) {
 export function ProjectDialog({ title, close, children, busy }: { title: string; close: () => void; children: React.ReactNode; busy: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return createPortal(<dialog ref={ref} onClick={e => e.stopPropagation()} onCancel={e => { e.preventDefault(); if (!busy) close(); }} aria-label={title}
+  return createPortal(<dialog ref={ref} data-pi-project-dialog="true" onClick={e => e.stopPropagation()} onCancel={e => { e.preventDefault(); if (!busy) close(); }} aria-label={title}
     style={{ width: 'min(480px, calc(100vw - 32px))', boxSizing: 'border-box', border: '1px solid var(--border)', borderRadius: 12, padding: 20, background: 'var(--bg)', color: 'var(--text)', boxShadow: '0 14px 50px #0003' }}>
     <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>{title}</h3>{children}
   </dialog>, document.body);
