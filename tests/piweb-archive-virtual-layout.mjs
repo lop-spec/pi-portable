@@ -91,6 +91,23 @@ test('ordinary flow rows retain their existing collapse animation', () => {
   assert.equal(f.state.optimisticLayouts.size, 0);
 });
 
+test('context archive without a hover button immediately collapses and hands off; errors restore it', async () => {
+  const f = fixture({ selected: true, fail: true });
+  const pending = f.context.beginOptimisticAction(null, f.rows[0]);
+  assert.equal(offset(f.rows[1]), 'translateY(-54px)');
+  assert.equal(pending.animation.frames.at(-1).height, '0px');
+  pending.pointerStartedAt = performance.now();
+  f.context.handOffSelectedConversation(pending);
+  f.flush();
+  assert.equal(f.rows[1].clicks, 1);
+  await f.context.performDirectAction(pending, 's0');
+  f.flush();
+  assert.equal(f.rows[0].clicks, 1);
+  assert.equal(f.rows[0].dataset.piSessionArchivePending, undefined);
+  assert.equal(offset(f.rows[1]), 'none');
+  assert.equal(f.errors.length, 1);
+});
+
 test('server rejection restores the row and virtual offsets with a visible error', async () => {
   const f = fixture({ fail: true });
   const pending = f.context.beginOptimisticAction(f.rows[0].button);

@@ -38,7 +38,8 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /document\.documentElement\.appendChild\(host\)/u);
   assert.match(source, /function nativeNewSessionButton\(\)/u);
   assert.match(source, /betweenGap\s*>=\s*controlWidth/u, "archive control must choose a measured free gap instead of overlaying native controls");
-  assert.match(source, /function beginOptimisticAction\(button\)/u);
+  assert.match(source, /function beginOptimisticAction\(button, explicitRow = null\)/u);
+  assert.match(source, /const row = explicitRow \|\| sessionRow\(button\)/u, 'context actions and standalone buttons must share the same optimistic implementation');
   assert.match(source, /row\.animate\(/u, "the removed row height and opacity must animate together so following rows do not jump");
   assert.match(source, /cubic-bezier\(\.4, 0, \.2, 1\)/u);
   assert.match(source, /restoreOptimisticAction\(pendingAction\)/u, "a failed request must restore the optimistic row");
