@@ -70,4 +70,11 @@ test('icon menus reuse native event and immediate archive, no model calls or pol
   const archive = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
   assert.match(archive, /beginOptimisticAction\(row.querySelector/); assert.match(archive, /void performDirectAction\(pending, id\)/);
 });
+test('row archive shortcut and reserved slot are hidden without touching the menu or archive-view entry', () => {
+  const archive = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
+  assert.ok(archive.includes('.sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}'));
+  assert.match(archive, /function ensureControl\(\)/u);
+  assert.match(archive, /window.addEventListener\('pi-web:archive-session'/u);
+  assert.doesNotMatch(archive, /\[data-pi-session-archive-control\]\{display:none/u);
+});
 console.log('Context-action fixtures:', root);

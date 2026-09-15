@@ -366,6 +366,8 @@
     const style = document.createElement("style");
     style.dataset.piSessionArchiveStyle = "true";
     style.textContent = [
+      // Row actions live in the context menu; hide the shortcut AND its reserved slot.
+      ".sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}",
       "[data-pi-session-archive-action]{color:var(--text-muted)!important;position:relative!important}",
       "[data-pi-session-archive-action]>svg{opacity:0!important}",
       "[data-pi-session-archive-action]::before{content:'';position:absolute;width:14px;height:14px;background:currentColor;-webkit-mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E');mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E')}",
