@@ -11,6 +11,7 @@ import { filterSessionsForWorktree } from './patch-piweb-worktree-sessions.mjs';
 import { conversationMessageText, toConversationNodeLine, conversationUserQuestion, collectConversationNodeRecords } from './patch-piweb-conversation-nodes.mjs';
 import { applyServiceTierRpc } from './patch-piweb-service-tier.mjs';
 import { integrateProjects } from './patch-piweb-projects.mjs';
+import { integrateContextActions } from './patch-piweb-context.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -302,6 +303,7 @@ export function integrate(getFile) {
     // \`before\` is the oldest entry already on the client;`);
   change(context, '  } catch (error) {\n    return NextResponse.json', '  } catch (error) {\n    console.error("[pi-web] conversation context failed:", error);\n    return NextResponse.json');
   integrateProjects({ set, change, prepend, template });
+  integrateContextActions({ get, set, change, prepend, template });
   const pkg = JSON.parse(get('package.json'));
   pkg.piPortable = { upstreamRef: upstream.ref, sourceOverlay: 1 };
   set('package.json', JSON.stringify(pkg, null, 2) + '\n');

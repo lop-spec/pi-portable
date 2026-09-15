@@ -4,9 +4,12 @@ import { createPortal } from 'react-dom';
 import type { SessionInfo } from '@/lib/types';
 import type { RecentProject } from '@/lib/project-groups';
 
-export interface ProjectRegistry { projects: RecentProject[]; hidden: string[] }
-export function visibleProjectList(recent: RecentProject[], registry: ProjectRegistry): RecentProject[] {
-  return [...new Map([...registry.projects, ...recent].map(p => [p.key, p])).values()].filter(p => !registry.hidden.includes(p.key));
+export type NamedProject = RecentProject & { name?: string };
+export interface ProjectRegistry { projects: NamedProject[]; hidden: string[] }
+export function visibleProjectList(recent: RecentProject[], registry: ProjectRegistry): NamedProject[] {
+  const names = new Map(registry.projects.map(p => [p.key, p.name]));
+  return [...new Map([...registry.projects, ...recent].map(p => [p.key, p])).values()]
+    .filter(p => !registry.hidden.includes(p.key)).map(p => ({ ...p, name: names.get(p.key) }));
 }
 const button: CSSProperties = { padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer' };
 const action: CSSProperties = { ...button, padding: '4px 7px', flexShrink: 0 };
@@ -17,7 +20,7 @@ export async function projectRequest(url: string, body: unknown) {
   if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
 }
-function ProjectDialog({ title, close, children, busy }: { title: string; close: () => void; children: React.ReactNode; busy: boolean }) {
+export function ProjectDialog({ title, close, children, busy }: { title: string; close: () => void; children: React.ReactNode; busy: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
   return createPortal(<dialog ref={ref} onClick={e => e.stopPropagation()} onCancel={e => { e.preventDefault(); if (!busy) close(); }} aria-label={title}

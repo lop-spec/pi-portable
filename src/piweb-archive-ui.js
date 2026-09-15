@@ -547,8 +547,8 @@
     pending.row.removeAttribute("aria-busy");
   }
 
-  function beginOptimisticAction(button) {
-    const row = sessionRow(button);
+  function beginOptimisticAction(button, explicitRow = null) {
+    const row = explicitRow || sessionRow(button);
     if (!row) return null;
     const pending = {
       row,
@@ -713,6 +713,21 @@
   }
 
   function enableImmediateActions() {
+    window.addEventListener('pi-web:archive-session', event => {
+      const { id, row } = event.detail || {};
+      if (!id || !row?.isConnected || sessionIdFromRow(row) !== id) {
+        console.error('[pi-web archive] context action rejected: missing or mismatched session row');
+        return;
+      }
+      event.preventDefault();
+      if (row.dataset.piSessionArchivePending) return;
+      const startedAt = performance.now();
+      const pending = beginOptimisticAction(row.querySelector('[data-pi-session-archive-action]'), row);
+      if (!pending) return;
+      pending.pointerStartedAt = startedAt;
+      if (state.view === 'active') handOffSelectedConversation(pending);
+      void performDirectAction(pending, id);
+    });
     document.addEventListener("pointerdown", immediateActionClick, true);
     document.addEventListener("click", immediateActionClick, true);
   }

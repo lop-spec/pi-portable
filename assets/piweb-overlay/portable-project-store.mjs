@@ -61,6 +61,14 @@ export class ProjectStore {
     data.hidden = data.hidden.filter(item => item !== key);
     return this.save(data);
   }
+  rename(root, name) {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 100 || /[\x00-\x1f]/u.test(name)) throw new Error('请输入 1–100 字的项目名称');
+    root = directoryPath(root);
+    const data = this.read(), key = projectKey(root);
+    const existing = data.projects.find(p => p.key === key);
+    data.projects = [{ ...existing, key, root, name: name.trim() }, ...data.projects.filter(p => p.key !== key)];
+    return this.save(data);
+  }
   remove(root) {
     const data = this.read(), key = projectKey(directoryPath(root));
     if (data.hidden.includes(key)) return data;
