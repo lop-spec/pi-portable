@@ -51,7 +51,7 @@ function ErrorLine({ error }: { error: string }) { return error ? <p role="alert
 
 export function ProjectContextActions({ project, children, onChanged }: { project: NamedProject | null; children?: ReactNode; onChanged: (registry: ProjectRegistry, removed: boolean) => void }) {
   const [point, setPoint] = useState<Point | null>(null), [action, setAction] = useState<Kind | null>(null), [value, setValue] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const open = (kind: Kind) => { setAction(kind); setError(''); setValue(kind === 'rename' ? project?.name || project?.root.split(/[/\\]/).pop() || '' : ''); };
+  const open = (kind: Kind) => { setAction(kind); setError(''); setValue(kind === 'rename' ? project?.root.split(/[/\\]/).pop() || '' : ''); };
   return <div data-pi-project-root={project?.root} style={{ display: 'contents' }} onContextMenu={e => {
     if (!project || (e.target as HTMLElement).closest('dialog')) return;
     e.preventDefault(); e.stopPropagation(); setPoint({ x: e.clientX, y: e.clientY });
@@ -65,7 +65,7 @@ export function ProjectContextActions({ project, children, onChanged }: { projec
         catch (e) { console.error('[pi-web project-menu]', e); setError(String(e)); } finally { setBusy(false); }
       }}>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>{project.root}</p>
-        {action === 'rename' && <><label>项目名称<input autoFocus required maxLength={100} style={input} value={value} onChange={e => setValue(e.target.value)} disabled={busy}/></label><p style={{ fontSize: 12 }}>只修改显示名称，不改磁盘路径或对话工作目录。</p></>}
+        {action === 'rename' && <><label>文件夹末级名称<input autoFocus required maxLength={100} style={input} value={value} onChange={e => setValue(e.target.value)} disabled={busy}/></label><p style={{ fontSize: 12 }}>直接重命名物理文件夹，并更新该项目全部对话的工作目录；历史和文件内容保留。运行中的项目须先停止。</p><p style={{ fontSize: 12, overflowWrap: 'anywhere' }}>新路径：{project.root.replace(/[^/\\]+$/, () => value)}</p></>}
         {action === 'remove' && <p>只从列表移除，保留项目文件和全部对话，可重新添加。</p>}
         {action === 'delete' && <><p style={{ color: '#dc4444' }}>永久删除该目录及其中的全部文件，不进入回收站。对话记录保留，可另行移动或删除。</p><label>输入完整路径确认<input autoFocus required autoComplete="off" spellCheck={false} style={input} value={value} onChange={e => setValue(e.target.value)} disabled={busy}/></label></>}
         <ErrorLine error={error}/><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}><button type="button" style={button} disabled={busy} onClick={() => setAction(null)}>取消</button><button style={{ ...button, color: action === 'delete' ? '#dc4444' : undefined }} disabled={busy || (action === 'delete' ? value !== project.root : action === 'rename' && !value.trim())}>{busy ? '处理中…' : labels[action]}</button></div>

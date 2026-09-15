@@ -1,11 +1,12 @@
 import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
-import { ProjectStore, directoryPath, projectMutationAllowed } from '@/lib/portable-project-store.mjs';
+import { ProjectStore, directoryPath, projectMutationAllowed, withSessionMoveLock, projectKey } from '@/lib/portable-project-store.mjs';
+import { projectLeafTarget, renamePhysicalProject, relocateCopiedProject } from '@/lib/portable-project-layout.mjs';
 import { resolveProject } from '@/lib/worktree';
 import { allowFileRoot } from '@/lib/file-access';
 import { projectIdentityKey } from '@/lib/project-identity';
-import { listAllSessions } from '@/lib/session-reader';
+import { listAllSessions, mergeSessionLists, invalidateSessionListCache, invalidateSessionPathCache } from '@/lib/session-reader';
 import { getRpcSessionInfos, getRpcSession, hasBusyRpcSessionInProject } from '@/lib/rpc-manager';
 import { deleteProjectDirectory, withProjectDeletionLock, pathWithin } from '@/lib/portable-context-store.mjs';
 
@@ -26,11 +27,30 @@ export async function POST(req: Request) {
     const registry = store();
     registry.read(); // fail before filesystem changes if state is corrupt
     if (body.action === 'remove') return Response.json({ ...registry.remove(cwd), preserved: true });
-    if (body.action === 'rename' || body.action === 'delete') {
-      const all = await listAllSessions({ force: true });
+    if (body.action === 'rename' || body.action === 'delete' || body.action === 'relocate') {
+      const all = mergeSessionLists(await listAllSessions({ force: true }), getRpcSessionInfos());
       const knownRoots = [...registry.read().projects.map((p: { root: string }) => p.root), ...all.map(s => s.projectRoot ?? s.cwd)];
       if (!knownRoots.some((p: string) => projectIdentityKey(p) === projectIdentityKey(cwd))) throw new Error('未知项目');
-      if (body.action === 'rename') return Response.json({ ...registry.rename(cwd, body.name), preserved: true });
+      if (body.action === 'rename' || body.action === 'relocate') {
+        const target = body.action === 'rename' ? projectLeafTarget(cwd, body.name) : directoryPath(body.target);
+        if (body.action === 'relocate' && (pathWithin(cwd, target) || pathWithin(target, cwd))) throw new Error('复制目标不能与源目录相互包含');
+        const affected = all.filter(s => pathWithin(cwd, s.cwd));
+        const ids = affected.map(s => s.id);
+        const mutate = async () => withSessionMoveLock(ids, async () => {
+          if (hasBusyRpcSessionInProject(cwd) || hasBusyRpcSessionInProject(target)) throw new Error('项目内有正在运行或启动的对话，请先停止');
+          for (const sid of ids) await getRpcSession(sid)?.shutdown();
+          let result;
+          if (body.action === 'rename') result = renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });
+          else {
+            if (!statSync(target).isDirectory()) throw new Error('复制目标不存在');
+            if (!registry.read().projects.some((p: { root: string }) => projectKey(p.root) === projectKey(target))) throw new Error('请先添加已复制的目标项目');
+            result = relocateCopiedProject({ root: cwd, target, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots });
+          }
+          ids.forEach(sid => invalidateSessionPathCache(sid)); invalidateSessionListCache(); allowFileRoot(target);
+          return Response.json(result);
+        });
+        return await withProjectDeletionLock(cwd, () => projectKey(cwd) === projectKey(target) ? mutate() : withProjectDeletionLock(target, mutate));
+      }
       return await withProjectDeletionLock(cwd, async () => {
         if (hasBusyRpcSessionInProject(cwd)) throw new Error('项目内有正在运行或启动的对话，请先停止');
         for (const s of getRpcSessionInfos()) if (pathWithin(cwd, s.cwd)) await getRpcSession(s.id)?.shutdown();

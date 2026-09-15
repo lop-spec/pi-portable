@@ -20,7 +20,7 @@ export function directoryPath(value) {
   if (!path.isAbsolute(candidate)) throw new Error('请输入绝对路径，例如 D:\\Projects\\新项目');
   return path.resolve(candidate);
 }
-function atomicWrite(file, bytes) {
+export function atomicWrite(file, bytes) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = file + '.tmp-' + crypto.randomUUID();
   try {
@@ -61,12 +61,15 @@ export class ProjectStore {
     data.hidden = data.hidden.filter(item => item !== key);
     return this.save(data);
   }
-  rename(root, name) {
-    if (typeof name !== 'string' || !name.trim() || name.trim().length > 100 || /[\x00-\x1f]/u.test(name)) throw new Error('请输入 1–100 字的项目名称');
-    root = directoryPath(root);
-    const data = this.read(), key = projectKey(root);
-    const existing = data.projects.find(p => p.key === key);
-    data.projects = [{ ...existing, key, root, name: name.trim() }, ...data.projects.filter(p => p.key !== key)];
+  rebase(root, target, name) {
+    const data = this.read();
+    const within = p => { const rel = path.relative(projectKey(root), projectKey(p)); return !rel || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)); };
+    const remap = p => within(p) ? path.join(target, path.relative(root, p)) : p;
+    const existing = data.projects.find(p => p.key === projectKey(root));
+    data.projects = data.projects.map(p => within(p.root) ? { ...p, root: remap(p.root), key: projectKey(remap(p.root)), ...(p.key === projectKey(root) ? { name } : {}) } : p);
+    if (!existing) data.projects.unshift({ key: projectKey(target), root: target, name });
+    data.projects = [...new Map(data.projects.map(p => [p.key, p])).values()];
+    data.hidden = [...new Set([...data.hidden.map(remap).map(projectKey), projectKey(root)])].filter(p => p !== projectKey(target));
     return this.save(data);
   }
   remove(root) {
@@ -80,9 +83,9 @@ export class ProjectStore {
 
 // Keep the file path stable: archive records, forks, lazy media and bookmarks
 // refer to it. Only the native cwd header changes; all history bytes stay exact.
-function prepareSessionHeader(file, id, cwd, sessionRoot) {
+export function prepareSessionHeader(file, id, cwd, sessionRoot, validateDirectory = true) {
   cwd = directoryPath(cwd);
-  if (!fs.statSync(cwd).isDirectory()) throw new Error('目标路径不是文件夹');
+  if (validateDirectory && !fs.statSync(cwd).isDirectory()) throw new Error('目标路径不是文件夹');
   const realFile = fs.realpathSync(file), realRoot = fs.realpathSync(sessionRoot);
   const relative = path.relative(realRoot, realFile);
   if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || path.extname(realFile) !== '.jsonl') throw new Error('会话文件不在受管目录内');
@@ -95,7 +98,7 @@ function prepareSessionHeader(file, id, cwd, sessionRoot) {
   return { changed: true, cwd, file: realFile, original, next };
 }
 export function relocateSessionHeaders(sessions, cwd, sessionRoot) {
-  const prepared = sessions.map(s => prepareSessionHeader(s.path, s.id, cwd, sessionRoot));
+  const prepared = sessions.map(s => prepareSessionHeader(s.path, s.id, typeof cwd === 'function' ? cwd(s) : cwd, sessionRoot));
   const changes = prepared.filter(p => p.changed);
   for (const item of changes) item.backup = backupFile(item.file);
   const committed = [];
@@ -115,7 +118,7 @@ export function relocateSessionHeaders(sessions, cwd, sessionRoot) {
     }
     throw error;
   }
-  return { changed: changes.length > 0, cwd: directoryPath(cwd), backups: changes.map(p => p.backup) };
+  return { changed: changes.length > 0, ...(typeof cwd === 'function' ? {} : { cwd: directoryPath(cwd) }), backups: changes.map(p => p.backup) };
 }
 export function relocateSessionHeader(file, id, cwd, sessionRoot) {
   return relocateSessionHeaders([{ path: file, id }], cwd, sessionRoot);

@@ -5,7 +5,19 @@ import type { SessionInfo } from '@/lib/types';
 import type { RecentProject } from '@/lib/project-groups';
 
 export type NamedProject = RecentProject & { name?: string };
-export interface ProjectRegistry { projects: NamedProject[]; hidden: string[] }
+export interface ProjectRegistry { projects: NamedProject[]; hidden: string[]; categories?: { name: string; root: string }[]; cwd?: string; previousRoot?: string; sessionIds?: string[] }
+export function groupProjectList(projects: NamedProject[], registry: ProjectRegistry) {
+  const groups = (registry.categories || []).map(c => ({ ...c, projects: [] as NamedProject[] }));
+  const other = { name: groups.length ? '未分类' : '', root: '', projects: [] as NamedProject[] };
+  const key = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  for (const p of projects) (groups.find(c => key(p.root).startsWith(key(c.root) + '/')) || other).projects.push(p);
+  if (other.projects.length) groups.push(other);
+  return groups;
+}
+export function remapProjectSession(session: SessionInfo, registry: ProjectRegistry): SessionInfo {
+  if (!registry.cwd || !registry.previousRoot || !registry.sessionIds?.includes(session.id)) return session;
+  return { ...session, cwd: registry.cwd + session.cwd.slice(registry.previousRoot.length), projectRoot: registry.cwd, projectKey: /^[a-z]:[/\\]/i.test(registry.cwd) ? registry.cwd.replace(/\//g, '\\').toLowerCase() : registry.cwd };
+}
 export function visibleProjectList(recent: RecentProject[], registry: ProjectRegistry): NamedProject[] {
   const names = new Map(registry.projects.map(p => [p.key, p.name]));
   return [...new Map([...registry.projects, ...recent].map(p => [p.key, p])).values()]

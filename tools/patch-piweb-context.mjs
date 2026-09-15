@@ -2,12 +2,24 @@
 export function integrateContextActions({ get, set, change, prepend, template }) {
   set('components/PortableContextActions.tsx', template('PortableContextActions.tsx'));
   set('lib/portable-context-store.mjs', template('portable-context-store.mjs'));
+  set('lib/portable-project-layout.mjs', template('portable-project-layout.mjs'));
   set('app/api/sessions/[id]/physical-delete/route.ts', template('portable-session-delete-route.ts'));
   const sidebar = 'components/SessionSidebar.tsx', rpc = 'lib/rpc-manager.ts';
   prepend(sidebar, "import { ProjectContextActions, SessionContextActions } from './PortableContextActions';\n");
-  change(sidebar, 'CreateProjectButton, RemoveProjectButton, MoveSessionButton,', 'CreateProjectButton,');
+  change(sidebar, 'CreateProjectButton, RemoveProjectButton, MoveSessionButton,', 'CreateProjectButton, groupProjectList, remapProjectSession,');
+  change(sidebar, '  const [projectRegistry, setProjectRegistry] = useState<ProjectRegistry>({ projects: [], hidden: [] });', `  const [projectRegistry, setProjectRegistry] = useState<ProjectRegistry>({ projects: [], hidden: [] });
+  const applyProjectChange = (registry: ProjectRegistry) => {
+    setProjectRegistry(registry);
+    if (registry.cwd && registry.previousRoot) {
+      setAllSessions(previous => previous.map(s => remapProjectSession(s, registry)));
+      if (selectedCwd === registry.previousRoot) setSelectedCwd(registry.cwd);
+      const selected = allSessions.find(s => s.id === selectedSessionId);
+      if (selected && registry.sessionIds?.includes(selected.id)) handleSelectSessionFromList(remapProjectSession(selected, registry));
+      void loadSessions(false, true);
+    }
+  };`);
   change(sidebar, '                  <div key={project.key} style={{ display: "flex", alignItems: "center" }}>\n                  <button', `                  <ProjectContextActions key={project.key} project={project} onChanged={(registry, removed) => {
-                    setProjectRegistry(registry);
+                    applyProjectChange(registry);
                     if (removed && selectedProject?.key === project.key && !selectedSessionId) {
                       setSelectedCwd(visibleProjectList(getRecentProjects(allSessions), registry)[0]?.root ?? null);
                     }
@@ -18,10 +30,14 @@ export function integrateContextActions({ get, set, change, prepend, template })
   const source = get(sidebar), start = source.indexOf(removeStart), end = source.indexOf(removeEnd, start);
   if (start < 0 || end < start) throw new Error('project remove block missing');
   change(sidebar, source.slice(start, end + removeEnd.length), '                  </ProjectContextActions>');
+  change(sidebar, '                {visibleProjects.map((project) => (', `                {groupProjectList(visibleProjects, projectRegistry).map(group => (<div key={group.root || 'uncategorized'}>
+                  {group.name && <div data-pi-project-category={group.name} style={{ fontSize: 11, fontWeight: 600, padding: '10px 12px 4px', color: 'var(--text-muted)' }}>{group.name} · {group.projects.length}</div>}
+                  {group.projects.map((project) => (`);
+  change(sidebar, '                  </ProjectContextActions>\n                ))}', '                  </ProjectContextActions>\n                ))}</div>))}');
   change(sidebar, 'text={displayCwd(project.root, homeDir)}', 'text={project.name || displayCwd(project.root, homeDir)}');
   change(sidebar, 'text={displayCwd(selectedProject?.root ?? selectedCwd, homeDir)}', 'text={projectRegistry.projects.find(p => p.key === selectedProject?.key)?.name || displayCwd(selectedProject?.root ?? selectedCwd, homeDir)}');
   change(sidebar, 'project.root.toLowerCase().includes(projectFilter.trim().toLowerCase())', '(project.root + " " + (project.name || "")).toLowerCase().includes(projectFilter.trim().toLowerCase())');
-  change(sidebar, '          <button\n            onClick={() => setDropdownOpen((v) => !v)}', `          <ProjectContextActions project={selectedProject ? { ...selectedProject, name: projectRegistry.projects.find(p => p.key === selectedProject.key)?.name } : null} onChanged={(registry, removed) => { setProjectRegistry(registry); if (removed && !selectedSessionId) setSelectedCwd(visibleProjectList(getRecentProjects(allSessions), registry)[0]?.root ?? null); }}>
+  change(sidebar, '          <button\n            onClick={() => setDropdownOpen((v) => !v)}', `          <ProjectContextActions project={selectedProject ? { ...selectedProject, name: projectRegistry.projects.find(p => p.key === selectedProject.key)?.name } : null} onChanged={(registry, removed) => { applyProjectChange(registry); if (removed && !selectedSessionId) setSelectedCwd(visibleProjectList(getRecentProjects(allSessions), registry)[0]?.root ?? null); }}>
           <button
             onClick={() => setDropdownOpen((v) => !v)}`);
   change(sidebar, '          </button>\n\n          <AnimatedDropdown\n            open={dropdownOpen}', '          </button>\n          </ProjectContextActions>\n\n          <AnimatedDropdown\n            open={dropdownOpen}');
