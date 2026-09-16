@@ -11,7 +11,7 @@ if (-not $Root) { $Root = Split-Path -Parent $PSScriptRoot }
 if (-not $Node) { $Node = Join-Path $Root 'runtime\node.exe' }
 $worker = Join-Path $Root 'src\account-pool-sync.mjs'
 $wrapper = Join-Path $Root 'tools\pool-sync-task.vbs'
-foreach ($file in @($Node, $worker, $wrapper, (Join-Path $Root 'src\account-pool-sync-core.mjs'))) {
+foreach ($file in @($Node, $worker, $wrapper, (Join-Path $Root 'src\account-pool-sync-core.mjs'), (Join-Path $Root 'src\account-pool-sync-login.mjs'), (Join-Path $Root 'tools\secure-pool-sync-dir.ps1')))  {
   if (-not (Test-Path -LiteralPath $file)) { throw "Required asset missing: $file" }
 }
 if (-not $InspectOnly) {
@@ -30,7 +30,7 @@ if (-not $InspectOnly) {
   $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
   $settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
   $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-  $task = New-ScheduledTask -Action $action -Trigger @($logon,$watchdog) -Settings $settings -Principal $principal -Description 'Model-free two-way account pool membership sync. No credential transfer. Hidden persistent watcher with SSH relay and offline recovery.'
+  $task = New-ScheduledTask -Action $action -Trigger @($logon,$watchdog) -Settings $settings -Principal $principal -Description 'Model-free two-way pool sync including missing logins. Existing credentials never overwritten. Hidden SSH watcher and offline recovery.'
   Register-ScheduledTask -TaskName $name -InputObject $task -Force | Out-Null
   Start-ScheduledTask -TaskName $name
 }

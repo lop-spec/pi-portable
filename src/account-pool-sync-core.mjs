@@ -1,4 +1,5 @@
-// Membership only. Never serialize, copy, refresh or write any login credentials.
+// Membership engine only. Credential provisioning is isolated in LoginTransfer;
+// existing credentials are never overwritten and state contains no login tokens.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -59,6 +60,9 @@ function defaultBackup(file) {
 const claims = token => {try {return JSON.parse(Buffer.from(String(token).split('.')[1],'base64url'));}catch{return {};}};
 function identity(file) {
   let auth;try {auth=JSON.parse(fs.readFileSync(file,'utf8'));}catch {return fail('auth-invalid');}
+  return identityFromAuth(auth);
+}
+export function identityFromAuth(auth) {
   const i=claims(auth.tokens?.id_token),a=claims(auth.tokens?.access_token),claim='https://api.openai.com/auth';
   const email=String(i.email||a['https://api.openai.com/profile']?.email||'').trim().toLowerCase();
   const accountId=String(auth.tokens?.account_id||i[claim]?.chatgpt_account_id||a[claim]?.chatgpt_account_id||'');
@@ -94,7 +98,7 @@ export class PoolReplica {
       if(!fs.existsSync(normal))continue;
       const auth=entry.name==='primary'&&this.primaryAuthFile?this.primaryAuthFile:normal;
       const key=identity(auth),marker=path.join(dir,MARKER),fingerprint=markerHash(marker);
-      const item={slot:entry.name,marker,fingerprint};
+      const item={slot:entry.name,marker,fingerprint,authPath:auth};
       const list=groups.get(key)||[];list.push(item);groups.set(key,list);
     }
     for(const list of groups.values())list.sort((a,b)=>a.slot.localeCompare(b.slot));

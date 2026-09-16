@@ -1,5 +1,5 @@
-// Standalone zero-model pool membership replication. One persistent SSH stdio
-// channel carries both directions; no browser, OAuth, model or agent API calls.
+// Standalone zero-model pool replication plus missing-login provisioning.
+// One persistent SSH session, no browser, OAuth, model or agent API calls.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,7 +7,8 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { PoolReplica, SITES, MARKER, atomicJson, validatePacket } from './account-pool-sync-core.mjs';
+import { PoolReplica, SITES, MARKER, atomicJson } from './account-pool-sync-core.mjs';
+import { LoginTransfer, validateMessage, ipcSecret } from './account-pool-sync-login.mjs';
 import { appendLineRotating } from './log-rotate.mjs';
 
 const self=fileURLToPath(import.meta.url);
@@ -37,25 +38,42 @@ export async function startAgent({site,homesRoot,primaryAuthFile,dataRoot,connec
     if(!result.ok)process.stderr.write('pool-sync log-write-failed\n');
   };
   const channels=new Set(),watchers=[];let closed=false,debounce,heartbeat,ssh,retryTimer,tries=0,lastPeerAt=null,error=null;
-  let replica,lastDigest='',statusRaw='';
-  const server=net.createServer(socket=>attach(socket,socket));
+  let replica,transfer,secret,lastDigest='',statusRaw='';
+  const server=net.createServer(authenticate);
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(pipeFor(dataRoot),resolve);});
-  try {replica=new PoolReplica({site,homesRoot,primaryAuthFile,dataRoot,log,protectLast});replica.reconcile();}
+  try {replica=new PoolReplica({site,homesRoot,primaryAuthFile,dataRoot,log,protectLast});replica.reconcile();transfer=new LoginTransfer(replica,{log});secret=ipcSecret(dataRoot,{create:true});}
   catch(e){server.close();throw e;}
   server.on('error',e=>log('ipc-error',{reason:reason(e)}));
+  function authenticate(socket){
+    let buffer='';
+    const reject=()=>{log('ipc-rejected',{reason:'local-auth-required'});socket.destroy();};
+    socket.setTimeout(5000,reject);socket.on('error',()=>{log('ipc-error',{reason:'local-handshake-failed'});socket.destroy();});
+    const hello=chunk=>{
+      buffer+=chunk.toString('utf8');const end=buffer.indexOf('\n');
+      if((end<0?buffer.length:end)>200){reject();return;}if(end<0)return;
+      let value;try{value=JSON.parse(buffer.slice(0,end));}catch{reject();return;}
+      if(!value||Object.keys(value).join(',')!=='ipcAuth'||typeof value.ipcAuth!=='string'||!/^[a-f0-9]{64}$/.test(value.ipcAuth)||!crypto.timingSafeEqual(Buffer.from(value.ipcAuth,'utf8'),Buffer.from(secret,'utf8'))){reject();return;}
+      socket.pause();socket.off('data',hello);socket.setTimeout(0);socket.off('timeout',reject);
+      attach(socket,socket);if(buffer.length>end+1)socket.unshift(Buffer.from(buffer.slice(end+1)));buffer='';socket.resume();
+    };
+    socket.on('data',hello);
+  }
   function status() {
-    const value={...replica.status(),pid:process.pid,connected:channels.size>0&&!!lastPeerAt&&Date.now()-Date.parse(lastPeerAt)<45000,lastPeerAt,error};
+    const value={...replica.status(),protocolVersion:2,loginSync:'create-missing-only',pid:process.pid,connected:channels.size>0&&!!lastPeerAt&&Date.now()-Date.parse(lastPeerAt)<45000,lastPeerAt,error};
     const raw=JSON.stringify(value);if(raw!==statusRaw){atomicJson(path.join(dir,'status.json'),value);statusRaw=raw;}
     return value;
   }
-  function send(channel) {
+  function send(channel,message) {
     if(channel.closed)return;
     if(channel.output.writableLength>2*1024*1024){log('link-error',{reason:'peer-backpressure'});channel.close();return;}
-    channel.output.write(JSON.stringify(replica.packet())+'\n');
+    try {channel.output.write(JSON.stringify(message||transfer.metadata())+'\n');}
+    catch(e){error=reason(e);log('send-deferred',{reason:error});}
   }
   function broadcast(force=false) {
-    const digest=replica.status().digest;
-    if(force||digest!==lastDigest){lastDigest=digest;for(const c of channels)send(c);}
+    try {
+      const message=transfer.metadata(),digest=sha(JSON.stringify(message));
+      if(force||digest!==lastDigest){lastDigest=digest;for(const c of channels)send(c,message);}
+    }catch(e){error=reason(e);log('broadcast-deferred',{reason:error});}
     status();
   }
   function reconcile() {
@@ -66,7 +84,7 @@ export async function startAgent({site,homesRoot,primaryAuthFile,dataRoot,connec
   function schedule(){if(closed)return;clearTimeout(debounce);debounce=setTimeout(reconcile,debounceMs);}
   function attach(input,output,onClose=()=>{}) {
     let buffer='';
-    const c={input,output,closed:false,close(){if(c.closed)return;c.closed=true;channels.delete(c);input.off('data',receive);input.destroy();if(output!==input)output.destroy();onClose();if(replica)status();}};
+    const c={input,output,wanted:new Map(),closed:false,close(){if(c.closed)return;c.closed=true;channels.delete(c);input.off('data',receive);input.destroy();if(output!==input)output.destroy();onClose();if(replica)status();}};
     function receive(chunk) {
       buffer+=chunk.toString('utf8');
       if(buffer.length>2*1024*1024){log('link-error',{reason:'packet-too-large'});c.close();return;}
@@ -75,8 +93,18 @@ export async function startAgent({site,homesRoot,primaryAuthFile,dataRoot,connec
         const line=buffer.slice(0,end);buffer=buffer.slice(end+1);
         try {
           let packet;try{packet=JSON.parse(line);}catch{throw new Error('packet-json-invalid');}
-          validatePacket(packet);if(packet.site===site)throw new Error('peer-site-mismatch');
-          replica.receive(packet);lastPeerAt=new Date().toISOString();tries=0;error=null;broadcast();
+          validateMessage(packet);if(packet.site===site)throw new Error('peer-site-mismatch');
+          if(packet.kind==='members'){
+            replica.receive({version:1,site:packet.site,records:packet.records});
+            const wanted=transfer.wants(packet).filter(key=>Date.now()-(c.wanted.get(key)||0)>=15000);
+            if(wanted.length){for(const key of wanted)c.wanted.set(key,Date.now());send(c,{version:2,site,kind:'want',keys:wanted});}
+          }else if(packet.kind==='want'){
+            for(const key of packet.keys){const login=transfer.provide(key);if(login)send(c,login);}
+          }else{
+            if(!c.wanted.has(packet.key))throw new Error('login-unsolicited');
+            transfer.accept(packet);c.wanted.delete(packet.key);
+          }
+          lastPeerAt=new Date().toISOString();tries=0;error=null;broadcast();
         }catch(e){error=reason(e);log('receive-deferred',{reason:error});c.close();}
       }
     }
@@ -118,9 +146,10 @@ export async function startAgent({site,homesRoot,primaryAuthFile,dataRoot,connec
 }
 
 async function relay(dataRoot) {
+  const secret=ipcSecret(dataRoot);
   const socket=net.connect(pipeFor(dataRoot));
   const timer=setTimeout(()=>socket.destroy(new Error('pool-relay-unavailable')),8000);
-  socket.once('connect',()=>{clearTimeout(timer);process.stdin.pipe(socket);socket.pipe(process.stdout);});
+  socket.once('connect',()=>{clearTimeout(timer);socket.write(JSON.stringify({ipcAuth:secret})+'\n');process.stdin.pipe(socket);socket.pipe(process.stdout);});
   socket.on('error',()=>{process.stderr.write('pool-relay-unavailable\n');process.exitCode=1;});
   socket.on('close',()=>{clearTimeout(timer);process.stdin.destroy();});
   process.stdin.on('end',()=>socket.end());process.stdout.on('error',()=>socket.destroy());
