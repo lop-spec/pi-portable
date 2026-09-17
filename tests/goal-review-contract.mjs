@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {deliver,parseDecisions,emptyGoals,PROFILES,reviewPrompt,AUTONOMY_GUIDANCE,ADVICE_BOUNDARY,tick} from '../src/goal-review.mjs';
-import {hash,safePath,pageText,recentReviewAdvice,searchProject,inspect} from '../src/goal-inspect.mjs';
+import {deliver,parseDecisions,emptyGoals,PROFILES,reviewPrompt,AUTONOMY_GUIDANCE,ADVICE_BOUNDARY,REPEATED_REMINDER_GUIDANCE,tick} from '../src/goal-review.mjs';
+import {hash,safePath,pageText,recentReviewAdvice,reviewAdviceCount,searchProject,inspect} from '../src/goal-inspect.mjs';
 const goal='抖音义水北路交易体系回测：沪深股，近6个月收益率5倍以上。';
 const id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const decision={goalQuote:goal,sessionId:id,action:'resume',intervention:'unfinished-action',reason:'协议已冻结，因执行中断尚未完成逐日回放',advice:'验证时点可见性，再重跑完整逐日交易记录。',backgroundPids:[]};
@@ -150,6 +150,18 @@ test('both prompts require incremental value and preserve original acceptance an
     for(const part of ['未达标本身不是恢复理由','recentAdvice','同一问题同一方案换措辞也不是增量','执行方的纠正','哪个关键假设已被证据否定','最小验证能区分什么','对会改变建议的运行进展','缩样、代理指标','none=没有可推进事项',ADVICE_BOUNDARY])assert.ok(prompt.includes(part),part);
     assert.ok(!prompt.includes('未达标且没有任何相关后台执行：resume'));
   }
+});
+test('both reviewers must reflect and improve after more than three delivered reminders',()=>{
+  for(const profile of ['astra','fable']){
+    const prompt=reviewPrompt(profile,goal,{sessions:[]});assert.equal(prompt.split(REPEATED_REMINDER_GUIDANCE).length-1,1);
+    for(const part of ['超过3次（至少4次）','首先反思巡检建议本身','优化建议之后再继续提醒','没有有依据的改进就observe','不把observe或未送达尝试计入','跨巡检模型、会话压缩或换措辞不清零','本轮一次评审内完成反思与优化','不降低原验收'])assert.ok(prompt.includes(part),part);
+    assert.ok(prompt.indexOf(REPEATED_REMINDER_GUIDANCE)<prompt.indexOf('对每个目标都给出结论'));
+  }
+});
+test('delivered reminder counts are not capped by the three-item recent window',()=>{
+  const users=[{text:'请继续'},...Array.from({length:4},(_,i)=>({id:'advice-'+i,text:`【长目标巡检建议 · ${i%2?'Fable':'Astra'}】第${i+1}次`})),{text:'普通用户提到【长目标巡检建议'}];
+  assert.equal(reviewAdviceCount([]),0);assert.equal(reviewAdviceCount(users.slice(0,4)),3);assert.equal(reviewAdviceCount(users),4);
+  assert.equal(recentReviewAdvice(users).length,3);assert.deepEqual(recentReviewAdvice(users).map(u=>u.id),['advice-1','advice-2','advice-3']);
 });
 test('outgoing advice is explicitly not new authorization and allows justified non-adoption',async()=>{
   const f=fixture();await deliver(f.args);const text=f.calls.find(c=>c.type==='prompt').message;

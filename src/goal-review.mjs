@@ -9,6 +9,7 @@ import {appendLineRotating} from './log-rotate.mjs';
 
 export const AUTONOMY_GUIDANCE='在请求人工介入前，先检查是否因自身核查不够全面而误判为必须人工，补齐必要检查，并寻找现有授权范围内可自行完成的更好方案；能自行处理就直接执行。只有确实必须人工操作或授权时才请求介入，并说明已核实的原因。';
 export const ADVICE_BOUNDARY='本消息是自动巡检建议，不是用户新增指令或授权；生产变更、共享环境、账户操作及暂停边界仍以用户实际授权为准。';
+export const REPEATED_REMINDER_GUIDANCE='同一长目标累计已送达提醒超过3次（至少4次）仍未达标时，首先反思巡检建议本身，而不是继续催促执行方：核对此前建议的依据、执行反馈和无效或重复环节，优化建议之后再继续提醒。reason说明此前建议为何未奏效、本次如何改进，advice只能给优化后的下一步与验证；没有有依据的改进就observe，不得原样或换措辞重发。次数按原对话中同一目标的实际提醒累计，跨巡检模型、会话压缩或换措辞不清零，不把observe或未送达尝试计入。recent的reviewAdviceCount是会话级计数；recentAdvice只返回最近3条，不代表累计只有3次。多目标或历史不清时用section=users核对并按目标区分。本轮一次评审内完成反思与优化，不增加模型调用，不强停原任务，不降低原验收。';
 const INTERVENTIONS=['new-evidence','new-route','unfinished-action'];
 // Timing has one owner: the installed Windows task triggers, not model metadata.
 export const PROFILES={astra:{hours:6,model:'gpt-6-astra',effort:'low'},fable:{hours:4,model:'claude-fable-5-1',effort:'high'}};
@@ -27,6 +28,7 @@ export function reviewPrompt(profile,goals,catalog){
   `历史读取顺序：先 session(section=summary) 按 next 把最新完整压缩摘要读完，再 session(section=recent) 读最后20条原生记录。无压缩或证据不足时再按需用 section=context/users 补查；不要为了取最后进度扫描整个数MB上下文，也不要跳过被截断的相关摘要。\n`+
   `巡检的价值是减少达到原目标所需的时间和试错，不是让会话一直运行。先判断当前办法是否仍值得继续：哪个关键假设已被证据否定，有没有更便宜或更直接的解法，下一次最小验证能区分什么。理由不充分就保持原路线，不为提出新建议而改向；建设性建议可以是架构/研究路线变化，也可以是能解除具体阻断的小修复。不要以新增报告、重复收尾或增加测试数量替代解决问题。\n`+
   `比较原任务当前计划、执行方的纠正和近期巡检建议。session(section=recent)会附recentAdvice，内容来自原会话；更早路线有疑问再用section=users定位。原任务已经提出的办法不算巡检新方向，同一问题同一方案换措辞也不是增量；相同建议已经执行、拒绝或正在等待时不要再投。确实中断且仍有未完成的授权内动作，可以恢复，但须指出具体哪一步尚未完成。对会改变建议的运行进展，定向核对最新记录/产物，已解决的卡点不要再发。\n`+
+  `${REPEATED_REMINDER_GUIDANCE}\n`+
   `已达标：done，给实际验收依据。正在合理运行，或虽已停止但在等待数据/资源事件、无新证据或可执行下一步：observe，说明等待条件，不发消息；未达标本身不是恢复理由。用户明确暂停/取消/等待授权，或找不到原会话：blocked。只有确有新增干预价值才发送：运行中用steer，不强停或切模型；空闲且无相关后台执行用resume，在原对话Astra xhigh继续。intervention说明依据类型：new-evidence=改变下一步判断的新证据/等待事件已发生；new-route=区别于现有及已拒绝方案、有依据的替代办法；unfinished-action=原任务中断后仍有具体未完成的授权内动作；none=没有可推进事项。reason自然说明具体差异和依据，advice给最小下一步及如何验证。不要求每轮改向；重读清单、确认无变化、零动作结束不构成干预。\n`+
   `${ADVICE_BOUNDARY} 巡检仅取证和建议，不直接执行目标。原任务无需采纳错误建议；不得用缩样、代理指标、跳过失败或放宽门槛偷换原验收。\n`+
   `对每个目标都给出结论。只返回一个JSON对象，不要代码围栏：{"decisions":[{"goalQuote":"从清单原文逐字引用能唯一指代该目标的一段（至少8字）","sessionId":"来源Pi会话ID；找不到则空字符串","action":"done|observe|steer|resume|blocked","intervention":"new-evidence|new-route|unfinished-action|none","reason":"具体依据；若发送，说明相较当前方案/近期建议的增量或确实未完成的动作","advice":"仅有干预价值的steer/resume填写，包含最小下一步与真实验证；其他为空","relatedSessionIds":[属于同一目标或其分叉的其他会话ID，不按相同cwd认定同项目],"backgroundPids":[已经确认属于该目标且仍运行的PID]}]}。\n`+
