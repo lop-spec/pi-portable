@@ -32,7 +32,12 @@ export function requestJson(base, route, body, timeout = 15_000) {
       res.on('error', reject);
       res.on('end', () => { try {
         const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (res.statusCode >= 400 || value.error || value.success === false || value.ok === false) throw Error(`HTTP ${res.statusCode}: ${String(value.error || 'rejected').slice(0, 150)}`);
+        if (res.statusCode >= 400 || value.error || value.success === false || value.ok === false) {
+          const error = Error(`HTTP ${res.statusCode}: ${String(value.error || 'rejected').slice(0, 150)}`);
+          if (typeof value.accepted === 'boolean') error.accepted = value.accepted;
+          if (typeof value.code === 'string') error.code = value.code;
+          throw error;
+        }
         resolve(value);
       } catch (error) { reject(error); } });
     });
