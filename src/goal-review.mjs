@@ -16,13 +16,15 @@ export const PROFILES={astra:{hours:6,model:'gpt-6-astra',effort:'low'},fable:{h
 const DATA=site().data,WORK=path.join(DATA,'goal-review'),GOALS=path.join(DATA,'长目标清单.md');
 export function save(file,value){fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value,null,2)+'\n');fs.renameSync(tmp,file)}
 export function log(event,details={}){const line=JSON.stringify({at:new Date().toISOString(),machine:HERE,event,...details});const r=appendLineRotating(path.join(WORK,'scheduler.log'),line,{maxBytes:5*1024*1024,keep:3});if(!r.ok)throw Error(r.error);console.log(line)}
-export const emptyGoals=text=>{const body=text.replace(/^#\s+长目标清单\s*$/gmu,'').trim();return !body||/^(?:当前)?(?:没有|暂无)长目标[。.!！]?$/u.test(body)};
+export const activeGoalText=text=>text.replace(/^\uFEFF/u,'').replace(/<!--[\s\S]*?(?:-->|$)/gu,'\n');
+export const emptyGoals=text=>{const body=activeGoalText(text).replace(/^#\s+长目标清单\s*$/gmu,'').trim();return !body||/^(?:当前)?(?:没有|暂无)长目标[。.!！]?$/u.test(body)};
 function load(file,def){return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):def}
 function compactCatalog(c){return {...c,sessions:c.sessions.map(s=>({...s,first:s.first.slice(0,450)}))}}
 export function reviewPrompt(profile,goals,catalog){
+  goals=activeGoalText(goals);
   const p=PROFILES[profile];
   return `${AUTONOMY_GUIDANCE}\n这是用户明确授权的本机长目标巡检，不是执行目标的工作对话。目标所在机器：${HERE}。巡检模型：${p.model}/${p.effort}。本轮规划窗口是未来${p.hours}小时，以最有可能真正完成目标的路径为导向，不是工期承诺，也不允许降低验收标准。\n\n`+
-  `只检查以下本机长目标清单，按自然语言理解，不要求固定标题、字段、状态符或标识。清单中的最新要求优先于旧会话目标。不要扫描近期P0/P1替代清单。\n${goals}\n\n`+
+  `只检查以下本机长目标清单，按自然语言理解，不要求固定标题、字段、状态符或标识。清单中的最新要求优先于旧会话目标。不要扫描近期P0/P1替代清单。以下仅含剔除注释后的生效清单；读取原文件时也忽略注释，不得恢复注释中的任务。\n${goals}\n\n`+
   `逐项找到真正承接该目标的原始执行对话。不要选择讨论定时任务/配置巡检的会话；不要另起执行对话。查看最新用户要求、实际相关历史、最新完整压缩摘要及其后执行/工具记录、项目已有产物/报告和实时运行状态；不是仅凭目录、摘要、mtime或一条“完成”声明下结论。只有证据不足才继续补读；分页有next就继续读取相关全文。可检查多个同项目会话，但每个目标只确定一个实际承接会话，发现同目录已有其他执行在运行就不要重复恢复。\n`+
   (profile==='fable'?`本轮首选Fable 5.1 high；只有原生CLI明确报告额度耗尽，巡检器才在同一会话改用claude-opus-5/xhigh重试一次，仍规划未来4小时；不由模型自行换型，不取消授权边界。\n你在对端Claude中运行；必须通过mcp__goal_source__goal_inspect只读工具访问来源机器，不能把对端的文件或进程当作来源机器的状态。session操作返回最新完整压缩摘要和之后的原生记录（字符分页），runtime刷新会话与后台进程；read/list/search用于项目文件。不要调用SSH或读取凭据，工具已处理传输。\n`:`你在目标所在机器Pi原生CLI中运行，只开放goal_inspect只读工具。session操作按字符分页返回最新完整压缩及后续原生记录，避免内置read对超长JSONL单行截断；runtime刷新实时会话和后台进程，read/list/search读取项目产物。不允许写入或运行命令，发送前网关还会复核。\n`)+
   `历史读取顺序：先 session(section=summary) 按 next 把最新完整压缩摘要读完，再 session(section=recent) 读最后20条原生记录。无压缩或证据不足时再按需用 section=context/users 补查；不要为了取最后进度扫描整个数MB上下文，也不要跳过被截断的相关摘要。\n`+
@@ -36,6 +38,7 @@ export function reviewPrompt(profile,goals,catalog){
   `当前来源机器观测（${new Date().toISOString()}；会话mtime不是运行证据）：\n${JSON.stringify(compactCatalog(catalog))}`;
 }
 export function parseDecisions(text,goals){
+  goals=activeGoalText(goals);
   const clean=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
   const value=JSON.parse(clean);if(!Array.isArray(value.decisions))throw Error('Review result needs decisions array');
   const seen=new Set();for(const d of value.decisions){
@@ -66,7 +69,9 @@ function processesFor(cwd,rows){const key=cwd.replaceAll('\\','/').toLowerCase()
 export async function deliver({decision:d,profile,reviewModel=PROFILES[profile]?.model,reviewEffort=PROFILES[profile]?.effort,goalsHash,startSessions,startProcesses=[],request=api,view=sessionView,processList=processes,logFn=log,work=WORK,readGoals=()=>fs.readFileSync(GOALS,'utf8')}){
   if(!['steer','resume'].includes(d.action)){logFn('goal-skipped',{goal:d.goalQuote,action:d.action,reason:d.reason});return {status:d.action}}
   if(!INTERVENTIONS.includes(d.intervention)){logFn('send-skipped',{goal:d.goalQuote,reason:'no-actionable-intervention',detail:d.reason,intervention:d.intervention??'missing'});return {status:'no-intervention'}}
-  if(hash(readGoals())!==goalsHash){logFn('send-skipped',{reason:'goal-list-changed-during-review',goal:d.goalQuote});return {status:'stale-goals'}}
+  const currentGoals=readGoals();
+  if(hash(currentGoals)!==goalsHash){logFn('send-skipped',{reason:'goal-list-changed-during-review',goal:d.goalQuote});return {status:'stale-goals'}}
+  if(!activeGoalText(currentGoals).includes(d.goalQuote)){logFn('send-skipped',{reason:'goal-not-in-active-list',goal:d.goalQuote});return {status:'inactive-goal'}}
   const unlock=acquireLock(path.join(work,'delivery-lock'),logFn);if(!unlock)return {status:'delivery-busy'};
   try{
     const v=view(d.sessionId),initial=startSessions.find(s=>s.id===d.sessionId);
@@ -126,7 +131,7 @@ export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goal
   let heartbeat;
   try{
     logFn('tick',{profile,pid:process.pid,dryRun,reviewOnly});
-    const goals=fs.readFileSync(goalsFile,'utf8');
+    const rawGoals=fs.readFileSync(goalsFile,'utf8'),goals=activeGoalText(rawGoals);
     const skipReason=emptyGoals(goals)?'empty':!/\p{Decimal_Number}|目标/u.test(goals)?'no-digit-or-target':null;
     if(skipReason){logFn('skip',{profile,reason:'local-goal-list-'+skipReason,modelCalls:0});return {skipped:skipReason,modelCalls:0}}
     const reviewStartedAt=Date.now();
@@ -135,13 +140,13 @@ export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goal
     const startSessions=catalog.sessions.map(s=>({...s,reviewStartedAt}));
     const prompt=reviewPrompt(profile,goals,catalog);const runId=new Date().toISOString().replace(/[:.]/g,'-');
     const promptFile=path.join(work,`${profile}-latest-prompt.txt`);fs.mkdirSync(work,{recursive:true});fs.writeFileSync(promptFile,prompt);
-    if(dryRun){logFn('dry-run',{profile,goalsHash:hash(goals),sessionCount:catalog.sessions.length,promptChars:prompt.length,modelCalls:0});return {dryRun:true,profile,promptFile,modelCalls:0}}
+    if(dryRun){logFn('dry-run',{profile,goalsHash:hash(rawGoals),sessionCount:catalog.sessions.length,promptChars:prompt.length,modelCalls:0});return {dryRun:true,profile,promptFile,modelCalls:0}}
     heartbeat=setInterval(()=>logFn('tick-alive',{profile,pid:process.pid,runId}),25000);
     const result=profile==='astra'?await astraReview(prompt,logFn):await fableReview(prompt);
     const decisions=parseDecisions(result.text,goals);
-    save(path.join(work,`${profile}-latest-result.json`),{runId,at:new Date().toISOString(),machine:HERE,goalsHash:hash(goals),startSessions:startSessions.map(({first,mtime,...s})=>s),startProcesses:catalog.processes,model:result.model,effort:result.effort,reviewSession:result.reviewSession,fallback:result.fallback,decisions});
+    save(path.join(work,`${profile}-latest-result.json`),{runId,at:new Date().toISOString(),machine:HERE,goalsHash:hash(rawGoals),startSessions:startSessions.map(({first,mtime,...s})=>s),startProcesses:catalog.processes,model:result.model,effort:result.effort,reviewSession:result.reviewSession,fallback:result.fallback,decisions});
     if(reviewOnly){logFn('review-only-complete',{profile,decisions:decisions.length,sourceMutations:0});return {profile,reviewOnly:true,decisions}}
-    const outcomes=[];for(const d of decisions){try{outcomes.push(await deliver({decision:d,profile,reviewModel:result.model,reviewEffort:result.effort,goalsHash:hash(goals),startSessions,startProcesses:catalog.processes,work,logFn,readGoals:()=>fs.readFileSync(goalsFile,'utf8')}))}catch(e){logFn('goal-failed',{profile,goal:d.goalQuote,reason:e.message});outcomes.push({status:'failed',reason:e.message})}}
+    const outcomes=[];for(const d of decisions){try{outcomes.push(await deliver({decision:d,profile,reviewModel:result.model,reviewEffort:result.effort,goalsHash:hash(rawGoals),startSessions,startProcesses:catalog.processes,work,logFn,readGoals:()=>fs.readFileSync(goalsFile,'utf8')}))}catch(e){logFn('goal-failed',{profile,goal:d.goalQuote,reason:e.message});outcomes.push({status:'failed',reason:e.message})}}
     if(!decisions.length)logFn('skip',{profile,reason:'reviewer-found-no-active-goals'});
     logFn('tick-complete',{profile,decisions:decisions.length,outcomes});if(outcomes.some(o=>o.status==='failed'))throw Error('One or more goal deliveries failed; see per-goal log');return {profile,outcomes};
   }catch(e){logFn('tick-failed',{profile,reason:e.message});throw e}

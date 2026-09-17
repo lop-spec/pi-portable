@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {deliver,parseDecisions,emptyGoals,PROFILES,reviewPrompt,AUTONOMY_GUIDANCE,ADVICE_BOUNDARY,REPEATED_REMINDER_GUIDANCE,tick} from '../src/goal-review.mjs';
+import {deliver,parseDecisions,emptyGoals,activeGoalText,PROFILES,reviewPrompt,AUTONOMY_GUIDANCE,ADVICE_BOUNDARY,REPEATED_REMINDER_GUIDANCE,tick} from '../src/goal-review.mjs';
 import {hash,safePath,pageText,recentReviewAdvice,reviewAdviceCount,searchProject,inspect} from '../src/goal-inspect.mjs';
 const goal='抖音义水北路交易体系回测：沪深股，近6个月收益率5倍以上。';
 const id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -56,6 +56,47 @@ test('both profiles skip lists without digits or 目标 before any inspection/mo
       assert.equal(fs.existsSync(path.join(work,'deliveries.json')),false);
       assert.equal(fs.existsSync(path.join(work,profile+'-lock','lock')),false);
     }
+  }
+});
+test('HTML comments are inactive, including multiline, inline and unclosed comments',()=>{
+  assert.equal(activeGoalText('\ufeff# 长目标清单\r\n<!-- 目标1\r\n目标2 -->\r\n'+goal),'# 长目标清单\r\n\n\r\n'+goal);
+  assert.equal(activeGoalText('前<!-- 目标1 -->后'),'前\n后','do not concatenate text across a hidden comment');
+  assert.equal(activeGoalText('<!-- 未闭合目标3\n继续注释'),'\n');
+  assert.equal(activeGoalText('# 目标不是注释\n'+goal),'# 目标不是注释\n'+goal);
+  assert.equal(emptyGoals('\ufeff# 长目标清单\r\n<!-- 目标1 -->'),true);
+});
+test('comment-only goals skip both profiles before any inspection, model call or delivery',async t=>{
+  const work=fs.mkdtempSync(path.join(os.tmpdir(),'goal-comments-'));t.after(()=>fs.rmSync(work,{recursive:true,force:true}));
+  const goalsFile=path.join(work,'list.md');
+  for(const profile of ['astra','fable'])for(const text of ['<!-- 目标1 -->','<!-- 目标1\n目标2 -->\n<!-- 目标3 -->','# 长目标清单\n<!-- 目标1 -->','\ufeff# 长目标清单\r\n<!-- 目标1\r\n目标2 -->','<!-- 未闭合目标3','# 长目标清单\n<!-- 未闭合目标3']){
+    fs.writeFileSync(goalsFile,text);let inspections=0;const logs=[];
+    const r=await tick(profile,{work,goalsFile,inspectSource:async()=>{inspections++;throw Error('comments must not trigger inspection')},logFn:(event,details)=>logs.push({event,...details})});
+    assert.deepEqual(r,{skipped:'empty',modelCalls:0});assert.equal(inspections,0);
+    assert.ok(logs.some(e=>e.event==='skip'&&e.reason==='local-goal-list-empty'&&e.modelCalls===0));
+    assert.equal(fs.readFileSync(goalsFile,'utf8'),text,'never rewrite the user goal list');
+    for(const name of [profile+'-latest-prompt.txt',profile+'-latest-result.json','deliveries.json',profile+'-lock/lock'])assert.equal(fs.existsSync(path.join(work,name)),false);
+  }
+  fs.writeFileSync(goalsFile,'稍后再说\n<!-- 唯一数字123与目标 -->');
+  assert.equal((await tick('astra',{work,goalsFile,inspectSource:async()=>{throw Error('comment keywords are inactive')},logFn:()=>{}})).skipped,'no-digit-or-target');
+});
+test('mixed lists review only active goals but retain raw-file hash concurrency protection',async t=>{
+  const work=fs.mkdtempSync(path.join(os.tmpdir(),'goal-comments-'));t.after(()=>fs.rmSync(work,{recursive:true,force:true}));
+  const goalsFile=path.join(work,'list.md'),hidden='已注释的旧目标：必须恢复旧任务123',text='# 长目标清单\n<!-- '+hidden+' -->\n'+goal;fs.writeFileSync(goalsFile,text);
+  for(const profile of ['astra','fable']){
+    const logs=[];const r=await tick(profile,{work,goalsFile,dryRun:true,inspectSource:async()=>({sessions:[],processes:[]}),logFn:(event,details)=>logs.push({event,...details})});
+    const prompt=fs.readFileSync(r.promptFile,'utf8');assert.ok(prompt.includes(goal));assert.ok(!prompt.includes(hidden));assert.equal(logs.find(e=>e.event==='dry-run').goalsHash,hash(text));
+    assert.ok(!reviewPrompt(profile,text,{sessions:[]}).includes(hidden));
+  }
+  assert.equal(parseDecisions(JSON.stringify({decisions:[decision]}),text).length,1);
+  assert.throws(()=>parseDecisions(JSON.stringify({decisions:[{...decision,goalQuote:hidden}]}),text),/verbatim goal-list excerpt/);
+  const f=fixture();f.args.readGoals=()=>text;f.args.goalsHash=hash(text);assert.equal((await deliver(f.args)).status,'accepted');
+});
+test('commented goals cannot be sent, including when the list changes during review',async()=>{
+  const text='<!-- '+goal+' -->';
+  for(const changed of [false,true]){
+    const f=fixture();f.args.readGoals=()=>text;f.args.goalsHash=hash(changed?goal:text);
+    assert.equal((await deliver(f.args)).status,changed?'stale-goals':'inactive-goal');assert.equal(f.calls.length,0);
+    assert.ok(f.logs.some(e=>e.event==='send-skipped'&&e.reason===(changed?'goal-list-changed-during-review':'goal-not-in-active-list')));
   }
 });
 test('digit OR 目标 independently permits inspection; each tick rereads the list',async t=>{
