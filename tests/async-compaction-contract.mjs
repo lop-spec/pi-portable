@@ -78,7 +78,8 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   };
   const pi = { on: (name, fn) => { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); }, registerCommand: () => {}, appendEntry: (customType, data) => add({ type: 'custom', customType, data }), sendUserMessage: text => sent.push(text) };
   async function emit(name, event = {}) { for (const fn of handlers.get(name) ?? []) { const result = await fn(event, ctx); if (result !== undefined) return result; } }
-  const builder = async (prep, m, c, level, signal) => {
+  const builder = async (prep, m, c, level, signal, compactFn) => {
+    assert.equal(compactFn, mod.compactWithInstructions, 'async adapter must pass its scoped all-branch summary delegate');
     requests.push({ prep, model: m, level, signal });
     if (build) return build(prep, m, c, level, signal);
     await pendingBuild;

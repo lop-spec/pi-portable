@@ -35,6 +35,37 @@ try {
   const runtime = await sdk.ModelRuntime.create({ authPath: path.join(temp, 'auth.json'), modelsPath: null, refreshOnCreate: false });
   await runtime.setRuntimeApiKey('openai', 'offline-key');
   const model = { ...ai.getModel('openai', 'gpt-5'), contextWindow: 1000000, maxTokens: 8192 };
+  // All three native branches must receive the policy without changing source data or call count.
+  for (const [label, history, prefix] of [['history-only', true, false], ['prefix-only', false, true], ['split-history', true, true]]) {
+    const user = text => ({ role: 'user', content: text, timestamp: 1 });
+    const prep = {
+      firstKeptEntryId: 'kept', messagesToSummarize: history ? [user('Completed history')] : [],
+      turnPrefixMessages: prefix ? [user('Current task: follow previously read document rules')] : [],
+      isSplitTurn: prefix, tokensBefore: 1000, previousSummary: undefined,
+      fileOps: { read: new Set(['rules/document-plan-editing.md']), written: new Set(), edited: new Set() },
+      settings: { enabled: true, reserveTokens: 4096, keepRecentTokens: 256 },
+    };
+    const source = structuredClone(prep), baseline = [], captured = [];
+    const capture = records => (m, context, options) => {
+      records.push({ context: structuredClone(context), options });
+      return stream(msg(m, [{ type: 'text', text: 'Fixture summary.' }]));
+    };
+    const signal = new AbortController().signal;
+    const native = await sdk.compact(prep, model, 'offline-key', undefined, 'caller focus', signal, 'low', capture(baseline));
+    const scoped = await mod.compactWithInstructions(prep, model, 'offline-key', undefined, 'caller focus', signal, 'low', capture(captured));
+    assert.equal(captured.length, Number(history) + Number(prefix), label + ': no extra model calls');
+    assert.equal(captured.length, baseline.length);
+    for (let i = 0; i < captured.length; i++) {
+      assert.equal(captured[i].context.systemPrompt, baseline[i].context.systemPrompt + '\n\n' + mod.SUMMARY_INSTRUCTIONS);
+      const contents = c => c.messages.map(({ timestamp, ...m }) => m);
+      assert.deepEqual(contents(captured[i].context), contents(baseline[i].context), label + ': native prompts preserved');
+      for (const key of ['reasoning', 'maxTokens', 'cacheRetention', 'signal', 'apiKey'])
+        assert.equal(captured[i].options[key], baseline[i].options[key], label + '/' + key);
+    }
+    assert.deepEqual(prep, source, label + ': no mutation');
+    assert.deepEqual(scoped, native, label + ': native result/boundary/file tracking unchanged');
+    console.log('PASS scoped summary policy: ' + label);
+  }
   for (const { forceActive, switchPhase } of [
     { forceActive: false }, { forceActive: true },
     { forceActive: false, switchPhase: 'pending' }, { forceActive: true, switchPhase: 'pending' },
@@ -50,15 +81,26 @@ try {
       sessionManager.appendMessage({ role: 'user', content: `Completed request ${n}: ` + 'historical context '.repeat(200), timestamp: Date.now() });
       sessionManager.appendMessage(msg(model, [{ type: 'text', text: `Completed result ${n}: ` + 'confirmed result '.repeat(100) }], 'stop', 5000));
     }
-    const builder = async (prep, m, ctx, level, signal) => {
+    const builder = async (prep, m, ctx, level, signal, compactFn) => {
+      assert.equal(compactFn, mod.compactWithInstructions);
       assert.equal(m.id, model.id); assert.equal(level, 'low');
       assert.ok(!JSON.stringify(prep).includes('native-tool-1'));
       await delay(20);
-      return sdk.compact(prep, m, 'offline-key', undefined, undefined, signal, level,
+      const originalPrep = JSON.stringify(prep);
+      const result = await compactFn(prep, m, 'offline-key', undefined, 'Existing caller focus must survive.', signal, level,
         (requestModel, context, options) => {
-          summaryRequests.push({ model: requestModel.id, reasoning: options.reasoning, messages: context.messages.length });
+          const prompt = JSON.stringify(context.messages);
+          const history = prompt.includes('## Critical Context');
+          assert.ok(context.systemPrompt.endsWith(mod.SUMMARY_INSTRUCTIONS), 'history and split-turn prefix must both receive rule-retention policy');
+          assert.equal(context.systemPrompt.split(mod.SUMMARY_INSTRUCTIONS).length, 2, 'policy applied exactly once');
+          assert.ok(!prompt.includes(mod.SUMMARY_INSTRUCTIONS.replace(/\n/g, '\\n')), 'do not duplicate system policy in user prompt');
+          assert.equal(prompt.includes('Existing caller focus must survive.'), history);
+          assert.equal(options.maxTokens, Math.floor((history ? 0.8 : 0.5) * nativeSettings.reserveTokens));
+          summaryRequests.push({ model: requestModel.id, reasoning: options.reasoning, messages: context.messages.length, history, systemPrompt: context.systemPrompt });
           return stream(msg(requestModel, [{ type: 'text', text: 'Completed historical work; retain current tool execution and newest messages.' }], 'stop', 200));
         });
+      assert.equal(JSON.stringify(prep), originalPrep, 'summary policy must not mutate preparation or retained boundary');
+      return result;
     };
     const loader = new sdk.DefaultResourceLoader({ cwd: temp, agentDir: temp, settingsManager,
       noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
@@ -94,8 +136,11 @@ try {
       await until(() => sessionManager.getEntries().some(e => e.type === 'compaction'), 'native saved compaction');
       if (forceActive) await until(() => sessionManager.getEntries().some(e => e.type === 'message' && e.message.role === 'user' && (e.message.content === 'continue' || e.message.content?.some?.(b => b.type === 'text' && b.text === 'continue'))), 'native continue');
       await until(() => !session.isStreaming, 'agent idle');
-      assert.ok(summaryRequests.length > 0);
+      assert.equal(summaryRequests.length, 2, 'native history + prefix, no additional summary calls');
       assert.ok(summaryRequests.every(r => r.reasoning === 'low'));
+      assert.ok(summaryRequests.some(r => r.history), 'exercise real native history summarization');
+      assert.equal(new Set(summaryRequests.map(r => r.systemPrompt)).size, 1, 'same scoped system policy on both native summary branches');
+      assert.ok(summaryRequests.some(r => !r.history), 'exercise real native split-turn prefix summarization');
       assert.equal(JSON.stringify(settingsManager.getCompactionSettings()), beforeSettings);
       assert.equal(session.thinkingLevel, switchPhase ? 'medium' : 'high');
       assert.equal(logs.filter(e => e.event === 'started').length, 1, 'main switch must not restart summary');

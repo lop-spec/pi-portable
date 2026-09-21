@@ -10,6 +10,8 @@
 - 只处理当前工具调用消息之前的完整历史，当前调用、结果及之后新增消息留在上下文中。
 - 使用当时主模型，摘要请求固定 `low`；不支持 low 则失败并记录，不换模型或档位。主对话推理设置不变。
 - 仅切换主对话推理档位，不再取消正在生成或已就绪的固定 low 摘要，也不重发摘要请求。适配层只对齐上游用于校验的主档位元数据；模型、会话、分支边界、设置、容量及自定义指令校验仍由原样上游执行。保留/对齐原因无条件写入日志，状态显示 `mainThinkingInvalidatesSummary: false`。
+- 异步适配器通过原生 `compact()` 的 `streamFn` 参数，在每个摘要请求的 system prompt 后追加同一份 `SUMMARY_INSTRUCTIONS`：2–3K output tokens 为软目标，合并重复信息、压缩已完成历史，完整保留当前目标、用户约束与否定记录、未决事项及必要精确标识；保真优先，必要时允许超长。调用方已有 `customInstructions` 保留，不修改上游源码、`maxTokens`、全局设置或保留消息边界，不增加摘要调用。
+- 已读取且适用于当前任务的内容、简写、格式、流程、操作边界和验收要求须共同保留，不仅保留功能和安全要求；路径不替代规则内容，缺失时明确待补读项。正常历史摘要和 split-turn 前缀摘要均经同一请求适配层，`instructions-scope` 日志分别记录覆盖范围，`summaryPolicy` 标明版本。Pi 原生兜底仍保持原样；恢复任务时由全局规则要求补读缺失的相关约束。
 - 上游负责单任务、就绪校验、空闲应用、必要时中断及保存后 `continue`。未及时得到有效摘要时，由 Pi 原生压缩兜底并记原因。
 - 上游原生长轮次压缩可能拆成两次摘要请求；这里的“一个后台任务”不等于永远只有一个 API 请求。
 
@@ -19,4 +21,4 @@
 
 暂停：备份后将 `enabled` 改为 `false`，对会话执行原生 reload。完整回滚可将本目录移到 agent 的 `_历史版本` 后 reload；会话和既有压缩摘要保留，Pi 原生压缩仍可使用。
 
-验收入口：便携仓库 `tests/async-compaction-contract.mjs`、`tests/async-compaction-sdk.mjs`。设置 `PI_TEST_HOST` 为实际 SDK 包目录、`PI_ASYNC_TEST_DIR` 为本目录后用 Node 执行；测试不发模型请求。已核对当前 SDK 0.85.1；上游包声明的 peer 范围是 0.84.x，不据 semver 声称兼容，升级运行时后应重跑测试。
+验收入口：便携仓库 `tests/async-compaction-contract.mjs`、`tests/async-compaction-sdk.mjs`。设置 `PI_TEST_HOST` 为实际 SDK 包目录、`PI_ASYNC_TEST_DIR` 为本目录后用 Node 执行；测试不发模型请求。已核对本机 SDK 0.85.1（pi-web 发行目录 upstream-0.9.0-91bc8a4）；上游包声明的 peer 范围是 0.84.x，不据 semver 声称兼容，升级运行时后应重跑测试。
