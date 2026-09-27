@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolveThoriumExecutable, dailyThoriumArgs, dailyThoriumProfile } from "../src/thorium-browser.mjs";
+import { resolveThoriumExecutable, dailyThoriumArgs, dailyThoriumProfile, persistentExtensionPaths } from "../src/thorium-browser.mjs";
 import { resolveBrowserExecutable, BrowserRuntime } from "../src/browser-agent/runtime.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,6 +17,14 @@ assert(!args.some((arg) => arg.startsWith("--remote-debugging-")));
 assert(!args.some((arg) => arg.startsWith("--user-data-dir=")));
 assert.equal(dailyThoriumProfile(), path.join(os.userInfo().homedir, "AppData", "Local", "Thorium", "User Data"));
 assert(args.some((p) => p.startsWith("--load-extension=") && p.endsWith("auto-close-old-tabs")));
+// A persistently installed extension must not be re-passed via --load-extension (it would become command-line only).
+const persistentDir = path.resolve(path.join(env.USERPROFILE, "AppData", "Local", "Thorium", "Extensions", "auto-close-old-tabs")).toLowerCase();
+const persistentArgs = dailyThoriumArgs({ userHome: env.USERPROFILE, exists: () => true, persistent: new Set([persistentDir]) });
+assert(!persistentArgs.some((p) => p.includes("auto-close-old-tabs")));
+assert(persistentArgs.some((p) => p.startsWith("--load-extension=") && p.endsWith("authenticator")));
+const prefs = JSON.stringify({ extensions: { settings: { a: { location: 4, path: "C:\\Users\\test\\AppData\\Local\\Thorium\\Extensions\\auto-close-old-tabs" }, b: { location: 8, path: "C:\\Users\\test\\AppData\\Local\\Thorium\\Extensions\\authenticator" } } } });
+assert.deepEqual([...persistentExtensionPaths({ userHome: env.USERPROFILE, readFile: () => prefs })], [persistentDir]);
+assert.equal(persistentExtensionPaths({ userHome: env.USERPROFILE, readFile: () => { throw new Error("ENOENT"); } }).size, 0);
 const runtime = new BrowserRuntime({ dataRoot: "D:/portable/data" });
 assert.equal(runtime.profileDir, dailyThoriumProfile());
 assert.equal(runtime.launchBrowser, false);

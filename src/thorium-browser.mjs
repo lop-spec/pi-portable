@@ -25,13 +25,30 @@ export function resolveThoriumExecutable({ env = process.env, exists = fs.exists
   return null;
 }
 
-export function dailyThoriumArgs({ exists = fs.existsSync, userHome = os.userInfo().homedir } = {}) {
+// Unpacked extensions installed persistently (Secure Preferences location 4), keyed by lower-cased path.
+// Unreadable/missing prefs → empty set, so callers fall back to --load-extension.
+export function persistentExtensionPaths({ userHome = os.userInfo().homedir, readFile = fs.readFileSync } = {}) {
+  try {
+    const prefs = JSON.parse(readFile(path.join(dailyThoriumProfile({ userHome }), "Default", "Secure Preferences"), "utf8"));
+    return new Set(Object.values(prefs.extensions?.settings || {})
+      .filter((entry) => entry?.location === 4 && typeof entry.path === "string")
+      .map((entry) => path.resolve(entry.path).toLowerCase()));
+  } catch {
+    return new Set();
+  }
+}
+
+export function dailyThoriumArgs({ exists = fs.existsSync, userHome = os.userInfo().homedir, persistent = persistentExtensionPaths({ userHome }) } = {}) {
   // Use Thorium's native default profile, like Windows HTTP/HTTPS associations.
   // Use the real account home, not Pi's sandbox HOME/USERPROFILE.
   const root = path.join(userHome, "AppData", "Local", "Thorium");
+  // Never pass --load-extension for an already persistent extension: Chromium re-registers it as
+  // command-line (location 8) and the next start from a shortcut/link without the flag drops it.
+  // 2026-09-11 both were made persistent; this flag reverted that on the 2026-09-25 cold start.
   const extensions = ["auto-close-old-tabs", "authenticator"]
     .map((name) => path.join(root, "Extensions", name))
-    .filter((directory) => exists(path.join(directory, "manifest.json")));
+    .filter((directory) => exists(path.join(directory, "manifest.json")))
+    .filter((directory) => !persistent.has(path.resolve(directory).toLowerCase()));
   return [
     // Suppress chrome.debugger infobars for this trusted daily browser profile.
     // Browser automation uses the extension bridge, never a native debug port.
