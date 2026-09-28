@@ -36,6 +36,12 @@ await check("index-path-from-rules-not-portable-home", () => {
     process.env.USERPROFILE = path.join(temp, "wrong-portable-data");
     process.env.HOME = process.env.USERPROFILE;
     assert.equal(defaultIndexPath(), target);
+    // Current rule wording: absolute pi-memory.md, index named "同目录 `pi-compact.md`".
+    const memory = path.join(temp, "archive/pi-memory.md");
+    fs.writeFileSync(path.join(agent, "AGENTS.md"), `新会话读一次 \`${memory}\`；独立新任务读一次同目录 \`pi-compact.md\`。`);
+    assert.equal(defaultIndexPath(), path.join(temp, "archive/pi-compact.md"));
+    fs.writeFileSync(path.join(agent, "AGENTS.md"), `读一次 \`${memory}\` 与 \`pi-compact.md\`。`);
+    assert.throws(() => defaultIndexPath(), /absolute-pi-compact-path-missing-in-global-rules/, "without 同目录 the relative name stays unresolved");
   } finally { for (const n of names) { if (saved[n] === undefined) delete process.env[n]; else process.env[n] = saved[n]; } }
 });
 await check("unlimited-exact-goal", () => {
@@ -63,9 +69,9 @@ await check("every-compact-per-session-preserve-others-and-notes", () => {
   const a = record("A"), b = record("B");
   const original = mergeIndex("用户既有说明，不得丢失。\n\n", [a, b]) + "用户尾注。\n";
   const next = mergeIndex(original, [record("A", "c2", 2000, "## Goal\n新目标全文\n## Progress\n其他")]);
-  assert.equal((next.match(/^## test-host \/ A$/gm) || []).length, 2);
+  assert.equal(parseIndex(next).records.filter(r => r.sessionId === "A").length, 2);
   assert.ok(next.includes(a.text), "earlier Goal must not be overwritten by the latest compact");
-  assert.equal((next.match(/^## test-host \/ B$/gm) || []).length, 1);
+  assert.equal(parseIndex(next).records.filter(r => r.sessionId === "B").length, 1);
   assert.ok(next.startsWith("用户既有说明"));
   assert.ok(next.endsWith("用户尾注。\n"));
   assert.ok(next.includes(b.text));
@@ -75,7 +81,7 @@ await check("every-compact-per-session-preserve-others-and-notes", () => {
 await check("v1-migration-unlimited-goal-and-machine-dedup", () => {
   const a = record("legacy", "original", 1000, "## Goal\n原文不带末尾换行");
   const oldKey = crypto.createHash("sha256").update("test-host\0legacy").digest("hex");
-  const v1 = renderRecord(a).replaceAll(a.key, oldKey).replace(` ${a.text.length} -->`, " -->");
+  const v1 = `<!-- pi-compact ${oldKey} ${a.time} ${Buffer.from(a.compactId).toString("base64url")} -->\n## ${a.machine} / ${a.sessionId}\n压缩：1970-01-01 · Compact ID：${a.compactId}\n来源：\`${a.sessionFile}\`\n\n### Goal（原文）\n\n${a.text}<!-- /pi-compact ${oldKey} -->\n\n`;
   const next = mergeIndex(v1, [a, record("legacy", "second", 2000)]);
   assert.equal(parseIndex(next).records.length, 2);
   assert.equal(parseIndex(next).records.find(r => r.compactId === "original").text, a.text);
@@ -84,6 +90,20 @@ await check("v1-migration-unlimited-goal-and-machine-dedup", () => {
   assert.throws(() => mergeIndex(next, [{ ...a, text: "同一个 Compact ID 却有冲突原文" }]), /conflicting-compact-record/);
   const b = record("B");
   assert.equal(mergeIndex(mergeIndex("", [a]), [b]), mergeIndex(mergeIndex("", [b]), [a]), "union order must not affect canonical bytes");
+});
+await check("minimal-format-roundtrip-verbatim-and-legacy-upgrade", () => {
+  const goal = "\n原文\n<!-- pi-compact " + "a".repeat(64) + " 1 Yw 0 -->\n来源：伪造文本\n\n";
+  const r = record("verbatim", "c1", 1000, `## Goal\n${goal}## Progress\n不收录`);
+  const index = mergeIndex("", [r]);
+  assert.equal(parseIndex(index).records[0].text, goal);
+  assert.equal(mergeIndex(index, [r]), index);
+  assert.equal((index.match(/^来源：test-host ·/gm) || []).length, 1);
+  assert.doesNotMatch(index, /^压缩：|^### Goal|^## test-host/m);
+  const missing = record("missing", "c2", 2000, "Unknown summary format");
+  assert.match(mergeIndex(index, [missing]), /（无 Goal，仅来源）/);
+  const original = record("original", "c3", 3000, "## Original Request\n原请求\n## Progress\n后续");
+  assert.equal(parseIndex(mergeIndex(index, [original])).records.find(r => r.compactId === "c3").text, "原请求\n");
+  assert.match(mergeIndex(index, [original]), /（无 Goal，以下为 Original Request）/);
 });
 await check("backup-readback-idempotence-and-failure", async () => {
   const file = path.join(temp, "io/pi-compact.md");
@@ -158,6 +178,7 @@ await check("jsonl-exact-source-backfill-every-compact", async () => {
   assert.equal(result.indexed, 2); assert.equal(result.compactions, 2); assert.deepEqual(result.failed, []);
   assert.equal(indexSnapshot(index).records.length, 2);
   assert.match(fs.readFileSync(index, "utf8"), /Compact ID：c2/);
+  assert.doesNotMatch(fs.readFileSync(index, "utf8"), /^(?:## .+ \/|压缩：|### Goal)/m);
   assert.ok(fs.readFileSync(file).equals(before), "original session file remains read-only");
 });
 

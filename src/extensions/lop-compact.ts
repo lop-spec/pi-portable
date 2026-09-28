@@ -10,10 +10,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "goal-index-v3-pruning";
+export const VERSION = "goal-index-v4-minimal";
 const LEGACY_HEADER = "# Pi compact 会话索引\n\n每会话保留最新成功 compact 的完整 Goal 原文，不限字数；仅作历史线索。按来源路径和 Compact ID 可提取 summary 全文。状态截至压缩时间，不代表后续消息或当前运行态。\n\n";
 const V2_HEADER = "# Pi compact 会话索引\n\n保留每条成功 compact 的完整 Goal 原文，不限字数，按机器＋会话 ID＋Compact ID 去重；双端按条目取并集，近期回填不删除已有旧条目。按来源机器、路径和 Compact ID 提取 summary 全文。仅作历史线索，状态截至对应压缩时间，不代表后续消息或当前运行态。\n\n";
-export const INDEX_HEADER = "# Pi compact 会话索引\n\n按长期复用价值精选，维护后不超过50条，不凑上限。保留条目的完整 Goal 原文及机器、会话、Compact ID、来源路径，不二次总结。已清理键由同目录 pi-compact.md.pruned.json 管理，双机合并与回填不得复活。仅作历史线索；按来源机器、路径和 Compact ID 提取 summary 全文，历史状态不代表当前运行态。\n\n";
+const V3_HEADER = "# Pi compact 会话索引\n\n按长期复用价值精选，维护后不超过50条，不凑上限。保留条目的完整 Goal 原文及机器、会话、Compact ID、来源路径，不二次总结。已清理键由同目录 pi-compact.md.pruned.json 管理，双机合并与回填不得复活。仅作历史线索；按来源机器、路径和 Compact ID 提取 summary 全文，历史状态不代表当前运行态。\n\n";
+export const INDEX_HEADER = "# Pi compact 会话索引\n\n仅供查找历史线索；状态以原会话为准。\n\n";
 const execute = promisify(execFile);
 const digest = (value: string | Buffer) => crypto.createHash("sha256").update(value).digest("hex");
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -26,8 +27,12 @@ export function defaultIndexPath() {
   const agentDir = process.env.PI_CODING_AGENT_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const rules = fs.readFileSync(path.join(agentDir, "AGENTS.md"), "utf8");
   const match = rules.match(/`([^`\r\n]+[\\/]pi-compact\.md)`/);
-  if (!match || !path.isAbsolute(match[1])) throw new Error("absolute-pi-compact-path-missing-in-global-rules");
-  return path.resolve(match[1]);
+  if (match && path.isAbsolute(match[1])) return path.resolve(match[1]);
+  // The 2026-09-21 rule rewrite names only pi-memory.md absolutely and the index as
+  // "同目录 `pi-compact.md`"; that lookup failed for three days and nothing was indexed.
+  const memory = rules.match(/`([^`\r\n]+[\\/])pi-memory\.md`/);
+  if (memory && path.isAbsolute(memory[1]) && /同目录\s*`pi-compact\.md`/.test(rules)) return path.resolve(memory[1], "pi-compact.md");
+  throw new Error("absolute-pi-compact-path-missing-in-global-rules");
 }
 
 export function findBackupTool() {
@@ -84,19 +89,32 @@ export function makeRecord(entry: Compaction, sessionId: string, sessionFile: st
 
 export function renderRecord(r: IndexRecord) {
   const id = Buffer.from(r.compactId).toString("base64url");
-  const end = `<!-- /pi-compact ${r.key} -->`;
-  if (r.text.includes(end)) throw new Error("index-marker-in-goal: source left untouched");
-  return `<!-- pi-compact ${r.key} ${r.time} ${id} ${r.text.length} -->\n## ${oneLine(r.machine)} / ${oneLine(r.sessionId)}\n压缩：${new Date(r.time).toISOString()} · Compact ID：${oneLine(r.compactId)}\n来源：\`${oneLine(r.sessionFile)}\`\n\n### ${r.section}（原文）\n${r.fallback ? `提取说明：${r.fallback}\n` : ""}\n${r.text}${r.text.endsWith("\n") ? "" : "\n"}${end}\n\n`;
+  const note = r.fallback === "goal-missing-or-empty; using-original-request" ? "（无 Goal，以下为 Original Request）\n" : r.fallback ? "（无 Goal，仅来源）\n" : "";
+  // Length delimits arbitrary verbatim Goal text, including Markdown and marker-looking lines.
+  return `<!-- pi-compact ${r.key} ${r.time} ${id} ${r.text.length} ${Buffer.from(r.sessionId).toString("base64url")} -->\n来源：${oneLine(r.machine)} · \`${oneLine(r.sessionFile)}\` · Compact ID：${oneLine(r.compactId)}\n${note}\n${r.text}\n\n`;
 }
 
 export function parseIndex(text: string) {
   const records: IndexRecord[] = [], notes = new Map<string, string>();
-  const header = /^<!-- pi-compact ([a-f0-9]{64}) (\d+) ([A-Za-z0-9_-]+)(?: (\d+))? -->\r?$/gm;
+  const header = /^<!-- pi-compact ([a-f0-9]{64}) (\d+) ([A-Za-z0-9_-]+)(?: (\d+))?(?: ([A-Za-z0-9_-]+))? -->\r?$/gm;
   let match: RegExpExecArray | null, prefix = text, endOfLast = 0;
   while ((match = header.exec(text))) {
     const gap = text.slice(endOfLast, match.index);
     if (!records.length) prefix = gap;
     else if (gap.trim()) notes.set(records.at(-1)!.key, gap);
+    const compactId = Buffer.from(match[3], "base64url").toString();
+    const minimal = text.slice(header.lastIndex).match(/^\r?\n来源：([^\r\n]+?) · `([^`]+)` · Compact ID：([^\r\n]+)\r?\n(（无 Goal，以下为 Original Request）\r?\n|（无 Goal，仅来源）\r?\n)?\r?\n/);
+    if (minimal) {
+      const machine = minimal[1], sessionFile = minimal[2], sessionId = match[5] && Buffer.from(match[5], "base64url").toString();
+      if (!sessionId || minimal[3] !== compactId || match[1] !== recordKey(machine, sessionId, compactId) || match[4] === undefined) throw new Error(`invalid-index-metadata:${match[1]}`);
+      const start = header.lastIndex + minimal[0].length, end = start + Number(match[4]);
+      if (end > text.length) throw new Error(`index-goal-length-mismatch:${match[1]}`);
+      const fallback = minimal[4]?.includes("Original Request") ? "goal-missing-or-empty; using-original-request" : minimal[4] ? "goal-missing-or-empty; source-reference-only" : "";
+      records.push({ key: match[1], machine, sessionId, sessionFile, compactId, time: Number(match[2]), text: text.slice(start, end), section: fallback.includes("using-original-request") ? "Original Request" : "Goal", fallback });
+      endOfLast = end;
+      header.lastIndex = end;
+      continue;
+    }
     const close = `<!-- /pi-compact ${match[1]} -->`;
     const end = text.indexOf(close, header.lastIndex);
     if (end < 0) throw new Error(`index-block-not-closed:${match[1]}`);
@@ -105,7 +123,6 @@ export function parseIndex(text: string) {
     const source = body.match(/^来源：`([^`]+)`\r?$/m);
     const section = body.match(/^### (Goal|Original Request)（原文）\r?\n(?:提取说明：([^\r\n]*)\r?\n)?\r?\n/m);
     if (!identity || !source || !section) throw new Error(`invalid-index-metadata:${match[1]}`);
-    const compactId = Buffer.from(match[3], "base64url").toString();
     const key = recordKey(identity[1], identity[2], compactId);
     if (match[1] !== key && match[1] !== digest(`${identity[1].toLowerCase()}\0${identity[2]}`)) throw new Error("index-identity-mismatch");
     const content = body.slice(section.index! + section[0].length);
@@ -145,7 +162,7 @@ export function mergeIndex(original: string, records: IndexRecord[], pruned: Pru
     if (previous && (previous.time !== r.time || previous.text.trimEnd() !== r.text.trimEnd() || previous.section !== r.section)) throw new Error(`conflicting-compact-record:${r.key}`);
     all.set(r.key, r);
   }
-  const prefix = (existing.prefix || INDEX_HEADER).replace(LEGACY_HEADER, INDEX_HEADER).replace(V2_HEADER, INDEX_HEADER);
+  const prefix = (existing.prefix || INDEX_HEADER).replace(LEGACY_HEADER, INDEX_HEADER).replace(V2_HEADER, INDEX_HEADER).replace(V3_HEADER, INDEX_HEADER);
   const excluded = new Set(mergePruned(pruned).map(r => r.key));
   const sorted = [...all.values()].filter(r => !excluded.has(r.key)).sort((a, b) => b.time - a.time || a.key.localeCompare(b.key, "en"));
   return prefix + (prefix.endsWith("\n") ? "" : "\n") + sorted.map(r => renderRecord(r) + (existing.notes.get(r.key) || "")).join("") + existing.suffix;
