@@ -51,6 +51,8 @@ test("identity and wham usage parsing expose only the requested compact fields",
     accountId: "account-1",
     email: "person@gmail.com",
   });
+  const external = { ...auth, account_id: "external-account", tokens: { ...auth.tokens, account_id: undefined } };
+  assert.equal(identityFromAuthJson(external).accountId, "external-account");
   assert.deepEqual(parseAccountUsagePayload({
     plan_type: "pro",
     rate_limit: { allowed: true, primary_window: { used_percent: 9.2, resets_at: 1_788_748_110 } },

@@ -21,6 +21,12 @@ export const LIVE_CODEX_MODEL_PATTERNS = Object.freeze([
   NEWER_CODEX_MODEL_PATTERN,
 ]);
 export const MANAGED_PROVIDER_NAME = "Codex live catalogue via 8794";
+// The bundled catalogue predates Sol/Luna. Ultra is an orchestration mode,
+// not a thinking effort that the single-agent Responses adapter can send.
+export const GPT6_CODEX_IDS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]);
+export const GPT6_THINKING_MAP = Object.freeze({
+  off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
+});
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const stableJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
@@ -94,6 +100,25 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput, { fileAu
     },
   };
 
+  const native = models.providers[LIVE_CODEX_PROVIDER];
+  native.modelOverrides = isRecord(native.modelOverrides) ? native.modelOverrides : {};
+  for (const id of GPT6_CODEX_IDS) {
+    native.modelOverrides[id] = { ...native.modelOverrides[id], thinkingLevelMap: { ...GPT6_THINKING_MAP } };
+  }
+  // Register absent models through the native custom-model interface, keeping
+  // user metadata. Zero cost means subscription usage is unpriced here.
+  native.models = Array.isArray(native.models) ? native.models : [];
+  for (const [id, name] of [["gpt-6-sol", "GPT-6 Sol"], ["gpt-6-luna", "GPT-6 Luna"]]) {
+    const existingModel = native.models.find(model => model.id === id);
+    if (existingModel) existingModel.thinkingLevelMap = { ...GPT6_THINKING_MAP };
+    else native.models.push({
+      id, name, api: "openai-codex-responses", reasoning: true, input: ["text", "image"],
+      contextWindow: 272000, maxTokens: 128000,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      thinkingLevelMap: { ...GPT6_THINKING_MAP },
+    });
+  }
+
   // The native extension owns credential resolution. Never resurrect a !command on restart.
   if (fileAuth) delete models.providers[LIVE_CODEX_PROVIDER].apiKey;
 
@@ -119,6 +144,12 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput, { fileAu
     const key = `${LIVE_CODEX_PROVIDER}/${id}`;
     if (!thinking[key]) thinking[key] = legacySolLevel || "max";
   }
+  for (const id of GPT6_CODEX_IDS) {
+    const key = `${LIVE_CODEX_PROVIDER}/${id}`;
+    if (thinking[key] === "minimal") thinking[key] = "low";
+  }
+  if (settings.defaultProvider === LIVE_CODEX_PROVIDER && GPT6_CODEX_IDS.includes(settings.defaultModel)
+      && settings.defaultThinkingLevel === "minimal") settings.defaultThinkingLevel = "low";
   settings.modelThinkingLevels = thinking;
 
   // The local bridge is HTTP/SSE only. Set this once during migration; after

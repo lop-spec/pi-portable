@@ -37,7 +37,7 @@ export function identityFromAuthJson(value) {
   const profile = accessClaims?.["https://api.openai.com/profile"] || {};
   const auth = accessClaims?.["https://api.openai.com/auth"] || {};
   const email = String(idClaims.email || profile.email || accessClaims.email || "").trim();
-  const accountId = String(tokens.account_id || auth.chatgpt_account_id || "").trim();
+  const accountId = String(tokens.account_id || value?.account_id || auth.chatgpt_account_id || "").trim();
   return { token, accountId, email };
 }
 
