@@ -36,7 +36,7 @@ export function integrateContextActions({ get, set, change, prepend, template })
   change(sidebar, '                  </ProjectContextActions>\n                ))}', '                  </ProjectContextActions>\n                ))}</div>))}');
   change(sidebar, 'text={displayCwd(project.root, homeDir)}', 'text={project.name || displayCwd(project.root, homeDir)}');
   change(sidebar, 'text={displayCwd(selectedProject?.root ?? selectedCwd, homeDir)}', 'text={projectRegistry.projects.find(p => p.key === selectedProject?.key)?.name || displayCwd(selectedProject?.root ?? selectedCwd, homeDir)}');
-  change(sidebar, 'project.root.toLowerCase().includes(projectFilter.trim().toLowerCase())', '(project.root + " " + (project.name || "")).toLowerCase().includes(projectFilter.trim().toLowerCase())');
+  change(sidebar, 'project.root.toLowerCase().includes(query)', '(project.root + " " + (project.name || "")).toLowerCase().includes(query)');
   change(sidebar, '          <button\n            onClick={() => setDropdownOpen((v) => !v)}', `          <ProjectContextActions project={selectedProject ? { ...selectedProject, name: projectRegistry.projects.find(p => p.key === selectedProject.key)?.name } : null} onChanged={(registry, removed) => { applyProjectChange(registry); if (removed && !selectedSessionId) setSelectedCwd(visibleProjectList(getRecentProjects(allSessions), registry)[0]?.root ?? null); }}>
           <button
             onClick={() => setDropdownOpen((v) => !v)}`);
@@ -71,5 +71,5 @@ export function hasBusyRpcSessionForCwd(cwd: string): boolean {`);
   change(route, '    const { name } = await req.json() as { name?: string };', `    if (!projectMutationAllowed(req)) { console.error('[pi-web rename] cross-origin request rejected'); return NextResponse.json({ error: 'Cross-origin request rejected' }, { status: 403 }); }
     assertSessionNotMoving(id);
     const { name } = await req.json() as { name?: string };`);
-  change(route, '    const sm = SessionManager.open(filePath);\n    sm.appendSessionInfo(name.trim());', '    assertSessionNotMoving(id);\n    const sm = getRpcSession(id)?.inner.sessionManager ?? SessionManager.open(filePath);\n    sm.appendSessionInfo(name.trim());');
+  change(route, '    // PATCH writes via appendSessionInfo — open fresh, bypassing the cache.\n    const sm = openSessionManager(filePath, { mutable: true });\n    sm.appendSessionInfo(name.trim());', '    // Prefer the live writer to keep its session index in sync; otherwise open fresh.\n    assertSessionNotMoving(id);\n    const sm = getRpcSession(id)?.inner.sessionManager ?? openSessionManager(filePath, { mutable: true });\n    sm.appendSessionInfo(name.trim());');
 }

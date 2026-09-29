@@ -27,7 +27,7 @@ test('pins the official main SHA and declares source-integrated runtime identity
 
 test('native CLI explicitly keeps its Next.js child hidden on Windows', () => {
   const cli = integrated.get('bin/pi-web.js');
-  assert.match(cli, /const child = spawn\(process.execPath, \[nextBin, \.\.\.nextArgs\], \{\s+windowsHide: true,/);
+  assert.match(cli, /const child = spawn\(process.execPath, getNextNodeArgs\(nextBin, nextArgs\), \{\s+windowsHide: true,/);
   assert.match(cli, /wireChildProcessLifecycle\(child\)/);
   assert.match(cli, /if \(openBrowser && !browserOpened/);
 });
@@ -184,12 +184,14 @@ test('session list transports previews only; hot history reuses a bounded browse
   const list = integrated.get('app/api/sessions/route.ts');
   assert.match(list, /firstMessage: s\.firstMessage\.slice\(0, 320\)/);
   const hook = integrated.get('hooks/useAgentSession.ts');
-  assert.match(hook, /typeof window === "undefined"/);
-  assert.match(hook, /while \(sessionViewCache\.size > 4\)/);
-  assert.match(hook, /const initialView = useRef\(session \? cachedSessionView\(session\.id\) : null\)\.current/);
-  assert.match(hook, /loadSession\(session\.id, !initialView, true\)/);
-  assert.match(hook, /responseText\.length <= 2_000_000\) rememberSessionView\(d\)/);
-  assert.match(hook, /sessionViewCache\.delete\(sid\);[\s\S]*?setError\("Session not found"\)/);
+  // 0.9.3 ships a revision-validated bounded snapshot, replacing our old LRU overlay.
+  const snapshot = fs.readFileSync(path.join(source, 'lib/session-view-cache.ts'), 'utf8');
+  assert.match(snapshot, /const MAX_SESSIONS = 8/);
+  assert.match(snapshot, /const MAX_TOTAL_BYTES = 32 \* 1024 \* 1024/);
+  assert.match(snapshot, /const TTL_MS = 10 \* 60_000/);
+  assert.match(hook, /const cached = getSessionViewSnapshot\(session\.id\)/);
+  assert.match(hook, /cached\?\.revision === d\.snapshotRevision/);
+  assert.match(hook, /deleteSessionViewSnapshot\(sid\)/);
   assert.match(integrated.get('components/ChatWindow.tsx'), /loadingHistory=\{loading\}/);
   assert.doesNotMatch(integrated.get('components/ChatWindow.tsx'), /t\("chat\.loadingSession"\)/);
   assert.match(integrated.get('components/ChatInput.tsx'), /disabled=\{loadingHistory \|\| pasteStatus\.busy/);
@@ -198,30 +200,13 @@ test('session list transports previews only; hot history reuses a bounded browse
   assert.match(sidebar, /onSessionDeleted\?\.\(id\)/);
   assert.doesNotMatch(sidebar, /t\("sidebar\.loading"\)/);
   assert.match(integrated.get('components/AppShell.tsx'), /localStorage\.setItem\('pi-web:last-selected-info'/);
-  const start = hook.indexOf('const sessionViewCache =');
-  const js = hook.slice(start, hook.indexOf('\nimport ', start))
-    .replace('Map<string, SessionData>', 'Map')
-    .replaceAll('id: string', 'id')
-    .replace('): SessionData | null', ')')
-    .replace('value: SessionData', 'value')
-    .replace('): void', ')')
-    .replace('value!', 'value');
-  const browser = vm.runInNewContext(`${js}; ({ cachedSessionView, rememberSessionView })`, { Map, window: {} });
-  for (let i = 0; i < 4; i++) browser.rememberSessionView({ sessionId: String(i) });
-  assert.equal(browser.cachedSessionView('0').sessionId, '0'); // moves to MRU
-  browser.rememberSessionView({ sessionId: '4' });
-  assert.equal(browser.cachedSessionView('1'), null); // LRU evicted
-  assert.equal(browser.cachedSessionView('0').sessionId, '0');
-  const server = vm.runInNewContext(`${js}; ({ cachedSessionView, rememberSessionView })`, { Map });
-  server.rememberSessionView({ sessionId: 'private' });
-  assert.equal(server.cachedSessionView('private'), null);
 });
 
 test('new draft model choices persist before sending; follow-up busy state retains its menu and returns focus', () => {
   const hook = integrated.get('hooks/useAgentSession.ts');
   const model = hook.slice(hook.indexOf('const handleModelChange'), hook.indexOf('const handleCompact'));
   assert.match(model, /await ensureNewSession\(\)/);
-  assert.ok(model.indexOf('rememberPreference') > model.indexOf('await sendAgentCommand'));
+  assert.ok(model.indexOf('setNewSessionModel(selectedModel)') < model.indexOf('await sendAgentCommand(sid, { type: "set_model"'));
   assert.match(model, /默认模型保存失败/);
   const controls = integrated.get('components/PortableControls.tsx');
   assert.match(controls, /!busy && event.relatedTarget/);

@@ -35,7 +35,7 @@ export function integrate(getFile) {
     set(name, source.startsWith(directive) ? directive + text + source.slice(directive.length) : text + source);
   };
   const input = 'components/ChatInput.tsx', hook = 'hooks/useAgentSession.ts', chat = 'components/ChatWindow.tsx', sidebar = 'components/SessionSidebar.tsx';
-  change('bin/pi-web.js', 'const child = spawn(process.execPath, [nextBin, ...nextArgs], {', 'const child = spawn(process.execPath, [nextBin, ...nextArgs], {\n  windowsHide: true,');
+  change('bin/pi-web.js', 'const child = spawn(process.execPath, getNextNodeArgs(nextBin, nextArgs), {', 'const child = spawn(process.execPath, getNextNodeArgs(nextBin, nextArgs), {\n  windowsHide: true,');
   const runtime = normalize([getClipboardPastePlan, normalizeClipboardImages, formatAtMentions, uploadClipboardFiles, filterSessionsForWorktree, conversationMessageText, toConversationNodeLine, conversationUserQuestion, collectConversationNodeRecords].map(fn => `export ${fn.toString()}`).join('\n\n'));
   set('lib/pi-portable-runtime.js', `${runtime}\n\nexport function readPreference(key, fallback = null) {\n  if (typeof window === 'undefined') return fallback;\n  try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); }\n  catch (error) { console.error('[pi-web] preference read failed:', key, error); return fallback; }\n}\nexport function rememberPreference(key, value) {\n  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch (error) { console.error('[pi-web] preference write failed:', key, error); }\n}\n`);
   set('components/PortableControls.tsx', template('PortableControls.tsx'));
@@ -45,7 +45,12 @@ export function integrate(getFile) {
   prepend(markdown, 'import { portableImageUrls } from "@/lib/portable-image-urls";\nimport { PortableOutputImage } from "./PortableOutputImage";\n');
   change(markdown, '  const normalizedMarkdown = useMemo', '  const imagePlugins = useMemo(() => [markdownRehypePlugins![0], [portableImageUrls, { cwd }], ...markdownRehypePlugins!.slice(1)] as typeof markdownRehypePlugins, [cwd]);\n  const normalizedMarkdown = useMemo');
   change(markdown, 'rehypePlugins={markdownRehypePlugins}', 'rehypePlugins={imagePlugins}');
-  change(markdown, 'return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;', 'return <PortableOutputImage src={imageSrc} alt={alt ?? ""} {...props} />;');
+  change(markdown, 'import { ImagePreview } from "./ImagePreview";\n', '');
+  change(markdown, `  return (
+    <ImagePreview src={imageSrc} alt={alt ?? ""} className="markdown-image">
+      {image}
+    </ImagePreview>
+  );`, '  return <PortableOutputImage src={imageSrc} alt={alt ?? ""} {...props} />;');
   set('components/PortableNodes.tsx', template('PortableNodes.tsx'));
   set('app/portable.css', template('portable.css'));
   set('app/globals.css', get('app/globals.css') + '\n' + template('portable.css'));
@@ -53,7 +58,7 @@ export function integrate(getFile) {
   // Official draft-store, process grouping, scroll restoration, sidebar
   // virtualization and highlight cache replace the retired 0.8.11 patches.
   prepend(sidebar, 'import { filterSessionsForWorktree } from "@/lib/pi-portable-runtime.js";\n');
-  change(sidebar, '  const sessionFamilies = listSessionFamilies(filteredSessions);', '  const categorySessions = showWorktreeSwitcher ? filterSessionsForWorktree(filteredSessions, worktreeState, selectedCwd) : filteredSessions;\n  const sessionFamilies = listSessionFamilies(categorySessions);');
+  change(sidebar, '  const sessionFamilies = useMemo(() => listSessionFamilies(filteredSessions), [filteredSessions]);', '  const categorySessions = useMemo(() => showWorktreeSwitcher ? filterSessionsForWorktree(filteredSessions, worktreeState, selectedCwd) : filteredSessions, [filteredSessions, showWorktreeSwitcher, worktreeState, selectedCwd]);\n  const sessionFamilies = useMemo(() => listSessionFamilies(categorySessions), [categorySessions]);');
   change(sidebar, '{worktreeState.worktrees.length > 1 && (', '{(');
   change(sidebar, '{worktreeState.worktrees.length}', '{sessionFamilies.length}');
   change(sidebar, '  const initialLoadDone = useRef(false);', `  useEffect(() => {
@@ -131,67 +136,8 @@ export function integrate(getFile) {
   change(models, 'return Response.json(await loadModelsWithCache(cwd, () => loadModels(cwd)));', 'return Response.json(await (new URL(req.url).searchParams.get("refresh") === "1" ? loadModels(cwd, true) : loadModelsWithCache(cwd, () => loadModels(cwd))));');
   change(models, '  } catch {\n    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));', '  } catch (error) {\n    console.error("[pi-web] model listing failed:", error);\n    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));');
 
-  prepend(hook, `import { readPreference, rememberPreference } from "@/lib/pi-portable-runtime.js";
-// Browser-only, bounded preview cache. Disk and the live AgentSession remain authoritative.
-const sessionViewCache = new Map<string, SessionData>();
-function cachedSessionView(id: string): SessionData | null {
-  if (typeof window === "undefined") return null;
-  const value = sessionViewCache.get(id) ?? null;
-  if (value) { sessionViewCache.delete(id); sessionViewCache.set(id, value); }
-  return value;
-}
-function rememberSessionView(value: SessionData): void {
-  if (typeof window === "undefined") return;
-  sessionViewCache.delete(value.sessionId);
-  sessionViewCache.set(value.sessionId, value);
-  while (sessionViewCache.size > 4) sessionViewCache.delete(sessionViewCache.keys().next().value!);
-}
-`);
-  change(hook, `  const [data, setData] = useState<SessionData | null>(null);
-  const [loading, setLoading] = useState(!isNew);
-  const [error, setError] = useState<string | null>(null);
-  const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [entryIds, setEntryIds] = useState<string[]>([]);
-  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
-  const [hasEarlierMessages, setHasEarlierMessages] = useState(false);`, `  const initialView = useRef(session ? cachedSessionView(session.id) : null).current;
-  const [data, setData] = useState<SessionData | null>(initialView);
-  const [loading, setLoading] = useState(!isNew && !initialView);
-  const [error, setError] = useState<string | null>(null);
-  const [activeLeafId, setActiveLeafId] = useState<string | null>(initialView?.leafId ?? null);
-  const [messages, setMessages] = useState<AgentMessage[]>(initialView?.context.messages ?? []);
-  const [entryIds, setEntryIds] = useState<string[]>(initialView?.context.entryIds ?? []);
-  const [historyCursor, setHistoryCursor] = useState<string | null>(initialView?.context.oldestEntryId ?? null);
-  const [hasEarlierMessages, setHasEarlierMessages] = useState(initialView?.context.hasMore ?? false);`);
-  change(hook, `      if (res.status === 404) {
-        if (showLoading) {
-          setData(null);
-          setActiveLeafId(null);
-          setMessages([]);
-          setEntryIds([]);
-          setHistoryCursor(null);
-          setHasEarlierMessages(false);
-          setError(null);
-        }
-        return null;
-      }`, `      if (res.status === 404) {
-        sessionViewCache.delete(sid);
-        if (sessionIdRef.current !== sid) return null;
-        setData(null);
-        setActiveLeafId(null);
-        setMessages([]);
-        setEntryIds([]);
-        setHistoryCursor(null);
-        setHasEarlierMessages(false);
-        setError("Session not found");
-        return null;
-      }`);
-  change(hook, '      const d = await res.json() as SessionData;', '      const responseText = await res.text();\n      const d = JSON.parse(responseText) as SessionData;');
-  change(hook, '      const persistedMessages = d.context.messages;\n      setData(d);', `      const persistedMessages = d.context.messages;
-      if (responseText.length <= 2_000_000) rememberSessionView(d);
-      else console.warn('[pi-web] history preview exceeds cache limit:', sid, responseText.length);
-      setData(d);`);
-  change(hook, '      loadSession(session.id, true, true).then((agentState) => {', '      loadSession(session.id, !initialView, true).then((agentState) => {');
+  // Pi Web 0.9.3 already caches authoritative session snapshots with revision
+  // checks and pagination; do not maintain a second, stale-prone view cache.
   change(input, '  isStreaming: boolean;', '  isStreaming: boolean;\n  loadingHistory?: boolean;');
   change(input, 'onSteer, onFollowUp, isStreaming, model,', 'onSteer, onFollowUp, isStreaming, loadingHistory = false, model,');
   change(input, '[value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]', '[value, attachedImages, isStreaming, loadingHistory, runBuiltinCommand, onSend, clearInput, onAudioUnlock]');
@@ -205,17 +151,8 @@ function rememberSessionView(value: SessionData): void {
   }
 
 `, '  // Keep the composer and layout mounted while the cold history loads.\n  // Sending stays disabled until the authoritative response arrives.\n\n');
-  change(hook, 'useState<SelectedModel | null>(null);\n  const [toolPreset', 'useState<SelectedModel | null>(() => readPreference("pi-last-model"));\n  const [toolPreset');
-  change(hook, 'useState<ToolPreset>("default")', 'useState<ToolPreset>(() => initialView?.toolNames !== undefined ? getPresetFromToolNames(initialView.toolNames) : "full")');
-  change(hook, 'useState<ThinkingLevelOption>("auto")', `useState<ThinkingLevelOption>(() => {
-    if (initialView?.context.thinkingLevel) return initialView.context.thinkingLevel as ThinkingLevelOption;
-    if (typeof window === 'undefined') return 'medium';
-    try { const value = localStorage.getItem('pi-last-thinking-level'); return ['off','minimal','low','medium','high','xhigh','max'].includes(value ?? '') ? value as ThinkingLevelOption : 'medium'; }
-    catch (error) { console.error('[pi-web] last thinking preference read failed:', error); return 'medium'; }
-  })`);
   change(hook, 'const loadModels = useCallback(async (signal?: AbortSignal) => {', 'const loadModels = useCallback(async (signal?: AbortSignal, force = false) => {');
   change(hook, 'const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";', 'const modelsUrl = (modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models") + (force ? (modelCwd ? "&" : "?") + "refresh=1" : "");');
-  change(hook, 'setThinkingLevel((pinned as ThinkingLevelOption | undefined) ?? "auto");', 'setThinkingLevel((pinned as ThinkingLevelOption | undefined) ?? "medium");');
   change(hook, '  const handleBuiltinSlashCommand = useCallback', `  useEffect(() => {
     let controller: AbortController | null = null;
     const refresh = (event: MouseEvent) => {
@@ -251,9 +188,7 @@ function rememberSessionView(value: SessionData): void {
         modelSwitchPendingRef.current = false;
         setModelSwitching(false);
       }`);
-  change(hook, 'await sendAgentCommand(sid, { type: "set_model", provider, modelId });', 'await sendAgentCommand(sid, { type: "set_model", provider, modelId });\n        rememberPreference("pi-last-model", { provider, modelId });', 2);
   change(hook, '[addNotice, currentModelOverride, isNew, loadSession, setNewSessionModel]', '[addNotice, currentModelOverride, ensureNewSession, isNew, loadSession, setNewSessionModel]');
-  change(hook, 'const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {', 'const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {\n    if (level !== "auto") rememberPreference("pi-last-thinking-level", level);');
   change(hook, '        default:\n          return { handled: false };', `        case "lop-followup-ui": {
           if (!sid || !['thorough','target','root-cause','root-fix','plan','off'].includes(args)) return complete({ handled: true, error: '自动追问模式或会话无效' });
           await sendAgentCommand(sid, { type: 'prompt', message: \`/lop-followup \${args}\` });
@@ -292,11 +227,12 @@ function rememberSessionView(value: SessionData): void {
   change(input, 'const canQueueStreamingMessage = hasInputText || attachedImages.length > 0;', 'const canQueueStreamingMessage = !pasteStatus.busy && (hasInputText || attachedImages.length > 0);');
   change(input, 'const THINKING_LEVELS = ["auto",', 'const THINKING_LEVELS = [');
   change(input, '  auto: "chat.thinkingUseDefault", off:', '  off:');
-  change(input, 'const lvl = thinkingLevel ?? "auto";', 'const lvl = thinkingLevel === "auto" ? "medium" : thinkingLevel ?? "medium";');
+  change(input, 'const lvl = resolvedThinkingLevel ?? "auto";', 'const lvl = resolvedThinkingLevel ?? "未确认";');
   change(input, 'if (lvl === "auto" || !thinkingLevelMap)', 'if (!thinkingLevelMap)');
   change(input, '                      if (lvl === "auto") return true;\n', '');
   change(input, '(lvl !== "auto" && thinkingLevelMap)', 'thinkingLevelMap');
-  change(input, 'onToolPresetChange(preset);', 'onToolPresetChange?.(preset);');
+  change(input, '                      const isActive = lvl === "auto"\n                        ? isAutoThinkingSelection\n                        : !isAutoThinkingSelection && resolvedThinkingLevel === lvl;', '                      const isActive = resolvedThinkingLevel === lvl;');
+  change(input, '                            if (lvl === "auto") {\n                              if (!isAutoThinkingSelection) onThinkingLevelChange("auto");\n                              return;\n                            }\n                            if (!isActive || isAutoThinkingSelection) onThinkingLevelChange(lvl);', '                            if (!isActive || isAutoThinkingSelection) onThinkingLevelChange(lvl);');
   const pasteStart = get(input).indexOf('  const handlePaste = useCallback(');
   const pasteEnd = get(input).indexOf('\n\n  useEffect', pasteStart);
   if (pasteStart < 0 || pasteEnd < 0) throw new Error('native paste handler missing');
@@ -340,14 +276,8 @@ function rememberSessionView(value: SessionData): void {
       if (target === pasteTargetRef.current) setPasteStatus(previous => ({ ...previous, busy: pending > 0 }));
     }
   }, [compact, cwd, pasteTarget, processImageFiles, insertPastedText]);`);
-  const modelStart = get(input).indexOf('            {(modelOptions.length > 0 || model || modelError)');
-  const modelEnd = get(input).indexOf('\n          </div>', modelStart);
-  if (modelStart < 0 || modelEnd < 0) throw new Error('native model toolbar missing');
-  const modelJsx = get(input).slice(modelStart, modelEnd);
-  change(input, modelJsx, '            <PortableFollowup disabled={isStreaming} run={onBuiltinCommand} load={onLoadSlashCommands} />');
-  change(input, '            {!isStreaming && onThinkingLevelChange && (', `${modelJsx}\n            {!isStreaming && onThinkingLevelChange && (`);
-  change(input, '{!isStreaming && onToolPresetChange && (', '{false && onToolPresetChange && (');
-  change(input, '{onSoundToggle !== undefined && (', '{false && onSoundToggle !== undefined && (');
+  // Keep the upstream model selector and live thinking/tool controls in place.
+  change(input, '          </div>\n\n          {/* spacer */}', '            <PortableFollowup disabled={isStreaming} run={onBuiltinCommand} load={onLoadSlashCommands} />\n          </div>\n\n          {/* spacer */}');
   change(input, '            onPaste={handlePaste}', '            onPaste={handlePaste}');
   change(input, '      <ModelErrorBanner error={modelError} />', '      {(pasteStatus.busy || pasteStatus.error) && <div className="pw-paste-status" role={pasteStatus.error ? "alert" : "status"}>{pasteStatus.error ? `文件粘贴失败：${pasteStatus.error}` : "正在粘贴文件…"}</div>}\n      <ModelErrorBanner error={modelError} />');
   change('components/ModelSelector.tsx', 'aria-label={ariaLabel}', 'aria-label={ariaLabel ?? `当前模型：${currentName}`}', 2);
@@ -418,7 +348,7 @@ function rememberSessionView(value: SessionData): void {
   integrateProjects({ set, change, prepend, template });
   // The catalogue is navigation metadata, not a transport for entire prompts.
   // Search reads the original JSONL through its own endpoint.
-  change('app/api/sessions/route.ts', '        sessions,\n        portableProjects:', '        sessions: sessions.map(s => ({ ...s, firstMessage: s.firstMessage.slice(0, 320) })),\n        portableProjects:');
+  change('app/api/sessions/route.ts', '        sessions,\n        portableProjects:', '        sessions: sessions.map(s => ({ ...s, firstMessage: s.firstMessage.slice(0, 320) })),\n        portableProjects:', 2);
   integrateContextActions({ get, set, change, prepend, template });
   integrateModelMenu({ set, change, prepend, template });
   const pkg = JSON.parse(get('package.json'));

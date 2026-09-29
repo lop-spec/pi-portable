@@ -6,7 +6,7 @@ export function integrateProjects({ set, change, prepend, template }) {
   set('app/api/sessions/[id]/move/route.ts', template('portable-session-move-route.ts'));
   const list = 'app/api/sessions/route.ts', sidebar = 'components/SessionSidebar.tsx', rpc = 'lib/rpc-manager.ts';
   prepend(list, "import { ProjectStore } from '@/lib/portable-project-store.mjs';\nimport { getAgentDir } from '@earendil-works/pi-coding-agent';\nimport { join } from 'node:path';\n");
-  change(list, '        sessions,\n        sessionListVersion,', "        sessions,\n        portableProjects: new ProjectStore(join(getAgentDir(), 'web-projects.json')).read(),\n        sessionListVersion,");
+  change(list, '        sessions,\n        sessionListVersion,', "        sessions,\n        portableProjects: new ProjectStore(join(getAgentDir(), 'web-projects.json')).read(),\n        sessionListVersion,", 2);
   prepend(sidebar, "import { CreateProjectButton, RemoveProjectButton, MoveSessionButton, visibleProjectList, projectRequest, type ProjectRegistry } from './PortableProjects';\n");
   change(sidebar, '  const [projectFilter, setProjectFilter] = useState("");', '  const [projectFilter, setProjectFilter] = useState("");\n  const [projectRegistry, setProjectRegistry] = useState<ProjectRegistry>({ projects: [], hidden: [] });');
   change(sidebar, '        sessions: SessionInfo[];\n        sessionListVersion: number;', '        sessions: SessionInfo[];\n        portableProjects: ProjectRegistry;\n        sessionListVersion: number;');
@@ -14,7 +14,7 @@ export function integrateProjects({ set, change, prepend, template }) {
   change(sidebar, 'if (allSessions.length === 0 || skipInitialProjectSelection) return;', 'if (loading || skipInitialProjectSelection) return;');
   change(sidebar, 'const projects = getRecentProjects(allSessions);', 'const projects = visibleProjectList(getRecentProjects(allSessions), projectRegistry);');
   change(sidebar, '}, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone]);', '}, [allSessions, loading, projectRegistry, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone]);');
-  change(sidebar, 'const recentProjects = getRecentProjects(allSessions);', 'const recentProjects = visibleProjectList(getRecentProjects(allSessions), projectRegistry);');
+  change(sidebar, 'const recentProjects = useMemo(() => getRecentProjects(allSessions), [allSessions]);', 'const recentProjects = useMemo(() => visibleProjectList(getRecentProjects(allSessions), projectRegistry), [allSessions, projectRegistry]);');
   change(sidebar, '      saveLastCustomCwd(data.cwd);', "      const registry = await projectRequest('/api/projects', { action: 'add', cwd: data.cwd });\n      setProjectRegistry(registry);\n      saveLastCustomCwd(data.cwd);");
   change(sidebar, '                {visibleProjects.map((project) => (\n                  <button\n                    key={project.key}', '                {visibleProjects.map((project) => (\n                  <div key={project.key} style={{ display: "flex", alignItems: "center" }}>\n                  <button');
   change(sidebar, '                    {showProjectActivity(projectActivity.get(project.key), t)}\n                  </button>', `                    {showProjectActivity(projectActivity.get(project.key), t)}
@@ -50,5 +50,5 @@ export function integrateProjects({ set, change, prepend, template }) {
   change(rpc, '  const registry = getRegistry();\n  const locks = getLocks();', '  assertSessionNotMoving(sessionId);\n  const registry = getRegistry();\n  const locks = getLocks();');
   change(rpc, 'export function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {', 'export function isRpcSessionStarting(sessionId: string): boolean { return getLocks().has(sessionId); }\n\nexport function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {');
   // Other in-memory tool-policy mutation paths must respect the same lock.
-  change(rpc, '  const toolNames = validateSessionToolSelection(requestedToolNames);\n  const existing = getRpcSession(sessionId);', '  assertSessionNotMoving(sessionId);\n  const toolNames = validateSessionToolSelection(requestedToolNames);\n  const existing = getRpcSession(sessionId);');
+  change(rpc, '): Promise<SetRpcSessionToolsResult> {\n  const toolNames = requestedToolNames === undefined', '): Promise<SetRpcSessionToolsResult> {\n  assertSessionNotMoving(sessionId);\n  const toolNames = requestedToolNames === undefined');
 }
