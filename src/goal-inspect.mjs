@@ -12,8 +12,9 @@ export const SITES = {
   'desktop-3egb4lb': {host:'100.98.35.74', root:'D:/Downloads/pi-protable', data:'D:/Downloads/pi-protable/data', agent:'D:/Downloads/pi-protable/data/.pi/agent'},
   yangyong: {host:'100.84.69.5', root:'C:/Users/lop/Documents/claude/pi-portable', data:'C:/Users/lop/AppData/Local/pi-web/portable/data', agent:'C:/Users/lop/.pi/agent'},
 };
-export const HERE = os.hostname().toLowerCase();
-export function site(name=HERE) { if(!SITES[name]) throw Error('Unknown managed machine: '+name); return SITES[name]; }
+// Keep persisted source/session IDs stable after the Windows rename to LOP-HOME.
+export const HERE = os.hostname().toLowerCase()==='lop-home'?'desktop-3egb4lb':os.hostname().toLowerCase();
+export function site(name=HERE) { name=name.toLowerCase();if(name==='lop-home')name='desktop-3egb4lb';if(!SITES[name]) throw Error('Unknown managed machine: '+name); return SITES[name]; }
 export const hash = text => crypto.createHash('sha256').update(text).digest('hex');
 export const textOf = m => typeof m?.content==='string' ? m.content : (m?.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
 export const api = (route,body) => requestJson('http://127.0.0.1:30140',route,body,25000);

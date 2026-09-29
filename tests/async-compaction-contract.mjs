@@ -18,13 +18,23 @@ const { loadExtensions } = await import(pathToFileURL(path.join(host, 'dist/core
 const loaded = await loadExtensions([path.join(candidate, 'index.ts')], process.cwd());
 assert.deepEqual(loaded.errors, [], 'real host must load the extension');
 assert.equal(loaded.extensions.length, 1);
-assert.deepEqual(mod.readConfig(), { enabled: true, startTokens: 128000, thinkingLevel: 'low', timeoutMs: 300000, firstToolCompaction: true });
+assert.deepEqual(mod.readConfig(''), { enabled: true, startTokens: 128000, thinkingLevel: 'low', timeoutMs: 300000, firstToolCompaction: true, providers: { 'pi-chatgpt-web': { summaryModel: 'chatgpt-web-instant', thinkingLevel: 'high', startTokens: 400000, firstToolCompaction: false }, 'pi-qwen-web': { summaryModel: 'qwen-web-max', thinkingLevel: 'high', startTokens: 240000, firstToolCompaction: false } } });
+for (const providers of [[], { x: { thinkingLevel: 'pro' } }, { x: { summaryModel: '' } }, { x: null }, { x: { startTokens: 0 } }, { x: { firstToolCompaction: 'no' } }]) assert.throws(() => mod.parseConfig({ ...mod.readConfig(''), providers }), /Invalid async compaction config/);
 assert.equal(mod.startBlocker({ tokens: 127999, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), 'below_threshold');
 assert.equal(mod.startBlocker({ tokens: 128000, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), undefined);
 assert.equal(mod.startBlocker({ tokens: 900000, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), 'above_force_threshold');
 assert.equal(mod.startBlocker({ tokens: null, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), 'context_unknown');
 assert.throws(() => mod.parseConfig({ enabled: true, startTokens: 0, thinkingLevel: 'low', timeoutMs: 300000 }));
 assert.throws(() => mod.parseConfig({ enabled: true, startTokens: 128000, thinkingLevel: 'off', timeoutMs: 300000 }));
+{ // per-instance override in the agent directory (pi-chat: Pro summaries, start at 400k)
+  const agentDir = fs.mkdtempSync(path.join(process.env.TEMP || '.', 'async-override-'));
+  assert.deepEqual(mod.readConfig(agentDir), mod.readConfig(''), 'no override file: shared defaults');
+  fs.writeFileSync(path.join(agentDir, mod.INSTANCE_CONFIG), JSON.stringify({ thinkingLevel: 'max', startTokens: 400000 }));
+  assert.deepEqual(mod.readConfig(agentDir), { enabled: true, startTokens: 400000, thinkingLevel: 'max', timeoutMs: 300000, firstToolCompaction: true, providers: { 'pi-chatgpt-web': { summaryModel: 'chatgpt-web-instant', thinkingLevel: 'high', startTokens: 400000, firstToolCompaction: false }, 'pi-qwen-web': { summaryModel: 'qwen-web-max', thinkingLevel: 'high', startTokens: 240000, firstToolCompaction: false } } });
+  fs.writeFileSync(path.join(agentDir, mod.INSTANCE_CONFIG), JSON.stringify({ thinkingLevel: 'pro' }));
+  assert.throws(() => mod.readConfig(agentDir), /Invalid async compaction config/);
+  fs.rmSync(agentDir, { recursive: true });
+}
 const entries = [
   { id: 'done', type: 'message', message: { role: 'user', content: 'old' } },
   { id: 'inflight', type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call1', name: 'read', arguments: {} }] } },
@@ -42,7 +52,7 @@ assert.ok(model.id && piAI.getSupportedThinkingLevels(model).includes('low'));
 const tick = () => new Promise(r => setTimeout(r, 10));
 const until = async (fn, label) => { for (let i = 0; i < 100; i++) { if (fn()) return; await tick(); } throw Error(`Timeout: ${label}`); };
 const config = mod.readConfig();
-function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, queued = false, build, configOverride = {}, persistedEntries } = {}) {
+function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, queued = false, build, configOverride = {}, persistedEntries, registry } = {}) {
   let serial = 0;
   const branch = persistedEntries ? [...persistedEntries] : [];
   const add = data => { const entry = { ...data, id: String(++serial).padStart(8, '0'), parentId: branch.at(-1)?.id ?? null, timestamp: new Date().toISOString() }; branch.push(entry); return entry; };
@@ -62,7 +72,7 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   const pendingBuild = new Promise(r => { resolveBuild = r; });
   const settings = { enabled: true, reserveTokens: 4096, keepRecentTokens: 128 };
   const ctx = {
-    cwd: process.cwd(), model, hasUI: false, isProjectTrusted: () => false,
+    cwd: process.cwd(), model, hasUI: false, isProjectTrusted: () => false, modelRegistry: registry,
     isIdle: () => idle, hasPendingMessages: () => queued,
     signal: new AbortController().signal,
     getContextUsage: () => ({ tokens, contextWindow: model.contextWindow }),
@@ -87,6 +97,66 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   };
   mod.install(pi, { config: { ...config, ...configOverride }, log: e => logs.push(e), build: builder, settings: () => settings });
   return { branch, currentTool, ctx, handlers, logs, requests, sent, errors, emit, nextTool, message, add, finish: () => resolveBuild(), setTokens: n => { tokens = n; }, setIdle: x => { idle = x; }, setQueued: x => { queued = x; }, metrics: () => ({ aborts, compacts, synchronousFallbacks }) };
+}
+{
+  // Web-model sessions summarize with their provider's configured target (5.6 Sol at high)
+  // through that provider's own stream handler; other providers keep the defaults above.
+  const summary = { ...model, id: 'summary-model' }, marker = { routed: true };
+  const custom = () => marker;
+  const registry = { find: (p, id) => (p === model.provider && id === 'summary-model' ? summary : undefined), getRegisteredProviderConfig: p => (p === model.provider ? { streamSimple: custom } : undefined) };
+  const f = fixture({ registry, configOverride: { providers: { [model.provider]: { summaryModel: 'summary-model', thinkingLevel: 'high' } } } });
+  await f.emit('tool_execution_start', f.currentTool);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].model, summary, 'the configured summary model, not the session model');
+  assert.equal(f.requests[0].level, 'high');
+  const request = f.logs.find(e => e.event === 'request');
+  assert.deepEqual([request.model, request.sessionModel, request.stream], [model.provider + '/summary-model', model.provider + '/' + model.id, 'provider']);
+  assert.equal(mod.summaryStream(summary, { messages: [] }, {}), marker, 'summary requests reach the provider handler, not the global registry');
+  const missing = fixture({ registry: { find: () => undefined }, configOverride: { providers: { [model.provider]: { summaryModel: 'gone' } } } });
+  await missing.emit('tool_execution_start', missing.currentTool);
+  assert.equal(missing.requests.length, 0, 'an unregistered summary model never falls back silently');
+  f.finish(); missing.finish();
+}
+{
+  // lop 2026-09-27: web-model sessions start at 400k and skip the early first-tool job; the
+  // defaults (128k, first tool) stay for every other provider.
+  const web = { providers: { [model.provider]: { startTokens: 400000, firstToolCompaction: false } } };
+  assert.deepEqual([mod.configFor({ ...config, ...web }, model.provider).startTokens, mod.configFor({ ...config, ...web }, model.provider).firstToolCompaction], [400000, false]);
+  assert.deepEqual([mod.configFor({ ...config, ...web }, 'other').startTokens, mod.configFor({ ...config, ...web }, 'other').firstToolCompaction], [128000, true]);
+  const early = fixture({ tokens: 2000, configOverride: web });
+  await early.emit('tool_execution_start', early.currentTool);
+  assert.equal(early.requests.length, 0, 'no first-tool job below 400k');
+  assert.ok(early.logs.some(e => e.event === 'skipped' && e.reason === 'below_threshold'));
+  const mid = fixture({ tokens: 399999, configOverride: web });
+  await mid.emit('tool_execution_start', mid.currentTool);
+  assert.equal(mid.requests.length, 0, '399,999 tokens is still below 400k');
+  const due = fixture({ tokens: 400000, configOverride: web });
+  await due.emit('tool_execution_start', due.currentTool);
+  assert.equal(due.requests.length, 1, 'starts at 400k');
+  assert.equal(due.logs.find(e => e.event === 'trigger').reason, '400k-tool');
+  early.finish(); mid.finish(); due.finish();
+}
+{
+  // A native compaction (overflow/threshold) of a web-model session also summarizes with the
+  // provider target; agent models, custom instructions and failures stay with Pi's own summary.
+  const summary = { ...model, id: 'summary-model' };
+  const registry = { find: (p, id) => (p === model.provider && id === 'summary-model' ? summary : undefined), getRegisteredProviderConfig: () => undefined };
+  const web = { providers: { [model.provider]: { summaryModel: 'summary-model', thinkingLevel: 'high', startTokens: 400000, firstToolCompaction: false } } };
+  const done = { summary: 'routed', firstKeptEntryId: 'x', tokensBefore: 500000, usage: { input: 1, output: 1 } };
+  const routed = fixture({ registry, configOverride: web, build: async () => done });
+  const out = await routed.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'overflow', signal: new AbortController().signal });
+  assert.equal(out?.compaction, done, 'the routed summary replaces the native one');
+  assert.equal(routed.requests[0].model, summary); assert.equal(routed.requests[0].level, 'high');
+  assert.ok(routed.logs.some(e => e.event === 'native-routed-request' && e.nativeReason === 'overflow'));
+  const agent = fixture({ registry, build: async () => done });
+  assert.equal(await agent.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'overflow' }), undefined, 'agent models keep native compaction');
+  assert.equal(agent.requests.length, 0); assert.ok(agent.logs.some(e => e.event === 'native-fallback'));
+  const custom = fixture({ registry, configOverride: web, build: async () => done });
+  assert.equal(await custom.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'manual', customInstructions: 'focus on X' }), undefined);
+  assert.equal(custom.requests.length, 0);
+  const broken = fixture({ registry, configOverride: web, build: async () => { throw new Error('web down'); } });
+  assert.equal(await broken.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'threshold' }), undefined, 'a failed routed summary leaves the native one in charge');
+  assert.ok(broken.logs.some(e => e.event === 'native-routed-failed' && /web down/.test(e.error)));
 }
 {
   const f = fixture();

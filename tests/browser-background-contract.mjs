@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {patchBackgroundBootstrap,patchBackgroundFocusEmulation} from '../src/browser-agent/background-mcp-patch.mjs';
 import {backgroundConfig} from '../src/browser-agent/vendor/playwright-extension/pi-background-config.mjs';
-import {createFixedTabStore,FIXED_TAB_KEY,retireConnectionPages} from '../src/browser-agent/vendor/playwright-extension/pi-background-tab.mjs';
+import {createFixedTabPool,createFixedTabStore,FIXED_TAB_KEY,retireConnectionPages} from '../src/browser-agent/vendor/playwright-extension/pi-background-tab.mjs';
 import {parseBackgroundInvitation} from '../src/browser-agent/vendor/playwright-extension/pi-background-service.mjs';
 const vendor=new URL('../src/browser-agent/vendor/playwright-extension/',import.meta.url);
 const manifest=JSON.parse(await fs.readFile(new URL('manifest.json',vendor),'utf8'));
@@ -58,7 +58,7 @@ const api={
  windows:{getAll:async()=>windows},
  action:{onClicked:event,setBadgeText:async()=>{},setTitle:async()=>{},setBadgeBackgroundColor:async()=>{}},
  tabGroups:{query:async()=>[]},
- debugger:{detach:async()=>{},attach:async()=>{},sendCommand:async()=>({}),onEvent:event,onDetach:event},
+ debugger:{getTargets:async()=>[],detach:async()=>{},attach:async()=>{},sendCommand:async()=>({}),onEvent:event,onDetach:event},
  tabs:{onUpdated:event,onRemoved:event,onCreated:event,
   get:async id=>{if(!tabs.has(id))throw new Error('No tab');return {...tabs.get(id)};},
   query:async filter=>[...tabs.values()].filter(t=>!filter.url||t.url.startsWith(ownUrl)).map(t=>({...t})),
@@ -88,25 +88,28 @@ const query=api.tabs.query;
 api.tabs.query=async filter=>filter.url?[{id:3,url:ownUrl}]:query(filter);
 assert.equal(await retireConnectionPages(999,api),0);assert(tabs.has(3));api.tabs.query=query;
 // Execute the actual vendor classes, not a substitute implementation.
-const classes=new Function('chrome','createFixedTabStore','retireConnectionPages','startBackgroundService','WebSocket',
+const pool=createFixedTabPool(api,identity);
+const classes=new Function('chrome','createFixedTabPool','retireConnectionPages','startBackgroundService','WebSocket',
  source.replace(/^import .*;\r?\n/gm,'').replace('new PlaywrightExtension();','')+';return {RelayConnection,ConnectedTabGroup,PlaywrightExtension};'
-)(api,()=>store,id=>retireConnectionPages(id,api),()=>{}, {OPEN:1});
+)(api,()=>pool,id=>retireConnectionPages(id,api),()=>{}, {OPEN:1});
 const sent=[];const ws={readyState:1,send:x=>sent.push(JSON.parse(x)),close(){}};
 const relay=new classes.RelayConnection(ws);
+relay.setOwnedTab(3);
 for(const method of ['chrome.tabs.create','chrome.tabs.remove'])await assert.rejects(relay._handleCommand({method,params:[{}]}),/Single fixed-tab/);
-for(const method of ['Target.createTarget','Target.closeTarget','Page.close'])await assert.rejects(relay._handleCommand({method:'chrome.debugger.sendCommand',params:[{},method]}),/Single fixed-tab/);
-assert.deepEqual(await relay._handleCommand({method:'chrome.debugger.sendCommand',params:[{},'Page.bringToFront']}),{});
+for(const method of ['Target.createTarget','Target.closeTarget','Page.close'])await assert.rejects(relay._handleCommand({method:'chrome.debugger.sendCommand',params:[{tabId:3},method]}),/Single fixed-tab/);
+assert.deepEqual(await relay._handleCommand({method:'chrome.debugger.sendCommand',params:[{tabId:3},'Page.bringToFront']}),{});
 const group=new classes.ConnectedTabGroup(relay,{id:3},'test',{},()=>false);
 relay._notifyTabAttached(3);
 await group._addTabToGroup(3);
 group._onTabUpdated(3,{url:'https://example.com/next',groupId:4},{id:3,groupId:4});
 assert.deepEqual(group.connectedTabIds(),[3],'User group edits must not detach the fixed tab');
-group.close('test');assert(tabs.has(3),'Disconnect must preserve tab');
-const extension=new classes.PlaywrightExtension();
-extension._backgroundStarting=true;
-await assert.rejects(extension._connectBackground({}),/busy/);
-extension._backgroundStarting=false;extension._connections.set(1,{});
-await assert.rejects(extension._connectBackground({}),/busy/);
-assert.equal(created,1,'Denied connection must not create a tab');
-console.log('PASS singleton tab migration/reconnect/recovery/ownership, no grouping or foreground activation, busy rejection, CDP lifecycle guards');
+await group.close('test');assert(tabs.has(3),'Disconnect must preserve tab');
+const [a,b]=await Promise.all([pool.acquire('A'),pool.acquire('B')]);
+assert.notEqual(a.id,b.id,'Busy tabs must not be shared across sessions');
+assert.notEqual(a.id,3,'Never adopt an ordinary user website');
+assert.notEqual(b.id,3,'Never adopt an ordinary user website');
+pool.release('A');
+assert.equal((await pool.acquire('C')).id,a.id,'An idle released tab is reused');
+console.log('PASS legacy migration/recovery, pooled ownership and idle reuse, no grouping or foreground activation, CDP lifecycle guards');
 await import('./browser-worker-contract.mjs');
+await import('../src/browser-agent/selftest-tab-pool.mjs');

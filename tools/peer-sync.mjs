@@ -1,4 +1,4 @@
-// 受管双机同步（YANGYONG ↔ DESKTOP-3EGB4LB），一条命令完成：对端备份 → 传输 → 读回 SHA256 比对 → 代码顺带 node --check。
+// 受管双机同步（YANGYONG ↔ LOP-HOME；desktop-3egb4lb保留为历史站点ID），一条命令完成：对端备份 → 传输 → 读回 SHA256 比对 → 代码顺带 node --check。
 // 用法：
 //   node peer-sync.mjs push <文件...>            整文件同步（三棵已知树自动映射；其他目录按相同绝对路径同步，仅处理显式指定文件）
 //   node peer-sync.mjs patch <文件> < spec.json   只同步改动行：stdin 为 {"old":"...","new":"..."} 或其数组，每个锚点在对端必须恰好一处；
@@ -20,6 +20,7 @@ export const SITES = {
     repo: "C:/Users/lop/Documents/claude/pi-portable",
     agent: "C:/Users/lop/.pi/agent",
     claude: "C:/Users/lop/.claude",
+    pichat: "C:/Users/pi-web/开发工具/pi-chatgpt-web",
     node: "node",
   },
   "desktop-3egb4lb": {
@@ -27,6 +28,7 @@ export const SITES = {
     repo: "D:/Downloads/pi-protable",
     agent: "D:/Downloads/pi-protable/data/.pi/agent",
     claude: "C:/Users/lop/.claude",
+    pichat: "D:/Documents/pi-chatgpt-web",
     node: "D:/Downloads/pi-protable/runtime/node.exe",
   },
 };
@@ -45,7 +47,8 @@ const lower = (p) => norm(p).toLowerCase();
 const realOrSelf = (p) => { try { return norm(fs.realpathSync.native(p)); } catch { return norm(path.resolve(p)); } };
 
 export function localSiteName(hostname = os.hostname()) {
-  const name = String(hostname).toLowerCase();
+  const actual = String(hostname).toLowerCase();
+  const name = actual === 'lop-home' ? 'desktop-3egb4lb' : actual;
   if (!SITES[name]) throw new Error(`未知主机 ${hostname}；只认 ${Object.keys(SITES).join("/")}`);
   return name;
 }
@@ -58,7 +61,8 @@ export function mapPath(input, siteName = localSiteName(), { realpath = realOrSe
   if (input === "CLAUDE") return { local: `${site.claude}/CLAUDE.md`, remote: `${peer.claude}/CLAUDE.md`, tree: "claude" };
   const abs = realpath(path.resolve(input));
   // 对端 agent 根(data/.pi/agent)在 repo 根之下:按根路径最长优先匹配,否则会被 repo 抢先吞掉。
-  const trees = ["repo", "agent", "claude"].sort((a, b) => lower(realpath(site[b])).length - lower(realpath(site[a])).length);
+  // pichat = pi-chat 项目源码；.local/instance.json 与数据根的 local-token 按机器各自维护，不要推。
+  const trees = ["repo", "agent", "claude", "pichat"].sort((a, b) => lower(realpath(site[b])).length - lower(realpath(site[a])).length);
   for (const tree of trees) {
     const root = lower(realpath(site[tree]));
     if (lower(abs) === root || lower(abs).startsWith(`${root}/`)) {

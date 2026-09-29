@@ -16,7 +16,10 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const uiSource = fs.readFileSync(path.join(root, "src", "piweb-archive-ui.js"), "utf8");
-const quotaUi = uiSource.slice(uiSource.indexOf('const VERSION = "piweb-account-usage-v2"'));
+// Only the quota IIFE: later IIFEs (service tier) legitimately read /api/agent and are covered by their own contract.
+const quotaStart = uiSource.indexOf('const VERSION = "piweb-account-usage-v2"');
+const quotaUi = uiSource.slice(quotaStart, uiSource.indexOf("\n})();", quotaStart));
+assert.ok(quotaStart > 0 && quotaUi.length > 10000, "quota UI section must be located");
 const bridgeSource = fs.readFileSync(path.join(root, "src", "bridge", "codex-responses-proxy.mjs"), "utf8");
 
 function responseCollector() {

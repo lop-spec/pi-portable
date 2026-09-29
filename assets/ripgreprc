@@ -1,0 +1,4 @@
+# ripgrep 默认参数(经 RIPGREP_CONFIG_PATH 由 launcher 给 pi-web 进程设置;Pi 的 grep 工具调用 rg 时读取)。
+# 目录搜索跳过大于 10M 的单个文件:200~300MB 的单行 JSON 一命中会整行输出(实测 516MB、100 秒以上)。
+# 对命令行里显式给出的文件路径不生效,要搜大文件时直接指定该文件。
+--max-filesize=10M

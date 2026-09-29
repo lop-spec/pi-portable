@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -29,7 +30,7 @@ export class ExtensionBrowserRuntime {
     this.browser = readDailyBrowserSelection({dataRoot});
     this.profileDir = this.browser.profileDir;
     this.authFile = path.join(dataRoot, 'browser-agent', 'extension-auth.json');
-    this.outputDir = path.join(dataRoot, 'browser-agent', 'extension-output');
+    this.outputDir = path.join(dataRoot, 'browser-agent', 'extension-output', randomUUID());
     this.logFile = path.join(dataRoot, 'browser-agent', 'browser.log');
     this.pending = new Map();
     this.sequence = 0;
@@ -83,7 +84,7 @@ export class ExtensionBrowserRuntime {
       }
     });
     child.stderr.on('data',data=>{const reason=data.toString('utf8').replaceAll(token,'<redacted>').trim();if(reason)void this.log('extension-mcp-stderr',{reason:reason.slice(0,1000)});});
-    const fail=error=>{if(this.child!==child)return;this.child=null;for(const request of this.pending.values()){clearTimeout(request.timer);request.reject(error);}this.pending.clear();};
+    const fail=error=>{if(this.child!==child)return;this.child=null;this.needsNavigation=true;for(const request of this.pending.values()){clearTimeout(request.timer);request.reject(error);}this.pending.clear();};
     child.on('error',error=>{void this.log('extension-mcp-start-failed',{reason:error.message});fail(error);});
     child.on('exit',(code)=>{void this.log('extension-mcp-exit',{pid:child.pid,code});fail(new Error(`Playwright extension MCP exited (${code})`));});
     await this.request('initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:`Pi ${this.browser.name}`,version:'1'}},15000);
@@ -109,10 +110,23 @@ export class ExtensionBrowserRuntime {
     await this.ensureStarted();
     if(name==='browser_run_code')name=this.runCodeTool;
     if(!this.toolNames.has(name))throw new Error(`Installed Playwright extension API does not provide ${name}`);
-    const result=await this.request('tools/call',{name,arguments:adaptToolArguments(this.toolSchemas.get(name),args)},timeoutMs);
-    for(const item of result.content||[])if(item.type==='text')item.text=this.redact(item.text);
-    if(result.isError){const reason=(result.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');await this.log('extension-tool-failed',{tool:name,reason:reason.slice(0,400)});throw new Error(reason);}
-    return result;
+    try {
+      const result=await this.request('tools/call',{name,arguments:adaptToolArguments(this.toolSchemas.get(name),args)},timeoutMs);
+      for(const item of result.content||[])if(item.type==='text')item.text=this.redact(item.text);
+      if(result.isError){const reason=(result.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');await this.log('extension-tool-failed',{tool:name,reason:reason.slice(0,400)});throw new Error(reason);}
+      return result;
+    } catch(error) {
+      // A live stdio process does not mean its CDP target is still usable. An RPC
+      // timeout also leaves an uncancelled operation in MCP's queue. Retire only
+      // our worker, rather than letting every subsequent call hit that stale queue.
+      if(/Playwright extension request timed out|Frame has been detached|Target page, context or browser has been closed|Session closed|Connection closed|MCP exited|EPIPE/i.test(error.message)) {
+        this.needsNavigation = true;
+        await this.log('extension-connection-invalidated',{tool:name,reason:this.redact(error.message).slice(0,400),replayed:false});
+        await this.detach();
+        throw new Error(`${error.message}\nThe stale extension worker was detached; browser/login retained. No action was replayed (its outcome may be unknown). Reopen the intended URL, read back state, and obtain fresh refs before continuing.`);
+      }
+      throw error;
+    }
   }
   locator(p) {
     if(p.ref)return `page.locator(${JSON.stringify('aria-ref='+p.ref)})`;
@@ -122,6 +136,10 @@ export class ExtensionBrowserRuntime {
     throw new Error('A snapshot ref, selector, role, or targetText is required');
   }
   async execute(p) {
+    if(this.needsNavigation && p.action!=='close' && !(['open','goto','new_tab'].includes(p.action) && p.url)) {
+      await this.log('extension-stale-target-blocked',{action:p.action,reason:'Connection invalidated; explicit URL required before reusing page state or refs'});
+      throw new Error('Browser connection was invalidated. Use open/goto with the intended URL, then read back state and obtain fresh refs. The failed operation was not replayed.');
+    }
     const timeout=p.timeoutMs??30000;
     let result;
     const run=code=>this.call('browser_run_code',{code:`async (page) => { ${code} }`},timeout);
@@ -141,10 +159,10 @@ export class ExtensionBrowserRuntime {
       case 'screenshot': result=await this.call('browser_take_screenshot',{type:'png',fullPage:p.fullPage??false},timeout);break;
       case 'tabs': result=await this.call('browser_tabs',{action:'list'},timeout);break;
       case 'select_tab':
-        if(p.tabIndex!==0)throw new Error('Single fixed-tab mode: only tabIndex 0 is available');
+        if(p.tabIndex!==0)throw new Error('Each session owns one fixed tab: only tabIndex 0 is available');
         result=await snap();break;
       case 'new_tab':
-        await this.log('fixed-tab-reused',{reason:'new_tab maps to navigation in single fixed-tab mode'});
+        await this.log('fixed-tab-reused',{reason:'new_tab navigates this session\'s leased tab'});
         result=p.url?await this.call('browser_navigate',{url:p.url},timeout):await snap();break;
       case 'close_tab':
         await this.log('fixed-tab-retained',{reason:'close_tab clears the page without deleting the fixed tab'});
@@ -152,6 +170,7 @@ export class ExtensionBrowserRuntime {
       case 'close': await this.detach();return {content:[{type:'text',text:`Extension connection detached; daily ${this.browser.name} and its login state were retained.`}],details:{action:p.action,mode:this.status().mode}};
       default: throw new Error(`Unsupported browser action: ${p.action}`);
     }
+    if(['open','goto','new_tab'].includes(p.action) && p.url) this.needsNavigation = false;
     const content=[];
     for(const item of result.content||[]) {
       if(item.type!=='text'){content.push(item);continue;}

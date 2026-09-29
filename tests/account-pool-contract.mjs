@@ -180,3 +180,32 @@ test("failover 环：primary 401 give-up 原样返回（客户端自己走重新
   assert.equal(outcome.account.useDownstream, true);
   assert.equal(outcome.drained.text, "unauthorized");
 });
+
+test("AcBoter 外部槽位实时只读：更新可见、401 不刷新、过期回退 primary", async () => {
+  const root = makeHomes(["primary"]);
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), "acboter-vault-"));
+  const source = path.join(vault, "account.json");
+  const slot = path.join(root, "acboter");
+  fs.mkdirSync(slot);
+  fs.writeFileSync(path.join(slot, ".pi-external-codex.json"), JSON.stringify({ version: 1, sourcePath: source }));
+  const save = (exp, id) => fs.writeFileSync(source, JSON.stringify({
+    auth_mode: "oauth", account_id: "acc-acboter",
+    tokens: { access_token: fakeJwt(exp, id), refresh_token: "vault-owned", id_token: fakeJwt(exp, id) },
+  }));
+  save(Math.floor(NOW / 1000) + 100, "first");
+  let refreshes = 0;
+  const pool = makePool(root, { refreshTransport: async () => { refreshes++; throw new Error("external refresh forbidden"); } });
+  const first = await pool.pick(new Set());
+  assert.equal(first.id, "acboter");
+  assert.equal(first.accountId, "acc-acboter");
+  assert.equal(pool.snapshot().find(m => m.id === "acboter").refreshOwner, "external");
+  assert.deepEqual(await pool.refreshExpiring(365 * 86_400_000), []);
+  save(Math.floor(NOW / 1000) + 400, "second");
+  assert.notEqual((await pool.pick(new Set())).token, first.token);
+  assert.equal(await pool.onUpstreamFailure(first, 401, "", {}), "switch");
+  assert.equal(refreshes, 0);
+  save(Math.floor(NOW / 1000) - 1, "expired");
+  const later = makePool(root);
+  assert.equal((await later.pick(new Set())).id, "primary");
+  assert.equal(fs.readFileSync(source, "utf8").includes("vault-owned"), true);
+});

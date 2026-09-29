@@ -22,3 +22,5 @@
 暂停：备份后将 `enabled` 改为 `false`，对会话执行原生 reload。完整回滚可将本目录移到 agent 的 `_历史版本` 后 reload；会话和既有压缩摘要保留，Pi 原生压缩仍可使用。
 
 验收入口：便携仓库 `tests/async-compaction-contract.mjs`、`tests/async-compaction-sdk.mjs`。设置 `PI_TEST_HOST` 为实际 SDK 包目录、`PI_ASYNC_TEST_DIR` 为本目录后用 Node 执行；测试不发模型请求。已核对本机 SDK 0.85.1（pi-web 发行目录 upstream-0.9.0-91bc8a4）；上游包声明的 peer 范围是 0.84.x，不据 semver 声称兼容，升级运行时后应重跑测试。
+
+**按实例覆盖**：agent 目录下可放 `lop-async-compaction.json`，其中的键覆盖本目录 `config.json`（合并后照常校验，非法则整体禁用并记录）。摘要档位 `thinkingLevel` 可为 minimal/low/medium/high/xhigh/max，所有摘要请求固定该档位、不随主会话档位变化。pi-web 无覆盖文件，仍为 low / 128000；pi-chat（ChatGPT 网页模型，无 low 档，原生压缩在 500k）用 `{"thinkingLevel":"max","startTokens":400000}`，即 Pro 摘要、原生水位前 100k 开始后台准备。

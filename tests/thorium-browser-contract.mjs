@@ -36,6 +36,8 @@ assert.throws(() => new BrowserRuntime({ dataRoot: "D:/portable/data", launchBro
 const source = fs.readFileSync(path.join(root, "src", "launcher.mjs"), "utf8");
 const shared = source.slice(source.indexOf('if (path.basename(cmd[0]).toLowerCase() === "thorium.exe")'), source.indexOf("// --user-data-dir 独立配置"));
 assert(shared.includes("dailyThoriumArgs()"));
+// Cold start from Pi must carry the same port as the shortcuts/https association.
+assert(shared.includes('"--remote-debugging-port=9222"'));
 assert(shared.includes("detached: true"));
 assert(!shared.includes("children.push("));
 assert(!shared.includes("ledgerRecord("));

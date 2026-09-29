@@ -18,6 +18,11 @@ import { selectSweepRoots, saveRestartHandoff, consumeRestartHandoff } from "./r
 
 const HOME = process.env.PI_PORTABLE_HOME || path.dirname(path.dirname(new URL(import.meta.url).pathname.slice(1)));
 const DATA = process.env.PI_PORTABLE_DATA || path.join(HOME, "data");
+// Data root of the codex bridge this launcher starts: its egress, account pool, homes and
+// logs. An instance that shares another install's bridge port (pi-chat on 8794) sets this to
+// that install's data, so a bridge it re-pulls is the same bridge, not one with no pool and
+// an auto-detected egress (2026-09-25: that bridge served pi-web through a dead 7890).
+const BRIDGE_DATA = process.env.PI_BRIDGE_DATA || DATA;
 const BLOB = path.join(HOME, "assets.enc");
 const PORTS = {
   bridge: Number(process.env.PI_BRIDGE_PORT || 8794),
@@ -394,7 +399,7 @@ async function main() {
   }
 
   // 3 出口自适应
-  const egress = await detectEgress(DATA);
+  const egress = await detectEgress(BRIDGE_DATA);
   if (egress.mode === "needsInput") {
     log("未找到可用出口(直连与常见代理端口均不通)");
     const p = await ask("请输入本机代理端口(如 7890,直接回车跳过): ");
@@ -403,12 +408,12 @@ async function main() {
   log(`出口:${egress.mode}${egress.port ? " :" + egress.port : ""}`);
 
   // 4 起桥
-  const bridgeEnv = { ...portableEnv, PI_PORTABLE_DATA: DATA, CODEX_PROXY_PORT: String(PORTS.bridge) };
+  const bridgeEnv = { ...portableEnv, PI_PORTABLE_DATA: BRIDGE_DATA, CODEX_PROXY_PORT: String(PORTS.bridge) };
   if (egress.mode === "proxy") { bridgeEnv.CODEX_UPSTREAM_PROXY_HOST = egress.host || "127.0.0.1"; bridgeEnv.CODEX_UPSTREAM_PROXY_PORT = String(egress.port); }
   else delete bridgeEnv.CODEX_UPSTREAM_PROXY_PORT;
   // 桥守护:stderr 落盘留崩因证据;桥退出(非收尾)自动重启,崩溃循环时熔断防空转。
   // 2026-08-29 异机实测:桥静默崩溃后 pi-web 独活,pi 全线 Connection error 且零日志——两个缺口都在这里补。
-  const bridgeErrLog = path.join(DATA, "bridge-stderr.log");
+  const bridgeErrLog = path.join(BRIDGE_DATA, "bridge-stderr.log");
   // 退出后的处置由 bridge-guard 决策(可测试):健康桥在监听→接管看护;崩溃循环→熔断但 2 分钟后重探;否则重拉。
   // 2026-09-05 实录:外部脚本 Stop-Process 换桥后 launcher 连撞 5 次 EADDRINUSE 永久熔断,桥从此脱离守护。
   const bridgeGuard = createBridgeGuard();
@@ -475,6 +480,10 @@ async function main() {
   const bashPrelude = path.join(HOME, "assets", "bash-prelude.sh");
   const bashPreludeEnv = fs.existsSync(bashPrelude) ? { BASH_ENV: bashPrelude.replace(/\\/g, "/") } : {};
   log(bashPreludeEnv.BASH_ENV ? `bash 预加载:${bashPreludeEnv.BASH_ENV}` : `bash 预加载缺失,跳过:${bashPrelude}`);
+  // rg 默认参数(单文件 10M 上限):Pi 的 grep 工具继承此变量;文件缺失只告警。
+  const rgConfig = path.join(HOME, "assets", "ripgreprc");
+  const rgConfigEnv = fs.existsSync(rgConfig) ? { RIPGREP_CONFIG_PATH: rgConfig.replace(/\\/g, "/") } : {};
+  log(rgConfigEnv.RIPGREP_CONFIG_PATH ? `rg 默认参数:${rgConfigEnv.RIPGREP_CONFIG_PATH}` : `rg 默认参数缺失,跳过:${rgConfig}`);
   const webEnv = {
     ...portableEnv, PI_PORTABLE_DATA: DATA, PI_PORTABLE_HOME: HOME,
     PI_CODING_AGENT_DIR: path.join(DATA, ".pi", "agent"),
@@ -485,6 +494,7 @@ async function main() {
     // 需要回滚只改这一处为 "1"(CLI 不受影响)。
     LOP_COMPACT_GUARD: "0",
     ...bashPreludeEnv,
+    ...rgConfigEnv,
   };
   const webLog = path.join(DATA, "pi-web.log");
   const { entry: webEntry, version: webVersion, sourceIntegrated } = resolvePiWebEntry();
@@ -660,7 +670,10 @@ async function openWindow() {
   if (path.basename(cmd[0]).toLowerCase() === "thorium.exe") {
     // User-owned daily browser: never add it to Pi's child/kill ledger.
     // A singleton handoff exits immediately; that must not shut down Pi Web.
-    const args = [...dailyThoriumArgs(), ...cmd.slice(1), `--app=${url}`, "--no-first-run"];
+    // 9222 matches the Start-menu/desktop shortcuts and the https association: whichever entry
+    // cold-starts Thorium decides whether the port exists. Pi itself never connects to it; a local
+    // CDP consumer outside Pi does, so a Pi cold start must not drop it.
+    const args = [...dailyThoriumArgs(), "--remote-debugging-port=9222", ...cmd.slice(1), `--app=${url}`, "--no-first-run"];
     const win = spawn(cmd[0], args, { stdio: "ignore", windowsHide: false, detached: true });
     win.on("error", (error) => log(`Thorium 开窗失败:${error.message}`));
     win.unref();

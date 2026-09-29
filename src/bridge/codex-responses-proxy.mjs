@@ -29,7 +29,8 @@ import { SUMMARIZATION_BODY_SIGNATURE, applySummarizationEffort, resolveSummaryE
 import { computeThroughput, createTailRing, extractUsage } from "./codex-stream-metrics.mjs";
 import { createModelFallbackPlan, requestWithOverloadRetry, RETRYABLE_UPSTREAM_STATUS } from "./codex-overload-retry.mjs";
 import { createAccountPool, sendWithAccountFailover } from "./account-pool.mjs";
-import { createAccountUsageMonitor, readAccountUsageIdentity } from "./account-usage.mjs";
+import { createAccountUsageMonitor, readAccountUsageIdentity, decodeJwtPayload } from "./account-usage.mjs";
+import { createAccountAutoReset, RESET_CARDS_PATH } from "./account-auto-reset.mjs";
 import { codexModelsUpstreamPath, DEFAULT_CODEX_MODELS_CLIENT_VERSION, modelCatalogResponseHeaders } from "./codex-model-catalog.mjs";
 import { appendLineRotating } from "../log-rotate.mjs";
 import { TRANSPORT_ERROR_VERSION, upstreamConnectionError } from "./transport-errors.mjs";
@@ -474,11 +475,16 @@ function decodeBodyText(raw, headers) {
 }
 
 function requestAccountUsage(identity) {
+  return requestAccountJson(identity, "/backend-api/wham/usage");
+}
+
+function requestAccountJson(identity, endpoint, body) {
+  const payload = body === undefined ? null : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const request = https.request({
       host: UPSTREAM_HOST,
-      path: "/backend-api/wham/usage",
-      method: "GET",
+      path: endpoint,
+      method: payload === null ? "GET" : "POST",
       agent: agentFor(currentEgress().port),
       headers: {
         Authorization: `Bearer ${identity.token}`,
@@ -486,6 +492,7 @@ function requestAccountUsage(identity) {
         originator: "codex_cli_rs",
         "User-Agent": "codex_cli_rs/0.147.0 (Windows 10.0.19045; x86_64)",
         Accept: "application/json",
+        ...(payload === null ? {} : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }),
       },
     }, async (response) => {
       const raw = await drainBody(response, 512 * 1024);
@@ -500,7 +507,9 @@ function requestAccountUsage(identity) {
     });
     request.once("error", reject);
     request.setTimeout(10_000, () => request.destroy(new Error("usage request timed out")));
-    request.end();
+    const deadline = setTimeout(() => request.destroy(new Error("account request deadline")), 12_000);
+    request.once("close", () => clearTimeout(deadline));
+    request.end(payload);
   });
 }
 
@@ -513,6 +522,14 @@ const accountUsageMonitor = accountPool ? createAccountUsageMonitor({
   cacheFile: path.join(PORTABLE_DATA, "account-usage-cache.json"),
   log,
 }) : null;
+
+const accountAutoReset = createAccountAutoReset({
+  dataDir: PORTABLE_DATA,
+  requestUsage: requestAccountUsage,
+  requestCards: identity => requestAccountJson(identity, RESET_CARDS_PATH),
+  consumeCard: (identity, body) => requestAccountJson(identity, `${RESET_CARDS_PATH}/consume`, body),
+  log,
+});
 
 // failover 环 drain 过的终态响应（全池 429/给不出可切账号）重建为可流式转发的
 // 响应对象：统一给明文（下游转发层会删 content-encoding，不能再送压缩字节）。
@@ -667,6 +684,7 @@ async function handleResponses(req, res) {
   let totalIdentityAttempts = 0;
   let totalNetworkAttempts = 0;
   const accountsTried = [];
+  const resetCheckedAccounts = new Set(); // shared across model/overload retries
   try {
     selected = await requestWithOverloadRetry(async (attempt) => {
       const candidate = upstreamPayloadForAttempt(attempt);
@@ -679,6 +697,38 @@ async function handleResponses(req, res) {
         applyIdentity: withIdentity,
         drain: drainBody,
         decode: decodeBodyText,
+        isCancelled: () => clientClosed,
+        onQuotaExhausted: async (account, headers) => {
+          if (resetCheckedAccounts.has(account.id)) {
+            log(`自动额度卡 ${account.id}：skipped reason=already-checked-for-this-request`); return false;
+          }
+          resetCheckedAccounts.add(account.id);
+          // Use the identity that actually received the 429, especially primary:
+          // the display monitor's identity override may refer to another login.
+          const token = String(headers.authorization || "").replace(/^Bearer\s+/iu, "").trim();
+          const claimId = decodeJwtPayload(token)?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+          const accountId = String(headers["chatgpt-account-id"] || claimId || "");
+          if (claimId && accountId !== claimId) { log(`自动额度卡 ${account.id}：skipped reason=identity-mismatch`); return false; }
+          const cancelled = () => {
+            if (clientClosed) return true;
+            try {
+              const rows = accountPool.snapshot();
+              if (!rows.some(row => row.id === account.id) || rows.some(row => (row.pinned || row.active) && row.id !== account.id)) {
+                log(`自动额度卡 ${account.id}：skipped reason=selection-changed`); return true;
+              }
+              if (!account.useDownstream) {
+                const current = readAccountUsageIdentity(account.member.authPath);
+                if (current.token !== token || current.accountId !== accountId) {
+                  log(`自动额度卡 ${account.id}：skipped reason=credentials-changed`); return true;
+                }
+              }
+              return false;
+            } catch { log(`自动额度卡 ${account.id}：skipped reason=identity-unreadable`); return true; }
+          };
+          const restored = await accountAutoReset.tryReset({ id: account.id, identity: { token, accountId }, isCancelled: cancelled });
+          if (restored) void accountUsageMonitor?.refreshIfDue(true);
+          return restored && !cancelled();
+        },
         log,
       });
       totalIdentityAttempts += Number(outcome.attempts || 0);
@@ -750,7 +800,17 @@ async function handleResponses(req, res) {
     res.writeHead(502, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(upstreamConnectionError(e)));
   }
-  const upRes = selected.response;
+  let upRes = selected.response;
+  // Error responses from chatgpt.com may be gzip-compressed JSON. The bridge removes
+  // Content-Encoding before replying, so decode them first instead of sending gzip
+  // bytes as mojibake to Pi (observed on scheduled-task HTTP 403 responses).
+  if (upRes.statusCode !== 200 && /gzip/i.test(String(upRes.headers?.["content-encoding"] || ""))) {
+    const raw = await drainBody(upRes, 2 * 1024 * 1024);
+    upRes = bufferedResponse(upRes, { raw, text: decodeBodyText(raw, upRes.headers) });
+    selected.response = upRes;
+    selected.prefixChunks = [];
+    log(`上游错误响应已解压：status=${upRes.statusCode} bytes=${raw.length}`);
+  }
   activeUpRes = upRes;
   const finalMeta = upRes.lopMeta || {};
   finalMeta.modelAttempts = Number(selected.attempts || 0);
@@ -867,6 +927,7 @@ const server = http.createServer(async (req, res) => {
       authMode: accountPool ? "account-pool" : "codex-login-pass-through",
       accountHomes: ACCOUNT_HOMES || null,
       accountRemoval: true,
+      autoReset: accountAutoReset.snapshot(),
       accounts: accountPool ? accountPool.snapshot() : [],
       upstreamProxy: egressLabelOf(currentEgress().port),
       followSystemProxy,
@@ -904,13 +965,31 @@ const server = http.createServer(async (req, res) => {
       const force = new URL(req.url || "/account-usage", `http://${HOST}:${PORT}`).searchParams.get("refresh") === "1";
       if (accountUsageMonitor) void accountUsageMonitor.refreshIfDue(force);
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-      return res.end(JSON.stringify(accountUsageMonitor?.snapshot() || {
+      return res.end(JSON.stringify({ ...(accountUsageMonitor?.snapshot() || {
         ok: true, enabled: false, refreshing: false, modelTokensConsumed: 0, accounts: [],
-      }));
+      }), autoReset: accountAutoReset.snapshot() }));
     } catch (error) {
       log(`账号额度接口失败：${String(error?.message || error).slice(0, 120)}`);
       res.writeHead(500, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
       return res.end(JSON.stringify({ ok: false, error: "账号额度服务暂不可用", accounts: [] }));
+    }
+  }
+  if (url === "/account/auto-reset" && req.method === "POST") {
+    const json = (status, value) => { res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); res.end(JSON.stringify(value)); };
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/iu.test(String(req.headers.host || ""))
+      || req.headers.origin || !/^application\/json\b/iu.test(String(req.headers["content-type"] || ""))) {
+      log("自动额度卡控制拒绝：non-local-or-non-json");
+      return json(403, { ok: false, error: "仅允许本机 JSON 控制" });
+    }
+    try {
+      const chunks = []; let size = 0;
+      for await (const chunk of req) { size += chunk.length; if (size > 4096) throw new Error("body too large"); chunks.push(chunk); }
+      const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const autoReset = accountAutoReset.configure(input.enabled);
+      return json(200, { ok: true, autoReset });
+    } catch {
+      log("自动额度卡配置失败：invalid-input-or-persistence-failed");
+      return json(400, { ok: false, error: "自动额度卡设置未保存" });
     }
   }
   if (url === "/account/select" && req.method === "POST") {

@@ -27,6 +27,9 @@ const BrowserParameters = Type.Object({
 }, { additionalProperties: false });
 
 function extensionDataRoot() {
+  // A second pi-web instance (e.g. pi-chat) keeps its own PI_PORTABLE_DATA but must pair
+  // with the same daily-browser extension, whose token lives in the first instance's data.
+  if (process.env.PI_BROWSER_DATA_ROOT) return path.resolve(process.env.PI_BROWSER_DATA_ROOT);
   if (process.env.PI_PORTABLE_DATA) return path.resolve(process.env.PI_PORTABLE_DATA);
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 }
@@ -42,7 +45,7 @@ export default async function browserAgentExtension(pi: ExtensionAPI) {
       `Operate the user's daily ${browserName} through a background-only fork of the official Playwright Extension CDP bridge. Reuse its login state without activating windows or tabs.`,
       "Never connect to native remote-debugging ports, open an isolated browser, copy website login data, or silently fall back to another browser.",
       "Actions: open/goto/snapshot/text/eval/click/type/press/wait/screenshot/tabs/select_tab/new_tab/close_tab/close.",
-      "Always reuse one dedicated fixed tab, with no tab groups or connection pages. new_tab navigates the fixed tab; close_tab clears it; select_tab only accepts index 0. Concurrent sessions fail busy instead of taking over.",
+      "Each session owns one fixed background tab. Reuse an idle managed tab; if all are leased, debugger-attached, or user-active, allocate another inactive tab in the same daily browser, never take over a busy tab. No tab groups or connection pages. new_tab navigates this session's tab; close_tab clears it; select_tab only accepts index 0. close releases the lease for later reuse.",
       "Prefer text or eval for reading; snapshot supplies refs (such as f1e4); screenshot is a visual fallback only.",
       "Use snapshot refs for click/type, otherwise selectors or accessible role/name. A login redirect alone does not identify its cause.",
       `Only http(s) and about:blank navigation is accepted. close disconnects the extension worker, retaining ${browserName} and its login state.`,

@@ -1,5 +1,5 @@
-// Modified for Pi: one persistent tab, no connection pages/groups, and no foreground requests.
-import {createFixedTabStore, retireConnectionPages} from '../pi-background-tab.mjs';
+// Modified for Pi: one leased background tab per client, idle reuse, no foreground requests.
+import {createFixedTabPool, retireConnectionPages} from '../pi-background-tab.mjs';
 import {startBackgroundService} from '../pi-background-service.mjs';
 // Based on Microsoft Playwright Extension 0.4.0; original license and notices retained.
 //#region src/relayConnection.ts
@@ -43,6 +43,9 @@ var RelayConnection = class {
 	_hasEverAttached = false;
 	_eventListeners = [];
 	_closed = false;
+	_closingPromise;
+	_ownedTabId;
+	_commands = new Set();
 	_pendingReattach = /* @__PURE__ */ new Set();
 	_recentReattach = /* @__PURE__ */ new Set();
 	onclose;
@@ -65,7 +68,12 @@ var RelayConnection = class {
 	}
 	close(message) {
 		this._ws.close(1e3, message);
-		this._onClose();
+		return this._onClose();
+	}
+	setOwnedTab(tabId) {
+		if (this._closed) throw new Error('Background connection is closed');
+		if (!Number.isInteger(tabId) || tabId < 0 || (this._ownedTabId !== undefined && this._ownedTabId !== tabId)) throw new Error('Background connection must retain its owned tab');
+		this._ownedTabId = tabId;
 	}
 	attachTab(tab) {
 		if (this._closed || this._attachedTabs.has(tab.id)) return;
@@ -105,17 +113,23 @@ var RelayConnection = class {
 		}
 	}
 	_onClose() {
-		if (this._closed) return;
+		if (this._closed) return this._closingPromise;
 		this._closed = true;
 		this._pendingReattach.clear();
 		this._recentReattach.clear();
 		for (const l of this._eventListeners) l.remove();
 		this._eventListeners = [];
-		for (const tabId of [...this._attachedTabs]) {
-			chrome.debugger.detach({ tabId }).catch(() => {});
-			this._notifyTabDetached(tabId);
-		}
-		this.onclose?.();
+		this._closingPromise = (async () => {
+			// An attach already in flight must finish before taking the detach snapshot.
+			await Promise.allSettled([...this._commands]);
+			await Promise.all([...this._attachedTabs].map(async tabId => {
+				try { await chrome.debugger.detach({ tabId }); }
+				catch (error) { console.warn('[pi-background] close-detach-failed; allocator will recheck debugger occupancy', tabId, error.message); }
+				finally { this._notifyTabDetached(tabId); }
+			}));
+			this.onclose?.();
+		})();
+		return this._closingPromise;
 	}
 	_checkLastTabDetached() {
 		if (this._hasEverAttached && this._attachedTabs.size === 0 && this._pendingReattach.size === 0) this.close("All controlled tabs detached");
@@ -201,11 +215,16 @@ var RelayConnection = class {
 		this._sendMessage(response);
 	}
 	async _handleCommand(message) {
+		if (this._closed) throw new Error('Background connection is closed');
 		if (!ALLOWED_CHROME_COMMANDS.has(message.method)) throw new Error(`Unknown method: ${message.method}`);
 		const args = message.params ?? [];
 		if (["chrome.tabs.create", "chrome.tabs.remove"].includes(message.method)) {
 			console.warn("[pi-background] blocked tab lifecycle command in single-tab mode", message.method);
 			throw new Error("Single fixed-tab mode: use navigation to reuse the current tab; disconnect instead of closing it");
+		}
+		if (!Number.isInteger(this._ownedTabId) || args[0]?.tabId !== this._ownedTabId) {
+			console.warn('[pi-background] rejected command outside leased tab', message.method);
+			throw new Error('Background command must target this connection\'s owned tab');
 		}
 		if (message.method === "chrome.debugger.sendCommand" && ["Target.createTarget", "Target.closeTarget", "Page.close"].includes(args[1])) {
 			console.warn("[pi-background] blocked CDP tab lifecycle command", args[1]);
@@ -215,12 +234,13 @@ var RelayConnection = class {
 			console.info("[pi-background] suppressed foreground command", args[1]);
 			return {};
 		}
-		const result = await invokeChromeMethod(message.method, args);
-		if (message.method === "chrome.debugger.attach") {
-			const target = args[0];
-			if (target?.tabId !== void 0) this._notifyTabAttached(target.tabId);
-		}
-		return result ?? {};
+		const pending = invokeChromeMethod(message.method, args);
+		this._commands.add(pending);
+		try {
+			const result = await pending;
+			if (message.method === "chrome.debugger.attach") this._notifyTabAttached(this._ownedTabId);
+			return result ?? {};
+		} finally { this._commands.delete(pending); }
 	}
 	_sendError(code, message) {
 		this._sendMessage({ error: {
@@ -287,19 +307,22 @@ var PendingConnections = class {
 	}
 };
 async function openRelayConnection(mcpRelayUrl) {
+	let socket, timer;
 	try {
-		const socket = new WebSocket(mcpRelayUrl);
+		socket = new WebSocket(mcpRelayUrl);
 		await new Promise((resolve, reject) => {
 			socket.onopen = () => resolve();
-			socket.onerror = () => reject(/* @__PURE__ */ new Error("WebSocket error"));
-			setTimeout(() => reject(/* @__PURE__ */ new Error("Connection timeout")), 5e3);
+			socket.onerror = () => reject(new Error("WebSocket error"));
+			socket.onclose = () => reject(new Error("WebSocket closed before initialization"));
+			timer = setTimeout(() => reject(new Error("Connection timeout")), 5e3);
 		});
 		return new RelayConnection(socket);
 	} catch (error) {
+		socket?.close();
 		const message = `Failed to connect to MCP relay: ${error.message}`;
 		debugLog(message);
 		throw new Error(message);
-	}
+	} finally { clearTimeout(timer); }
 }
 //#endregion
 //#region src/connectedTabGroup.ts
@@ -379,6 +402,7 @@ var ConnectedTabGroup = class {
 		this.groupStyle = groupStyle;
 		this._isTabReserved = isTabReserved;
 		this._connection = connection;
+		this._connection.setOwnedTab(selectedTab.id);
 		this._connection.onclose = () => this._onConnectionClose();
 		this._connection.ontabattached = (tabId) => this._onTabAttached(tabId);
 		this._connection.ontabdetached = (tabId) => this._onTabDetached(tabId);
@@ -394,7 +418,7 @@ var ConnectedTabGroup = class {
 		return [...new Set([...this._groupTabIds, ...this._connection.attachedTabs])];
 	}
 	close(reason) {
-		this._connection.close(reason);
+		return this._connection.close(reason);
 	}
 	releaseTab(tabId) {
 		if (!this._groupTabIds.has(tabId) && !this._connection.attachedTabs.has(tabId)) return;
@@ -497,35 +521,47 @@ var PlaywrightExtension = class {
 	_connections = /* @__PURE__ */ new Map();
 	_lastConnectionId = 0;
 	_cleanupPromise;
-	_fixedTabs = createFixedTabStore();
-	_backgroundStarting = false;
+	_fixedTabs = createFixedTabPool();
+	_backgroundRequests = new Map();
 	constructor() {
 		chrome.runtime.onMessage.addListener(this._onMessage.bind(this));
 		this._cleanupPromise = cleanupStalePlaywrightGroups();
 		startBackgroundService(invitation => this._connectBackground(invitation));
 	}
-	async _connectBackground({relayUrl, clientName}) {
-		if (this._backgroundStarting || this._connections.size) {
-			console.warn("[pi-background] fixed-tab-busy; refusing a second client");
-			throw new Error("The fixed browser tab is busy in another Pi session; disconnect that session first");
+	_connectBackground(invitation) {
+		const key = invitation.relayUrl;
+		if (this._backgroundRequests.has(key)) {
+			console.info('[pi-background] duplicate invitation reused its existing connection');
+			return this._backgroundRequests.get(key);
 		}
-		this._backgroundStarting = true;
+		const pending = this._openBackground(invitation).catch(error => {
+			this._backgroundRequests.delete(key);
+			throw error;
+		});
+		this._backgroundRequests.set(key, pending);
+		return pending;
+	}
+	async _openBackground({relayUrl, clientName}) {
+		const id = ++this._lastConnectionId;
 		let connection;
 		try {
 			await this._cleanupPromise;
-			const tab = await this._fixedTabs.ensure();
-			await retireConnectionPages(tab.id);
+			const tab = await this._fixedTabs.acquire(id);
 			connection = await openRelayConnection(relayUrl);
-			const id = ++this._lastConnectionId;
-			const group = new ConnectedTabGroup(connection, tab, clientName, {}, () => false);
-			group.onclose = () => this._connections.delete(id);
+			const group = new ConnectedTabGroup(connection, tab, clientName, {}, tabId => this._connectedTabIds().has(tabId));
+			group.onclose = () => {
+				this._connections.delete(id);
+				this._backgroundRequests.delete(relayUrl);
+				this._fixedTabs.release(id);
+			};
 			this._connections.set(id, group);
-			console.info("[pi-background] connected to fixed tab without activation or grouping", tab.id);
+			console.info('[pi-background] connected to leased tab without activation or grouping', tab.id);
 			return {success:true, tabId:tab.id};
 		} catch (error) {
-			connection?.close("Background connection failed");
+			await connection?.close('Background connection failed');
+			this._fixedTabs.release(id);
 			throw error;
-		} finally { this._backgroundStarting = false; }
+		}
 	}
 	_onMessage(message, sender, sendResponse) {
 		switch (message.type) {

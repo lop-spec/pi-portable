@@ -3,5 +3,19 @@
   "startTokens": 128000,
   "thinkingLevel": "low",
   "timeoutMs": 300000,
-  "firstToolCompaction": true
+  "firstToolCompaction": true,
+  "providers": {
+    "pi-chatgpt-web": {
+      "summaryModel": "chatgpt-web-instant",
+      "thinkingLevel": "high",
+      "startTokens": 400000,
+      "firstToolCompaction": false
+    },
+    "pi-qwen-web": {
+      "summaryModel": "qwen-web-max",
+      "thinkingLevel": "high",
+      "startTokens": 240000,
+      "firstToolCompaction": false
+    }
+  }
 }

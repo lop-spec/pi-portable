@@ -91,6 +91,8 @@ jobs:
           node tests/bridge-idle-e2e.mjs
           node --test tests/piweb-ui-proxy.mjs
           node --test tests/account-pool-contract.mjs
+          node --test tests/account-auto-reset-contract.mjs
+          node tests/bridge-auto-reset-e2e.mjs
           node --test tests/account-usage-contract.mjs
           node --test tests/codex-model-catalog-contract.mjs
           node --test tests/live-model-catalog-contract.mjs

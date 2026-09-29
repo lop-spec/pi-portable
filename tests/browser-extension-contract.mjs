@@ -21,6 +21,8 @@ try {
   assert.equal(missing.child,null);
   assert.match(await fs.readFile(missing.logFile,'utf8'),/extension-auth-unavailable/);
   const runtime=new ExtensionBrowserRuntime({dataRoot:dir});
+  assert.notEqual(runtime.outputDir,actual.outputDir,'Concurrent sessions must not share snapshot/output filenames');
+  assert.equal(path.dirname(runtime.outputDir),path.join(dir,'browser-agent','extension-output'));
   const calls=[];
   runtime.call=async(name,args)=>{calls.push({name,args});return {content:[{type:'text',text:'ok'}]};};
   await runtime.execute({action:'goto',url:'https://example.com/'});

@@ -12,7 +12,7 @@ export const INTERVAL_MS = 30 * 60_000;
 export const RESET_LIMIT_MS = 24 * 60 * 60_000;
 export const SCHEDULED_MODEL = Object.freeze({ provider: 'openai-codex', modelId: 'gpt-6-astra', thinkingLevel: 'medium' });
 // Stocks belong to the project host only. Local/unknown hosts run recent P0/P1 work only.
-export const stockBacktestsAllowed = (hostname = os.hostname()) => hostname.toLowerCase() === 'desktop-3egb4lb';
+export const stockBacktestsAllowed = (hostname = os.hostname()) => hostname.toLowerCase() === 'lop-home';
 const stockText = text => /(?:股票|选股|东方财富|抖音).*回测|回测.*(?:股票|选股|东方财富|抖音)/u.test(text);
 const hash = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 24);
 const textOf = (m) => typeof m?.content === 'string' ? m.content : (m?.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -311,6 +311,8 @@ export async function runScheduler({ dataRoot, apiBase = 'http://127.0.0.1:30140
   const release = acquireLock(root, log); if (!release) return { skipped: 'overlap' };
   try {
     log('tick', { dryRun, pid: process.pid, hostname: os.hostname(), stockBacktests: stockBacktestsAllowed(), ...SCHEDULED_MODEL });
+    const {checkScheduledQuota}=await import('./scheduled-quota-guard.mjs');
+    if(!dryRun){const quota=await checkScheduledQuota({task:'quota-idle-preflight'});if(!quota.allow){log('skip',{reason:'quota-reserve',quota});return {skipped:'quota-reserve'};}}
     const longGoals = loadLongGoals(path.join(dataRoot, GOALS_FILENAME), log);
     const { snapshot, attemptAt } = await refreshQuota(route => requestJson(usageBase, route), { log, now });
     const accounts = eligibleAccounts(snapshot, now(), attemptAt);
@@ -331,7 +333,12 @@ export async function runScheduler({ dataRoot, apiBase = 'http://127.0.0.1:30140
     saveJson(stateFile, state);
     const safeTasks = tasks.filter(t => { if (unresolved.some(r => r.taskKey === t.key)) { log('task-skipped', { task: t.title, reason: 'unresolved-request-outcome' }); return false; } return true; });
     const sent = await dispatchBatch({ tasks: safeTasks, api, state, save: () => saveJson(stateFile, state), log, now,
-      guard: owned => checkIdle(api, sessions, owned) });
+      guard: async owned => {
+        const busy=await checkIdle(api,sessions,owned);if(busy.length)return busy;
+        const quota=await checkScheduledQuota({task:'quota-idle-dispatch',admit:true});
+        if(!quota.allow){log('skip',{reason:'quota-reserve',quota});return [{reason:'quota-reserve'}];}
+        return [];
+      } });
     log('tick-complete', { accepted: sent.length }); return { accepted: sent };
   } catch (error) { log('tick-failed', { reason: error.message }); throw error; }
   finally { release(); }

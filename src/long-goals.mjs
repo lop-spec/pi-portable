@@ -1,9 +1,10 @@
 import fs from 'node:fs';
+import {stripTaskPrompts} from './task-prompts.mjs';
 export const GOALS_FILENAME = '长目标清单.md';
 
 // Only real level-two checklist headings opt in; fenced examples are never tasks.
 export function parseLongGoals(markdown) {
-  const text = markdown.replace(/^\uFEFF/u, '').replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gmu, '');
+  const text = stripTaskPrompts(markdown).replace(/^\uFEFF/u, '').replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gmu, '');
   const blocks = text.split(/^##\s+/mu).slice(1), goals = [], keys = new Set();
   for (const block of blocks) {
     const lines = block.split(/\r?\n/u), heading = lines.shift().trim();

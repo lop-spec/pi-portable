@@ -30,6 +30,8 @@ export async function discover(dataRoot) {
 }
 
 export async function startAgent({site,homesRoot,primaryAuthFile,dataRoot,connectPeer=true,log,debounceMs=200,intervalMs=15000,protectLast=true}) {
+  // Stable replica ID preserves vector clocks and existing state after host rename.
+  if(site==='lop-home')site='desktop-3egb4lb';
   if(!SITES.includes(site))throw new Error('site-invalid');
   fs.mkdirSync(dataRoot,{recursive:true});
   const dir=path.join(dataRoot,'account-pool-sync');fs.mkdirSync(dir,{recursive:true});
@@ -161,7 +163,7 @@ if(process.argv[1]&&path.resolve(process.argv[1]).toLowerCase()===self.toLowerCa
     if(cmd==='relay')await relay(dataRoot);
     else if(cmd==='status')console.log(fs.readFileSync(path.join(dataRoot,'account-pool-sync/status.json'),'utf8'));
     else if(cmd==='watch') {
-      const site=os.hostname().toLowerCase();if(!SITES.includes(site))throw new Error('site-invalid');
+      const actual=os.hostname().toLowerCase(),site=actual==='lop-home'?'desktop-3egb4lb':actual;if(!SITES.includes(site))throw new Error('site-invalid');
       const layout=await discover(dataRoot);
       const agent=await startAgent({site,dataRoot,...layout});
       for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>agent.close().then(()=>process.exit(0)));

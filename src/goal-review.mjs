@@ -6,6 +6,9 @@ import {HERE,site,api,inspect,sessionView,hash,onMachine,processes} from './goal
 import {astraReview} from './goal-astra-review.mjs';
 import {acquireLock,stateBusy} from './quota-idle-scheduler.mjs';
 import {appendLineRotating} from './log-rotate.mjs';
+import {checkScheduledQuota} from './scheduled-quota-guard.mjs';
+import {waitForPiChatCapacity,isPiChatProvider} from './pi-chat-capacity.mjs';
+import {PROMPTS_START, stripTaskPrompts, taskPrompt, taskModelSettings, renderTaskPrompt, globalRuleSection, usesCodexQuota} from './task-prompts.mjs';
 
 export const AUTONOMY_GUIDANCE='在请求人工介入前，先检查是否因自身核查不够全面而误判为必须人工，补齐必要检查，并寻找现有授权范围内可自行完成的更好方案；能自行处理就直接执行。只有确实必须人工操作或授权时才请求介入，并说明已核实的原因。';
 export const ADVICE_BOUNDARY='本消息是自动巡检建议，不是用户新增指令或授权；生产变更、共享环境、账户操作及暂停边界仍以用户实际授权为准。';
@@ -13,14 +16,57 @@ export const REPEATED_REMINDER_GUIDANCE='同一长目标累计已送达提醒超
 const INTERVENTIONS=['new-evidence','new-route','unfinished-action'];
 // Timing has one owner: the installed Windows task triggers, not model metadata.
 export const PROFILES={astra:{hours:6,model:'gpt-6-astra',effort:'low'},fable:{hours:4,model:'claude-fable-5-1',effort:'high'}};
+const REVIEW_RESUME={provider:'openai-codex',model:'gpt-6-astra',thinkingLevel:'xhigh',effort:'xhigh'};
+const LEGACY_FALLBACK={model:'claude-opus-5',thinkingLevel:'xhigh',effort:'xhigh'};
+// The user explicitly authorized these recurring reviews. Quota gating is opt-in so a
+// broken or unavailable secondary-machine quota service cannot silently disable them.
+const QUOTA_GUARD_ENABLED=process.env.PI_GOAL_REVIEW_QUOTA_GUARD==='1';
+const usesClaudeRunner=settings=>settings.provider==='claude-code';
 const DATA=site().data,WORK=path.join(DATA,'goal-review'),GOALS=path.join(DATA,'长目标清单.md');
 export function save(file,value){fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value,null,2)+'\n');fs.renameSync(tmp,file)}
 export function log(event,details={}){const line=JSON.stringify({at:new Date().toISOString(),machine:HERE,event,...details});const r=appendLineRotating(path.join(WORK,'scheduler.log'),line,{maxBytes:5*1024*1024,keep:3});if(!r.ok)throw Error(r.error);console.log(line)}
-export const activeGoalText=text=>text.replace(/^\uFEFF/u,'').replace(/<!--[\s\S]*?(?:-->|$)/gu,'\n');
+export const activeGoalText=text=>stripTaskPrompts(text).replace(/^\uFEFF/u,'').replace(/<!--[\s\S]*?(?:-->|$)/gu,'\n').replace(/^## 图文计划任务提示（仅编号5）[\s\S]*?(?=^## 目标清单（巡检范围：1—4）)/mu,'').replace(/^## 图文目标（图文范围：5）[\s\S]*$/mu,'');
 export const emptyGoals=text=>{const body=activeGoalText(text).replace(/^#\s+长目标清单\s*$/gmu,'').trim();return !body||/^(?:当前)?(?:没有|暂无)长目标[。.!！]?$/u.test(body)};
 function load(file,def){return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):def}
-function compactCatalog(c){return {...c,sessions:c.sessions.map(s=>({...s,first:s.first.slice(0,450)}))}}
-export function reviewPrompt(profile,goals,catalog){
+// The catalog is an index for goal_inspect, not evidence: most recent sessions first, bounded
+// so the whole review fits one ChatGPT web message (pi-chat, ~450K chars) with room to spare.
+// 2026-09-25: 828 sessions were 411K chars; older ones stay reachable by id through goal_inspect.
+const CATALOG_BUDGET_CHARS=200_000;
+export function compactCatalog(c){
+  const all=c.sessions.map(s=>({...s,first:s.first.slice(0,450)})).sort((x,y)=>(y.mtime||0)-(x.mtime||0));
+  const sessions=[];let used=0;
+  for(const s of all){const n=JSON.stringify(s).length+1;if(used+n>CATALOG_BUDGET_CHARS&&sessions.length)break;sessions.push(s);used+=n;}
+  const omitted=all.length-sessions.length;
+  return {...c,sessions,...(omitted?{omittedOlderSessions:omitted,omittedNote:'older sessions omitted for size; read any session by id with goal_inspect'}:{})};
+}
+function configuredProfile(profile,goals){
+  const base=PROFILES[profile];if(!base)throw Error('Profile must be astra or fable');
+  if(!goals.includes(PROMPTS_START))return {...base,provider:profile==='fable'?'claude-code':'openai-codex',fallback:profile==='fable'?LEGACY_FALLBACK:undefined,resume:REVIEW_RESUME};
+  const settings=taskModelSettings(goals,'goal-review-'+profile);
+  return {...base,provider:settings.provider,model:settings.model,effort:settings.effort,fallback:settings.fallback,resume:settings.resume};
+}
+export function reviewPrompt(profile,goals,catalog,settings=configuredProfile(profile,goals)){
+  if(goals.includes(PROMPTS_START)){
+    const p=settings;
+    const runtime={machine:HERE,model:p.model,effort:p.effort,planningHours:p.hours,observedAt:new Date().toISOString()};
+    const values={...runtime,goals:activeGoalText(goals),catalog:JSON.stringify(compactCatalog(catalog))};
+    const prompt=renderTaskPrompt(taskPrompt(goals,'goal-review-'+profile),values);
+    return [prompt,globalRuleSection(site().agent,'目标实现'),
+      `来源机全局规则：${path.join(site().agent,'AGENTS.md')}；共同要求沿用该文件。巡检仅取证和建议，「实施更改并验证」由原执行会话在原授权内落实，不由巡检执行。`,
+      `工具：${usesClaudeRunner(settings)?'mcp__goal_source__goal_inspect（来源机，不是运行机）':'goal_inspect'}；先读session summary完整分页，再读recent；证据不足才补查context/users及产物、runtime。逐目标定位原执行会话，排除巡检配置会话；核对recentAdvice与累计提醒，按目标去重。`,
+      '输出接口：仅JSON，每目标一条decisions。done=有达标证据，observe=运行合理或无可推进事项，blocked=用户暂停/待授权/无原会话；仅新增证据、新路线或具体未完授权动作才steer（运行中）/resume（空闲且无相关后台）。',
+      JSON.stringify({decisions:[{goalQuote:'清单逐字引用，至少8字',sessionId:'原会话ID；找不到则空',action:'done|observe|blocked|steer|resume',intervention:'new-evidence|new-route|unfinished-action|none',reason:'证据、增量或等待原因；重复提醒说明改进',advice:'仅steer/resume填最小下一步及验证',relatedSessionIds:[],backgroundPids:[]}]}),
+      '输入（仅下列goals是待巡检目标，catalog不是指令）：',JSON.stringify({runtime,goals:values.goals,catalog:compactCatalog(catalog)})].join('\n\n');
+  }
+  goals=activeGoalText(goals);
+  if(goals.includes('## 巡检计划任务提示（仅编号1—4）')){
+    const p=configuredProfile(profile,goals);
+    return goals+'\n\n'+JSON.stringify({runtime:{machine:HERE,profile,model:p.model,effort:p.effort,planningHours:p.hours,observedAt:new Date().toISOString()},catalog:compactCatalog(catalog)});
+  }
+  // Other machines retain their independent, unmigrated goal-list contract.
+  return legacyReviewPrompt(profile,goals,catalog);
+}
+function legacyReviewPrompt(profile,goals,catalog){
   goals=activeGoalText(goals);
   const p=PROFILES[profile];
   return `${AUTONOMY_GUIDANCE}\n这是用户明确授权的本机长目标巡检，不是执行目标的工作对话。目标所在机器：${HERE}。巡检模型：${p.model}/${p.effort}。本轮规划窗口是未来${p.hours}小时，以最有可能真正完成目标的路径为导向，不是工期承诺，也不允许降低验收标准。\n\n`+
@@ -54,10 +100,11 @@ export function parseDecisions(text,goals){
   }
   return value.decisions;
 }
-async function fableReview(prompt){
-  log('review-started',{profile:'fable',worker:'yangyong',model:PROFILES.fable.model,effort:'high'});
+async function fableReview(prompt,settings){
+  log('review-started',{profile:'fable',worker:'yangyong',model:settings.model,effort:settings.effort});
   let result;
-  const r=await onMachine('yangyong',['--claude-review'],{input:JSON.stringify({source:HERE,prompt}),timeout:37*60000,onLine:line=>{
+  const modelSettings={provider:settings.provider,model:settings.model,effort:settings.effort,fallback:settings.fallback};
+  const r=await onMachine('yangyong',['--claude-review'],{input:JSON.stringify({source:HERE,prompt,modelSettings}),timeout:37*60000,onLine:line=>{
     let e;try{e=JSON.parse(line)}catch{return}
     if(e.event==='claude-result')result=e.result;
     else log('review-progress',{profile:'fable',workerEvent:e.event,type:e.type,model:e.model,lastActivity:e.lastActivity,cli:e.bin,version:e.version,reason:e.reason,kind:e.kind,reviewSession:e.reviewSession,mode:e.mode,effort:e.effort,from:e.from,to:e.to,evidence:e.evidence,quotaExhausted:e.quotaExhausted,status:e.status,rateLimitType:e.rateLimitType,resetsAt:e.resetsAt});
@@ -66,7 +113,7 @@ async function fableReview(prompt){
 }
 export function paused(s){return /^(?:停止|取消|暂停)(?:这个|该|本)?(?:任务|执行|自动|续做|巡检)?[。！!\s]*$/u.test(s.lastHuman.trim())||s.lastStopReason==='aborted';}
 function processesFor(cwd,rows){const key=cwd.replaceAll('\\','/').toLowerCase();return rows.filter(p=>String(p.command).replaceAll('\\','/').toLowerCase().includes(key)&&!String(p.command).includes('goal-review'))}
-export async function deliver({decision:d,profile,reviewModel=PROFILES[profile]?.model,reviewEffort=PROFILES[profile]?.effort,goalsHash,startSessions,startProcesses=[],request=api,view=sessionView,processList=processes,logFn=log,work=WORK,readGoals=()=>fs.readFileSync(GOALS,'utf8')}){
+export async function deliver({decision:d,profile,reviewModel=PROFILES[profile]?.model,reviewEffort=PROFILES[profile]?.effort,resumeSettings=REVIEW_RESUME,goalsHash,startSessions,startProcesses=[],request=api,view=sessionView,processList=processes,logFn=log,work=WORK,readGoals=()=>fs.readFileSync(GOALS,'utf8')}){
   if(!['steer','resume'].includes(d.action)){logFn('goal-skipped',{goal:d.goalQuote,action:d.action,reason:d.reason});return {status:d.action}}
   if(!INTERVENTIONS.includes(d.intervention)){logFn('send-skipped',{goal:d.goalQuote,reason:'no-actionable-intervention',detail:d.reason,intervention:d.intervention??'missing'});return {status:'no-intervention'}}
   const currentGoals=readGoals();
@@ -92,7 +139,7 @@ export async function deliver({decision:d,profile,reviewModel=PROFILES[profile]?
     // A shared shell cwd (e.g. pi-mobile) does not establish that two goals are the same project.
     if(others.length){logFn('send-skipped',{sessionId:d.sessionId,reason:'same-project-other-session-running',others:others.map(s=>s.id)});return {status:'other-session'}}
     const stateFile=path.join(work,'deliveries.json');const records=load(stateFile,[]);
-    const text=`【长目标巡检建议 · ${reviewModel} / ${reviewEffort} / ${PROFILES[profile].hours}小时】\n目标（清单最新要求）：${d.goalQuote}\n本机清单：${GOALS}\n先核对清单中此目标的最新验收与共同约束，不沿用旧阈值；只承接当前原任务，不接管其他目标。\n${ADVICE_BOUNDARY}\n\n本次干预依据（${d.intervention}）：${d.reason}\n\n建议：${d.advice}\n\n${AUTONOMY_GUIDANCE}\n请结合原任务的完整上下文自行评估，合理则采纳；已处理、前提不成立或与用户边界冲突则不采纳，不为回复巡检重复工作。没有授权内可推进事项时可以正常结束并说明等待条件，不必新增报告或重复验证。不得降低验收标准。`;
+    const text=`【长目标巡检建议 · ${reviewModel} / ${reviewEffort} / ${PROFILES[profile].hours}小时】\n目标（清单最新要求）：${d.goalQuote}\n本机清单：${GOALS}\n先按全局规则「目标实现」完成第一性原理循环，再核对清单中此目标的最新验收与共同约束，不沿用旧阈值；只承接当前原任务，不接管其他目标。\n${ADVICE_BOUNDARY}\n\n本次干预依据（${d.intervention}）：${d.reason}\n\n建议：${d.advice}\n\n${AUTONOMY_GUIDANCE}\n请结合原任务的完整上下文自行评估，合理则采纳；已处理、前提不成立或与用户边界冲突则不采纳，不为回复巡检重复工作。没有授权内可推进事项时可以正常结束并说明等待条件，不必新增报告或重复验证。不得降低验收标准。`;
     const adviceHash=hash(d.advice.replace(/\s+/g,' '));
     const prior=records.findLast(r=>r.sessionId===d.sessionId&&(['sending','uncertain'].includes(r.status)||(r.status==='accepted'&&((r.adviceHash===adviceHash&&r.humanId===v.lastHumanId)||r.baseRevision===v.revision||r.at>=initial.reviewStartedAt))));
     if(prior){const confirmed=v.users.some(u=>u.text===prior.text);if(confirmed&&['sending','uncertain'].includes(prior.status)){prior.status='accepted';save(stateFile,records)}logFn('send-skipped',{sessionId:d.sessionId,reason:confirmed?'already-in-original-dialogue':'duplicate-or-unresolved-delivery',delivery:prior.id});return {status:'duplicate'}}
@@ -104,12 +151,12 @@ export async function deliver({decision:d,profile,reviewModel=PROFILES[profile]?
     if(!busy){
       const fresh=view(d.sessionId);if(fresh.revision!==v.revision){record.status='skipped';record.reason='execution-progress-changed-before-resume';save(stateFile,records);logFn('send-skipped',{reason:record.reason,sessionId:d.sessionId});return {status:'stale-progress'}}
       live=(await request(route,{type:'get_state'})).data;
-      if(!stateBusy(live)&&(live.model?.id!=='gpt-6-astra'||live.model?.provider!=='openai-codex'))await request(route,{type:'set_model',provider:'openai-codex',modelId:'gpt-6-astra'});
+      if(!stateBusy(live)&&(live.model?.id!==resumeSettings.model||live.model?.provider!==resumeSettings.provider))await request(route,{type:'set_model',provider:resumeSettings.provider,modelId:resumeSettings.model});
       live=(await request(route,{type:'get_state'})).data;
       if(stateBusy(live)){record.status='skipped';record.reason='user-started-during-model-selection';save(stateFile,records);logFn('send-skipped',{reason:record.reason,sessionId:d.sessionId});return {status:'became-busy'}}
-      await request(route,{type:'set_thinking_level',level:'xhigh'});
+      await request(route,{type:'set_thinking_level',level:resumeSettings.thinkingLevel});
       live=(await request(route,{type:'get_state'})).data;
-      if(live.model?.id!=='gpt-6-astra'||live.thinkingLevel!=='xhigh')throw Error('Executor model/effort verification failed');
+      if(live.model?.id!==resumeSettings.model||live.model?.provider!==resumeSettings.provider||live.thinkingLevel!==resumeSettings.thinkingLevel)throw Error('Executor model/effort verification failed');
       if(stateBusy(live)){record.status='skipped';record.reason='user-started-before-resume';save(stateFile,records);logFn('send-skipped',{reason:record.reason,sessionId:d.sessionId});return {status:'became-busy'}}
     }
     record.status='sending';record.mode=busy?'steer':'resume';save(stateFile,records);
@@ -125,34 +172,62 @@ export async function deliver({decision:d,profile,reviewModel=PROFILES[profile]?
   }finally{unlock()}
 }
 function cryptoId(){return hash(`${Date.now()}/${process.pid}/${Math.random()}`).slice(0,20)}
-export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goalsFile=GOALS,inspectSource=inspect,logFn=log}={}){
+export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goalsFile=GOALS,inspectSource=inspect,logFn=log,quotaCheck=checkScheduledQuota}={}){
   if(!PROFILES[profile])throw Error('Profile must be astra or fable');
   const unlock=acquireLock(path.join(work,profile+'-lock'),logFn);if(!unlock)return {skipped:'overlap'};
-  let heartbeat;
+  let heartbeat,quotaReservation;
   try{
     logFn('tick',{profile,pid:process.pid,dryRun,reviewOnly});
     const rawGoals=fs.readFileSync(goalsFile,'utf8'),goals=activeGoalText(rawGoals);
     const skipReason=emptyGoals(goals)?'empty':!/\p{Decimal_Number}|目标/u.test(goals)?'no-digit-or-target':null;
     if(skipReason){logFn('skip',{profile,reason:'local-goal-list-'+skipReason,modelCalls:0});return {skipped:skipReason,modelCalls:0}}
+    // The codex quota reserve meters only the codex pool; a heading naming pi-chat's web
+    // model (ChatGPT via AcBoter) is not gated by it.
+    // Removing a profile's prompt block from the goal list disables that profile; malformed blocks still fail.
+    if(rawGoals.includes(PROMPTS_START)&&!rawGoals.includes(`<!-- task-prompt:goal-review-${profile} -->`)){logFn('skip',{profile,reason:'profile-not-in-goal-list',modelCalls:0});return {skipped:'profile-not-configured',modelCalls:0}}
+    const modelSettings=configuredProfile(profile,rawGoals);
+    const codexMetered=usesCodexQuota(modelSettings.provider),resumeMetered=usesCodexQuota(modelSettings.resume?.provider??modelSettings.provider);
+    if(!dryRun&&QUOTA_GUARD_ENABLED&&!codexMetered)logFn('quota-guard-bypassed',{profile,reason:'provider-not-codex-metered',provider:modelSettings.provider});
+    if(!dryRun&&QUOTA_GUARD_ENABLED&&codexMetered){
+      const quota=await quotaCheck({task:`long-goals-${profile}`,admit:true});
+      if(!quota.allow){logFn('skip',{profile,reason:'quota-reserve',quota,modelCalls:0});return {skipped:'quota-reserve',modelCalls:0,quota};}
+      quotaReservation=quota.reservation;
+    } else if(!dryRun&&!QUOTA_GUARD_ENABLED) logFn('quota-guard-bypassed',{profile,reason:'explicit-user-authorized-schedule'});
     const reviewStartedAt=Date.now();
+    if(!dryRun&&isPiChatProvider(modelSettings.provider))await waitForPiChatCapacity({log:logFn,task:`long-goals-${profile}`});
     const catalog=await inspectSource({op:'catalog'});
     // Only selected histories are read in full. A later human instruction invalidates the review.
     const startSessions=catalog.sessions.map(s=>({...s,reviewStartedAt}));
-    const prompt=reviewPrompt(profile,goals,catalog);const runId=new Date().toISOString().replace(/[:.]/g,'-');
+    const prompt=reviewPrompt(profile,rawGoals,catalog,modelSettings);const runId=new Date().toISOString().replace(/[:.]/g,'-');
     const promptFile=path.join(work,`${profile}-latest-prompt.txt`);fs.mkdirSync(work,{recursive:true});fs.writeFileSync(promptFile,prompt);
     if(dryRun){logFn('dry-run',{profile,goalsHash:hash(rawGoals),sessionCount:catalog.sessions.length,promptChars:prompt.length,modelCalls:0});return {dryRun:true,profile,promptFile,modelCalls:0}}
     heartbeat=setInterval(()=>logFn('tick-alive',{profile,pid:process.pid,runId}),25000);
-    const result=profile==='astra'?await astraReview(prompt,logFn):await fableReview(prompt);
+    const result=usesClaudeRunner(modelSettings)
+      ? await fableReview(prompt,modelSettings)
+      : await astraReview(prompt,logFn,modelSettings,profile);
     const decisions=parseDecisions(result.text,goals);
     save(path.join(work,`${profile}-latest-result.json`),{runId,at:new Date().toISOString(),machine:HERE,goalsHash:hash(rawGoals),startSessions:startSessions.map(({first,mtime,...s})=>s),startProcesses:catalog.processes,model:result.model,effort:result.effort,reviewSession:result.reviewSession,fallback:result.fallback,decisions});
     if(reviewOnly){logFn('review-only-complete',{profile,decisions:decisions.length,sourceMutations:0});return {profile,reviewOnly:true,decisions}}
-    const outcomes=[];for(const d of decisions){try{outcomes.push(await deliver({decision:d,profile,reviewModel:result.model,reviewEffort:result.effort,goalsHash:hash(rawGoals),startSessions,startProcesses:catalog.processes,work,logFn,readGoals:()=>fs.readFileSync(goalsFile,'utf8')}))}catch(e){logFn('goal-failed',{profile,goal:d.goalQuote,reason:e.message});outcomes.push({status:'failed',reason:e.message})}}
+    const outcomes=[];for(const d of decisions){try{
+      let deliveryReservation;
+      if(['steer','resume'].includes(d.action)&&QUOTA_GUARD_ENABLED&&resumeMetered){
+        const quota=await quotaCheck({task:`long-goals-${profile}-delivery`,admit:true});
+        if(!quota.allow){logFn('send-skipped',{reason:'quota-reserve',quota});outcomes.push({status:'quota-reserve'});continue;}
+        deliveryReservation=quota.reservation;
+        // Delivery may start an asynchronous executor; retain its conservative reservation for 48h.
+      }
+      const outcome=await deliver({decision:d,profile,reviewModel:result.model,reviewEffort:result.effort,resumeSettings:modelSettings.resume||REVIEW_RESUME,goalsHash:hash(rawGoals),startSessions,startProcesses:catalog.processes,work,logFn,readGoals:()=>fs.readFileSync(goalsFile,'utf8')});
+      if(deliveryReservation&&outcome.status!=='accepted')await quotaCheck({release:deliveryReservation,task:`long-goals-${profile}-delivery`});
+      outcomes.push(outcome);}catch(e){logFn('goal-failed',{profile,goal:d.goalQuote,reason:e.message});outcomes.push({status:'failed',reason:e.message})}}
     if(!decisions.length)logFn('skip',{profile,reason:'reviewer-found-no-active-goals'});
     logFn('tick-complete',{profile,decisions:decisions.length,outcomes});if(outcomes.some(o=>o.status==='failed'))throw Error('One or more goal deliveries failed; see per-goal log');return {profile,outcomes};
   }catch(e){logFn('tick-failed',{profile,reason:e.message});throw e}
-  finally{if(heartbeat)clearInterval(heartbeat);unlock()}
+  finally{if(heartbeat)clearInterval(heartbeat);if(quotaReservation)await quotaCheck({release:quotaReservation,task:`long-goals-${profile}`});unlock()}
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+// Scheduled tasks call this through the portable src junction; Node reports the main module by
+// its real path, so compare real paths or the task exits 0 without ever running a tick.
+const realPathOf=p=>{try{return fs.realpathSync.native(p).toLowerCase()}catch{return path.resolve(p).toLowerCase()}};
+if(process.argv[1]&&realPathOf(process.argv[1])===realPathOf(fileURLToPath(import.meta.url))){
   const profile=process.argv[process.argv.indexOf('--profile')+1];
   tick(profile,{dryRun:process.argv.includes('--dry-run'),reviewOnly:process.argv.includes('--review-only')}).then(r=>console.log(JSON.stringify(r))).catch(e=>{console.error(e.message);process.exitCode=1});
 }

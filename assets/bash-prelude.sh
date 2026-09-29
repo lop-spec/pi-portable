@@ -25,5 +25,26 @@ bak()       { node "$(_pi_tools)/backup.mjs" "$@"; }
 peerpush()  { node "$(_pi_tools)/peer-sync.mjs" push "$@"; }
 peerpatch() { node "$(_pi_tools)/peer-sync.mjs" patch "$@"; }
 
+# Keep Lark's existing machine-local identity outside Pi's portable HOME.
+# Scope the correction to this CLI; never move/copy its credentials or change Pi's HOME.
+lark-cli() (
+  if [ -n "${LOCALAPPDATA:-}" ]; then
+    local real_home
+    real_home="$(cd "$(cygpath -u "$LOCALAPPDATA")/../.." && pwd)" || return
+    if [ "$(cygpath -u "${USERPROFILE:-$HOME}")" != "$real_home" ]; then
+      printf '[lark-cli] using Windows account profile; portable HOME is not the CLI identity directory\n' >&2
+      export HOME="$real_home" USERPROFILE="$(cygpath -w "$real_home")"
+    fi
+  fi
+  command lark-cli "$@"
+)
+
 # Free search/reading adapters; no daemon, API keys or extra browser. websearch help lists commands.
 websearch() { MSYS_NO_PATHCONV=1 node "$(_pi_tools)/websearch.mjs" "$@"; }
+
+# Android USB: content/action commands wake and verify keyguard before proceeding.
+# No credentials in argv, logs, rules, or peer sync. phone help lists supported commands.
+phone() { MSYS_NO_PATHCONV=1 node "$(_pi_tools)/phone.mjs" "$@"; }
+
+# DataWorks official MCP, on demand; all tools, pinned RAM identity, no copied credentials.
+dataworks() { MSYS_NO_PATHCONV=1 node "$(_pi_tools)/dataworks.mjs" "$@"; }

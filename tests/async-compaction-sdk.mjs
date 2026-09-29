@@ -57,6 +57,14 @@ try {
     assert.equal(captured.length, baseline.length);
     for (let i = 0; i < captured.length; i++) {
       assert.equal(captured[i].context.systemPrompt, baseline[i].context.systemPrompt + '\n\n' + mod.SUMMARY_INSTRUCTIONS);
+      // Contract/delivery checks only: deterministic streams cannot prove model compliance.
+      for (const clause of [
+        'omitted content does not mean the read failed or was truncated',
+        'Base read success, failure, and truncation claims on explicit tool-result evidence',
+        'newer successful reads or completed pagination supersede older incomplete-read claims',
+        'identify only the missing requirement or range to reread, not the entire file by default',
+        'say what is unknown rather than inventing a read status',
+      ]) assert.ok(captured[i].context.systemPrompt.includes(clause), label + ': read-evidence contract: ' + clause);
       const contents = c => c.messages.map(({ timestamp, ...m }) => m);
       assert.deepEqual(contents(captured[i].context), contents(baseline[i].context), label + ': native prompts preserved');
       for (const key of ['reasoning', 'maxTokens', 'cacheRetention', 'signal', 'apiKey'])

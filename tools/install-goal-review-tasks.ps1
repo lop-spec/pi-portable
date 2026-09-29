@@ -3,7 +3,8 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
 $root=Split-Path -Parent $PSScriptRoot
-$desktop=$env:COMPUTERNAME -ieq 'DESKTOP-3EGB4LB'
+if($env:COMPUTERNAME -notin @('LOP-HOME','YANGYONG')){throw 'Unknown managed host'}
+$desktop=$env:COMPUTERNAME -ieq 'LOP-HOME'
 if($desktop){$node=Join-Path $root 'runtime\node.exe';$data=Join-Path $root 'data'}else{$node=(Get-Command node.exe).Source;$data='C:\Users\lop\AppData\Local\pi-web\portable\data'}
 $allNames=@('PiWeb-QuotaIdle-30min','PiWeb-LongGoals-Astra-15min','PiWeb-LongGoals-Astra-30min','PiWeb-LongGoals-Fable-30min')
 if($InspectOnly){

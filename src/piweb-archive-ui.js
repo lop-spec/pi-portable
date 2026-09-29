@@ -495,6 +495,8 @@
     style.textContent = [
       // Row actions live in the context menu; hide the shortcut AND its reserved slot.
       ".sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}",
+      // Row actions live in the context menu; hide the shortcut AND its reserved slot.
+      ".sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}",
       "[data-pi-session-archive-action]{color:var(--text-muted)!important;position:relative!important}",
       "[data-pi-session-archive-action]>svg{opacity:0!important}",
       "[data-pi-session-archive-action]::before{content:'';position:absolute;width:14px;height:14px;background:currentColor;-webkit-mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E');mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E')}",
@@ -928,6 +930,10 @@
     loginBox: null,
     loginSignature: "",
     addButton: null,
+    autoResetButton: null,
+    autoResetPending: false,
+    autoResetError: "",
+    autoResetNote: null,
     switchFailedId: "",
     switchError: "",
     lastFetchAt: 0,
@@ -952,6 +958,11 @@
       resets: "Reset card balance (not current redemption eligibility)",
       resetAt: "Resets",
       resetCountShort: "Reset cards",
+      autoReset: "Auto-use cards", on: "On", off: "Off",
+      autoResetHint: "Only when quota is exhausted. Uses existing cards, never purchases. A submitted redemption cannot be cancelled.",
+      autoResetUnavailable: "Auto-use unavailable · bridge update required",
+      autoResetFailed: "Auto-use setting was not saved",
+      autoResetStates: { using: "Using reset card…", used: "Card used · quota restored", uncertain: "Reset unconfirmed · further cards paused", failed: "Auto-use failed", skipped: "Auto-use skipped" },
       current: "Current",
       cached: "Cached",
       switchAccount: "Switch",
@@ -971,8 +982,13 @@
       empty: "No rotating accounts found",
       unavailable: "Usage is temporarily unavailable",
       retrying: "Retrying automatically",
-      updatedNow: "Updated now",
-      updatedMinutes: (minutes) => `Updated ${minutes}m ago`,
+      updatedNow: "Checked now",
+      updatedMinutes: (minutes) => `Checked ${minutes}m ago`,
+      abnormal: (count) => `${count} unavailable`,
+      authFailed: "Authentication failed · sign in again",
+      staleQuota: "Quota expired · cached values only",
+      refreshFailed: "Refresh failed",
+      lastSuccess: "Last successful update",
       updating: "Updating…",
       soon: "soon",
       minutes: (minutes) => `${minutes}m`,
@@ -987,6 +1003,11 @@
       resets: "重置卡余额（不是当前可立即使用的次数）",
       resetAt: "重置时间",
       resetCountShort: "重置卡",
+      autoReset: "自动用卡", on: "开", off: "关",
+      autoResetHint: "额度耗尽后使用已有卡，不购买、不充值。已提交的用卡操作无法撤回。",
+      autoResetUnavailable: "自动用卡不可用 · 桥接服务需更新",
+      autoResetFailed: "自动用卡设置未保存",
+      autoResetStates: { using: "正在用卡…", used: "已用卡 · 额度已恢复", uncertain: "用卡结果待核实 · 已暂停继续用卡", failed: "自动用卡失败", skipped: "本次未用卡" },
       current: "当前",
       cached: "缓存",
       switchAccount: "切换",
@@ -1006,8 +1027,13 @@
       empty: "未发现轮转账号",
       unavailable: "额度暂不可用",
       retrying: "稍后自动重试",
-      updatedNow: "刚刚更新",
-      updatedMinutes: (minutes) => `${minutes} 分钟前更新`,
+      updatedNow: "刚刚检查",
+      updatedMinutes: (minutes) => `${minutes} 分钟前检查`,
+      abnormal: (count) => `${count} 个异常`,
+      authFailed: "认证失败 · 需重新登录",
+      staleQuota: "额度已过期 · 仅为历史缓存",
+      refreshFailed: "刷新失败",
+      lastSuccess: "最后成功更新",
       updating: "更新中…",
       soon: "即将重置",
       minutes: (minutes) => `${minutes} 分钟后`,
@@ -1022,6 +1048,11 @@
       resets: "重置卡餘額（不是目前可立即使用的次數）",
       resetAt: "重置時間",
       resetCountShort: "重置卡",
+      autoReset: "自動用卡", on: "開", off: "關",
+      autoResetHint: "額度耗盡後使用既有卡，不購買、不儲值。已提交的用卡操作無法撤回。",
+      autoResetUnavailable: "自動用卡不可用 · 橋接服務需更新",
+      autoResetFailed: "自動用卡設定未儲存",
+      autoResetStates: { using: "正在用卡…", used: "已用卡 · 額度已恢復", uncertain: "用卡結果待核實 · 已暫停繼續用卡", failed: "自動用卡失敗", skipped: "本次未用卡" },
       current: "目前",
       cached: "快取",
       switchAccount: "切換",
@@ -1041,8 +1072,13 @@
       empty: "未發現輪轉帳號",
       unavailable: "額度暫時無法使用",
       retrying: "稍後自動重試",
-      updatedNow: "剛剛更新",
-      updatedMinutes: (minutes) => `${minutes} 分鐘前更新`,
+      updatedNow: "剛剛檢查",
+      updatedMinutes: (minutes) => `${minutes} 分鐘前檢查`,
+      abnormal: (count) => `${count} 個異常`,
+      authFailed: "認證失敗 · 需重新登入",
+      staleQuota: "額度已過期 · 僅為歷史快取",
+      refreshFailed: "更新失敗",
+      lastSuccess: "最後成功更新",
       updating: "更新中…",
       soon: "即將重置",
       minutes: (minutes) => `${minutes} 分鐘後`,
@@ -1208,7 +1244,7 @@
     identity.className = "pi-account-usage-identity";
     const dot = document.createElement("span");
     dot.className = "pi-account-usage-dot";
-    dot.dataset.state = account.error && account.remainingPercent == null ? "error" : account.active ? "active" : "idle";
+    dot.dataset.state = account.error || account.stale ? "error" : account.active ? "active" : "idle";
     identity.appendChild(dot);
     const email = String(account.email || account.id || "—");
     appendText(identity, "pi-account-usage-email", email, account.error ? `${email} · ${account.error}` : email);
@@ -1236,7 +1272,7 @@
     reauth.disabled = loginBusy();
     reauth.addEventListener("click", () => { void loginAction({ action: "start", mode: "reauth", id: account.id }); });
 
-    if (account.remainingPercent != null) {
+    if (account.remainingPercent != null && !account.stale && !account.error) {
       const meter = document.createElement("div");
       meter.className = "pi-account-usage-meter";
       meter.setAttribute("role", "progressbar");
@@ -1253,7 +1289,7 @@
 
     const meta = document.createElement("div");
     meta.className = "pi-account-usage-meta";
-    appendText(meta, "pi-account-usage-remaining-compact", `${text.remaining} ${account.remainingPercent == null ? "—" : `${account.remainingPercent}%`}`);
+    appendText(meta, "pi-account-usage-remaining-compact", `${account.stale || account.error ? `${text.cached} · ` : ""}${text.remaining} ${account.remainingPercent == null ? "—" : `${account.remainingPercent}%`}`);
     appendText(meta, "", account.usedPercent == null ? text.unavailable : `${text.used} ${account.usedPercent}%`);
     const resetCards = appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
     resetCards.title = text.resets;
@@ -1263,6 +1299,16 @@
       reset.title = `${text.resetAt} ${full} · ${relativeReset(account.resetAt)}`;
     }
     row.appendChild(meta);
+    const resetStatus = state.data?.autoReset?.accounts?.[account.id];
+    if (resetStatus) appendText(row, "pi-account-usage-warning", text.autoResetStates[resetStatus.status] || text.autoResetStates.failed,
+      `${resetStatus.reason || ""} · ${exactReset(resetStatus.at, true)}`);
+    if (account.stale || account.error) {
+      const reason = account.error === "HTTP 401" ? text.authFailed
+        : account.error ? `${text.refreshFailed} · ${account.error}` : text.staleQuota;
+      const lastSuccess = account.fetchedAt ? `${text.lastSuccess} ${exactReset(account.fetchedAt, true)}` : "";
+      appendText(row, "pi-account-usage-warning", reason, lastSuccess);
+      if (lastSuccess) appendText(row, "pi-account-usage-warning", lastSuccess);
+    }
     const controls = document.createElement("div");
     controls.className = "pi-account-row-controls";
     const remove = document.createElement("button");
@@ -1428,6 +1474,23 @@
     }
   }
 
+  async function toggleAutoReset() {
+    if (state.autoResetPending || !state.data?.autoReset) return;
+    state.autoResetPending = true; state.autoResetError = ""; render();
+    try {
+      const response = await fetch("/__pi_account_auto_reset", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: !state.data.autoReset.enabled }), signal: AbortSignal.timeout(4500),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok || !body.autoReset) throw new Error("setting rejected");
+      state.data.autoReset = body.autoReset;
+    } catch {
+      state.autoResetError = words().autoResetFailed;
+      console.error("[pi-web auto reset] configuration failed");
+    } finally { state.autoResetPending = false; render(); }
+  }
+
   function render() {
     if (!state.list || !state.title || !state.freshness || !state.panel || !state.button) return;
     const text = words();
@@ -1438,12 +1501,25 @@
     state.panel.setAttribute("aria-label", text.title);
     state.panel.setAttribute("aria-busy", String(state.loading));
     renderLogin();
+    if (state.autoResetButton) {
+      const setting = state.data?.autoReset;
+      state.autoResetButton.textContent = `${text.autoReset} · ${setting ? (setting.enabled ? text.on : text.off) : "—"}`;
+      state.autoResetButton.setAttribute("aria-label", text.autoReset);
+      state.autoResetButton.setAttribute("aria-checked", String(setting?.enabled === true));
+      state.autoResetButton.title = setting ? text.autoResetHint : text.autoResetUnavailable;
+      state.autoResetButton.disabled = !setting || state.autoResetPending;
+      state.autoResetNote.textContent = state.autoResetError || (setting?.settingsError ? text.autoResetFailed : "");
+    }
 
-    const accounts = Array.isArray(state.data?.accounts) ? state.data.accounts : [];
+    const accounts = (Array.isArray(state.data?.accounts) ? state.data.accounts : []).map(account => {
+      const fetched = Date.parse(account.fetchedAt || "");
+      return { ...account, stale: account.stale || !Number.isFinite(fetched)
+        || Date.now() - fetched > (state.data.accuracyMaxAgeMs || 300_000) };
+    });
     // Keep cached rows (and keyboard focus) through loading transitions. Closed
     // panels never construct account DOM or date formatters.
     if (state.open) {
-      const signature = JSON.stringify([state.renderedLocale, state.data?.enabled, accounts.map(({ ageMs, ...account }) => account), state.switchingId, state.switchFailedId, loginBusy(), state.removeConfirmId, state.removingId, !state.data && [state.loading, state.error]]);
+      const signature = JSON.stringify([state.renderedLocale, state.data?.enabled, state.data?.autoReset, accounts.map(({ ageMs, ...account }) => account), state.switchingId, state.switchFailedId, loginBusy(), state.removeConfirmId, state.removingId, !state.data && [state.loading, state.error]]);
       if (signature !== state.listSignature) {
         state.listSignature = signature;
         const focusedId = state.list.contains(document.activeElement) ? document.activeElement.closest('[data-account-id]')?.dataset.accountId : null;
@@ -1464,18 +1540,19 @@
       }
     }
 
-    const ages = accounts.map((account) => Number(account.ageMs)).filter(Number.isFinite);
-    const oldestAge = (ages.length ? Math.max(...ages) : 0) + (state.receivedAt ? Date.now() - state.receivedAt : 0);
-    const minutes = Math.max(0, Math.floor(oldestAge / 60_000));
+    const checkedAt = Date.parse(state.data?.lastCompletedAt || "");
+    const minutes = Math.max(0, Math.floor((Date.now() - checkedAt) / 60_000));
+    const abnormal = accounts.filter(account => account.stale || account.error).length;
+    const checkStatus = Number.isFinite(checkedAt) ? (minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes)) : '—';
     state.freshness.textContent = state.switchingId
       ? text.switchingAccount
       : state.switchError ? text.switchFailed
         : state.loading ? text.updating
           : state.error ? text.unavailable
             : !state.data || accounts.length === 0 ? '—'
-              : minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes);
+              : `${state.data?.refreshing ? text.updating : checkStatus}${abnormal ? ` · ${text.abnormal(abnormal)}` : ''}`;
     state.freshness.title = state.switchError || state.error || "";
-    state.freshness.dataset.stale = String(Boolean(state.switchError || state.error || accounts.some((account) => account.stale)));
+    state.freshness.dataset.stale = String(Boolean(state.switchError || state.error || accounts.some((account) => account.stale || account.error)));
     state.button.dataset.state = state.error && !state.data ? "error" : accounts.some((account) => account.remainingPercent != null && account.remainingPercent <= 20) ? "low" : "ready";
     positionUi();
   }
@@ -1566,6 +1643,7 @@
       .pi-account-usage-meta>span{min-width:0;white-space:normal;overflow-wrap:anywhere}
       .pi-account-usage-meta>.pi-account-usage-remaining-compact{flex:0 0 auto;color:var(--text);font-weight:650}
       .pi-account-usage-meta>span+span::before{margin:0 4px;color:var(--text-dim);content:'·'}
+      .pi-account-usage-warning{display:block;color:#b45309;font-size:11px;line-height:16px;overflow-wrap:anywhere}
       .pi-account-row-controls{display:flex;align-items:center;gap:2px}
       .pi-account-icon-action{display:inline-flex;align-items:center;justify-content:center;min-width:18px;width:18px;padding:0;border-color:transparent;background:transparent}
       .pi-account-icon-action svg{flex:none;pointer-events:none}
@@ -1626,8 +1704,18 @@
     addButton.type = "button";
     addButton.className = "pi-account-usage-switch";
     addButton.addEventListener("click", () => { void loginAction({ action: "start", mode: "add" }); });
-    footer.appendChild(addButton);
-    panel.append(header, list, loginBox, footer);
+    const autoResetButton = document.createElement("button");
+    autoResetButton.id = "pi-account-auto-reset"; autoResetButton.type = "button";
+    autoResetButton.className = "pi-account-usage-switch";
+    autoResetButton.setAttribute("role", "switch");
+    autoResetButton.addEventListener("click", () => { void toggleAutoReset(); });
+    const autoResetNote = document.createElement("div");
+    autoResetNote.className = "pi-account-usage-warning";
+    autoResetNote.setAttribute("role", "status");
+    footer.append(addButton, autoResetButton);
+    panel.append(header, list, loginBox, footer, autoResetNote);
+    state.autoResetButton = autoResetButton;
+    state.autoResetNote = autoResetNote;
     document.documentElement.append(host, panel);
     state.loginBox = loginBox;
     state.addButton = addButton;
@@ -1699,26 +1787,45 @@
   if (window.__piServiceTierUi) return;
   window.__piServiceTierUi = true;
   const KEY = "pi-service-tier";
+  // lop 2026-09-29: the menu offers 默认 and Fast only, with no explanatory text; switching
+  // the model puts the choice back on 默认 at once.
   const choices = [
-    ["native", "默认", "不指定 TIER，遵循原生行为"],
-    ["default", "Standard", "标准速度 / 标准用量"],
-    ["priority", "Fast", "优先处理 / 更高用量"],
-    ["flex", "Flex", "弹性处理 / 可能更慢"],
+    ["native", "默认"],
+    ["priority", "Fast"],
   ];
-  let selected = "native", explicitSelection = false, button, panel, note;
+  const supportedCodexModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]);
+  let selected = "native", explicitSelection = false, button, panel, note, currentModel = null;
+  let migrationWarning = "";
+  const supportsTier = model => model?.provider === "openai-codex" && supportedCodexModels.has(model.id);
+  // The panel shows text only when something went wrong (a choice that could not be applied).
+  const noteText = () => migrationWarning;
   try { const saved = localStorage.getItem(KEY); explicitSelection = saved !== null; selected = saved || "native"; }
   catch (error) { console.error("[pi-web service tier] preference read failed:", error); }
   if (!choices.some(([value]) => value === selected)) {
-    console.warn("[pi-web service tier] invalid saved tier; using native:", selected);
+    // A saved tier this menu no longer offers (Standard): back to 默认, logged, not announced.
+    console.warn("[pi-web service tier] unsupported saved tier; using native:", selected);
     selected = "native";
+    try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] migration write failed:", error); }
   }
   const fetchNative = window.fetch.bind(window);
+  async function readModel(url, signal) {
+    const response = await fetchNative(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "get_state" }), signal,
+    });
+    const result = await response.json();
+    if (!response.ok || result.error || !result.data?.model) throw new Error(result.error || "无法确认当前模型");
+    currentModel = result.data.model;
+    if (button) render();
+    return currentModel;
+  }
   window.fetch = async function piServiceTierFetch(input, init) {
-    let url, command;
+    let url, command, created = null, submissionInput = input, submissionInit = init;
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     try {
       url = new URL(input instanceof Request ? input.url : String(input), location.href);
       const method = init?.method || (input instanceof Request ? input.method : "GET");
-      if (url.origin === location.origin && method.toUpperCase() === "POST" && /^\/api\/agent\/(?!new$)[^/]+$/.test(url.pathname)) {
+      if (url.origin === location.origin && method.toUpperCase() === "POST" && /^\/api\/agent\/[^/]+$/.test(url.pathname)) {
         const body = init?.body ?? (input instanceof Request ? await input.clone().text() : null);
         if (typeof body === "string") command = JSON.parse(body);
       }
@@ -1727,22 +1834,73 @@
       // Reapply the explicit preference on every submission so resumed/recreated
       // sessions cannot display Fast while silently running at native speed.
       try {
+        // Check the actual session, not a possibly stale toolbar or global preference.
+        // Native clears an older explicit tier and remains valid for every provider.
+        const tier = selected;
+        // A fresh session's first prompt must not bypass the speed selection.
+        // Native ensure_session creates the runtime without invoking a model.
+        if (url.pathname === "/api/agent/new") {
+          const response = await fetchNative(input, { ...init, method: "POST", body: JSON.stringify({ ...command, type: "ensure_session" }), signal });
+          created = await response.json();
+          if (!response.ok || created.error || !created.sessionId) throw new Error(created.error || "创建会话失败");
+          url = new URL(`/api/agent/${encodeURIComponent(created.sessionId)}`, location.origin);
+          submissionInput = url.href;
+          submissionInit = { ...init, method: "POST", headers: init?.headers ?? (input instanceof Request ? input.headers : { "Content-Type": "application/json" }), body: JSON.stringify(command), signal };
+        }
+        if (tier !== "native" && !supportsTier(await readModel(url.href, signal))) {
+          throw new Error("当前模型/渠道未确认支持此速度；请先选择默认");
+        }
         const response = await fetchNative(url.href, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "set_service_tier", serviceTier: selected === "native" ? null : selected }),
-          signal: init?.signal,
+          body: JSON.stringify({ type: "set_service_tier", serviceTier: tier === "native" ? null : tier }),
+          signal,
         });
         const result = await response.json();
-        if (!response.ok || result.error) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!response.ok || result.error || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
       } catch (error) {
         console.error("[pi-web service tier] selection not applied:", error);
-        if (note) note.textContent = `TIER 未生效：${error.message}。后端补丁需在服务重载后生效。`;
-        return new Response(JSON.stringify({ error: `TIER 未生效：${error.message}`, code: "prompt_rejected", accepted: false }), { status: 409, headers: { "Content-Type": "application/json" } });
+        if (note) note.textContent = `TIER 未生效：${error.message}。本次消息未发送。`;
+        return new Response(JSON.stringify({ error: `TIER 未生效：${error.message}`, code: "prompt_rejected", accepted: false, ...(created?.sessionId ? { sessionId: created.sessionId } : {}) }), { status: 409, headers: { "Content-Type": "application/json" } });
       }
     }
-    return fetchNative(input, init);
+    const response = await fetchNative(submissionInput, submissionInit);
+    if (created) {
+      const result = await response.json();
+      return new Response(JSON.stringify({ ...created, ...result, success: response.ok && result.success !== false, sessionId: created.sessionId }), { status: response.status, headers: { "Content-Type": "application/json" } });
+    }
+    // Observe only model metadata, never consume or change the caller's response.
+    if (url?.origin === location.origin && (url.pathname === "/api/models" || command?.type === "set_model")) {
+      try {
+        const result = await response.clone().json();
+        if (response.ok && !result.error && result.success !== false) {
+          if (command?.type === "set_model") { currentModel = { provider: command.provider, id: command.modelId }; resetTierAfterModelSwitch(url.href); }
+          else if (!currentModel && result.defaultModel) currentModel = { provider: result.defaultModel.provider, id: result.defaultModel.modelId };
+          if (button) render();
+        }
+      } catch (error) { console.error("[pi-web service tier] model metadata read failed:", error); }
+    }
+    return response;
   };
 
+  // A model switch puts the speed back on 默认 at once: the toolbar and menu show it, the
+  // stored preference follows, and the session's own tier is cleared now rather than at the
+  // next submission (which would also clear it, since an explicit choice is re-sent each time).
+  function resetTierAfterModelSwitch(sessionUrl) {
+    if (!explicitSelection) return;
+    selected = "native"; migrationWarning = "";
+    try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); }
+    if (button) { note.textContent = noteText(); render(); }
+    fetchNative(sessionUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "set_service_tier", serviceTier: null }),
+    }).then(async response => {
+      const result = await response.json();
+      if (!response.ok || result.error || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+    }).catch(error => {
+      console.error("[pi-web service tier] reset after model switch failed:", error);
+      if (note) note.textContent = `切换模型后未能恢复默认速度：${error.message}`;
+    });
+  }
   function closePanel(focus = false) {
     panel.hidden = true;
     button.setAttribute('aria-expanded', 'false');
@@ -1763,7 +1921,10 @@
     button.title = `速度 / TIER：${choice[1]}`;
     button.setAttribute("aria-label", button.title);
     button.dataset.tier = selected;
-    for (const item of panel.querySelectorAll("button[data-tier]")) item.setAttribute("aria-checked", String(item.dataset.tier === selected));
+    for (const item of panel.querySelectorAll("button[data-tier]")) {
+      item.setAttribute("aria-checked", String(item.dataset.tier === selected));
+      item.disabled = item.dataset.tier !== "native" && !supportsTier(currentModel);
+    }
   }
   function start() {
     const style = document.createElement("style");
@@ -1777,8 +1938,8 @@
       #pi-service-tier-panel button:hover,#pi-service-tier-panel button[aria-checked=true]{background:var(--bg-hover)}
       #pi-service-tier-panel button[aria-checked=true]{color:var(--accent)}
       #pi-service-tier-panel button:disabled{opacity:.45;cursor:not-allowed}
-      #pi-service-tier-panel small{display:block;color:var(--text-muted)}
       #pi-service-tier-panel p{margin:6px;padding:4px;color:var(--text-muted)}
+      #pi-service-tier-panel p:empty{display:none}
     `;
     document.head.appendChild(style);
     button = document.createElement("button");
@@ -1793,19 +1954,29 @@
     bolt.setAttribute("d", "M13 2 4 14h7l-1 8 10-13h-7l1-7Z");
     svg.appendChild(bolt); button.appendChild(svg);
     panel = document.createElement("section"); panel.id = "pi-service-tier-panel"; panel.hidden = true; panel.setAttribute("role", "menu"); panel.setAttribute("aria-label", "速度 / TIER");
-    for (const [value, label, description] of choices) {
+    for (const [value, label] of choices) {
       const item = document.createElement("button"); item.type = "button"; item.dataset.tier = value; item.setAttribute("role", "menuitemradio"); item.textContent = label;
-      const detail = document.createElement("small"); detail.textContent = description; item.appendChild(detail);
-      item.onclick = () => { selected = value; explicitSelection = true; try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); } render(); panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); };
+      item.onclick = () => { selected = value; explicitSelection = true; migrationWarning = ""; note.textContent = noteText(); try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); } render(); panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); };
       panel.appendChild(item);
     }
-    const ultra = document.createElement("button"); ultra.type = "button"; ultra.disabled = true; ultra.textContent = "Ultrafast · 待上游确认支持"; ultra.title = "不能把未知的 ultrafast 参数伪装成 Fast"; panel.appendChild(ultra);
-    note = document.createElement("p"); note.textContent = "下次发送时生效，不改变正在生成的请求。"; panel.appendChild(note);
-    button.onclick = () => { panel.hidden = !panel.hidden; button.setAttribute("aria-expanded", String(!panel.hidden)); if (!panel.hidden) window.__piUiLayout.open('tier'); position(); if (!panel.hidden) panel.querySelector('[aria-checked="true"]')?.focus(); };
+    note = document.createElement("p"); note.textContent = noteText(); panel.appendChild(note);
+    button.onclick = async () => {
+      panel.hidden = !panel.hidden; button.setAttribute("aria-expanded", String(!panel.hidden));
+      if (panel.hidden) return;
+      window.__piUiLayout.open('tier'); position();
+      note.textContent = noteText();
+      const sessionId = new URL(location.href).searchParams.get("session");
+      if (sessionId) {
+        currentModel = null; render();
+        try { await readModel(`/api/agent/${encodeURIComponent(sessionId)}`, AbortSignal.timeout(10000)); }
+        catch (error) { console.error("[pi-web service tier] model check failed:", error); note.textContent = `仅默认速度可用：${error.message}`; }
+      }
+      if (!panel.hidden) panel.querySelector('[aria-checked="true"]:not(:disabled)')?.focus();
+    };
     document.addEventListener('pi-ui:popover-open', event => { if (event.detail !== 'tier') closePanel(); });
     document.addEventListener('focusin', event => { if (!panel.hidden && !panel.contains(event.target) && event.target !== button) closePanel(); });
     document.addEventListener("pointerdown", event => { if (!panel.contains(event.target) && !button.contains(event.target)) { panel.hidden = true; button.setAttribute("aria-expanded", "false"); } });
-    document.addEventListener("keydown", event => { if (panel.hidden) return; if (event.key === "Escape") { panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = [...panel.querySelectorAll("button[data-tier]")]; const at = items.indexOf(document.activeElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length].focus(); } });
+    document.addEventListener("keydown", event => { if (panel.hidden) return; if (event.key === "Escape") { panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = [...panel.querySelectorAll("button[data-tier]:not(:disabled)")]; const at = items.indexOf(document.activeElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length].focus(); } });
     document.documentElement.append(button, panel); render(); position();
     window.__piUiLayout.subscribe(position);
   }

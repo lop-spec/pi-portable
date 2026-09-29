@@ -15,6 +15,7 @@ export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
 export const PIWEB_ACCOUNT_USAGE_PATH = "/__pi_account_usage";
 export const PIWEB_ACCOUNT_SELECT_PATH = "/__pi_account_select";
 export const PIWEB_ACCOUNT_LOGIN_PATH = "/__pi_account_login";
+export const PIWEB_ACCOUNT_AUTO_RESET_PATH = "/__pi_account_auto_reset";
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 
@@ -430,6 +431,34 @@ export class PiWebUiProxy {
     }
   }
 
+  async handleAccountAutoReset(request, response) {
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/iu.test(String(request.headers.host || ""))
+      || !request.headers.origin || !this.mutationOriginAllowed(request)
+      || request.headers["sec-fetch-site"] === "cross-site") {
+      this.log("account-auto-reset-rejected", { reason: "non-local-or-cross-origin" });
+      return this.jsonResponse(response, 403, { ok: false, error: "仅允许本机同源操作" });
+    }
+    if (!/^application\/json\b/iu.test(String(request.headers["content-type"] || ""))) {
+      this.log("account-auto-reset-rejected", { reason: "non-json" });
+      return this.jsonResponse(response, 415, { ok: false, error: "需要 JSON 请求" });
+    }
+    try {
+      const input = await this.readControlJson(request);
+      if (typeof input.enabled !== "boolean") throw new Error("invalid enabled");
+      const upstream = await this.fetch(`http://127.0.0.1:${this.bridgePort}/account/auto-reset`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: input.enabled }), signal: timeoutSignal(3000),
+      });
+      const body = await upstream.json();
+      if (!upstream.ok || !body.ok) throw new Error("bridge rejected setting");
+      this.log("account-auto-reset-configured", { enabled: input.enabled });
+      return this.jsonResponse(response, 200, body);
+    } catch {
+      this.log("account-auto-reset-failed", { reason: "invalid-input-or-bridge-unavailable" });
+      return this.jsonResponse(response, 400, { ok: false, error: "自动额度卡设置未保存，请检查桥接服务" });
+    }
+  }
+
   async handleAccountLogin(request, response) {
     // Login controls are local-only and require browser same-origin JSON POSTs.
     // No CORS, callback URLs/session handles in query strings, or token responses.
@@ -829,6 +858,7 @@ export class PiWebUiProxy {
     const parsedUrl = new URL(request.url || "/", "http://127.0.0.1");
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ARCHIVE_UI_PATH) return this.serveArchiveUi(response);
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ACCOUNT_USAGE_PATH) return this.handleAccountUsageProxy(response, parsedUrl);
+    if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_AUTO_RESET_PATH) return this.handleAccountAutoReset(request, response);
     if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_SELECT_PATH) return this.handleAccountSelectProxy(request, response);
     if (parsedUrl.pathname === PIWEB_ACCOUNT_LOGIN_PATH) {
       if (request.method !== "POST") return this.jsonResponse(response, 405, { ok: false, error: "POST required" }, { Allow: "POST" });

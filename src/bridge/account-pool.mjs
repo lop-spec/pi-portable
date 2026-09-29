@@ -15,6 +15,7 @@ import https from "node:https";
 import { readAccountUsageIdentity } from "./account-usage.mjs";
 
 export const POOL_REMOVED_FILE = ".pi-pool-removed.json";
+export const EXTERNAL_CODEX_FILE = ".pi-external-codex.json";
 
 const COOLDOWN_DEFAULT_MS = 30 * 60_000;
 const COOLDOWN_MAX_MS = 6 * 60 * 60_000;
@@ -57,7 +58,7 @@ function readAuthFile(authPath) {
   if (!token) throw new Error("auth.json 缺少 access_token");
   return {
     token,
-    accountId: value?.tokens?.account_id || "",
+    accountId: value?.tokens?.account_id || value?.account_id || "",
     refreshToken: value?.tokens?.refresh_token || "",
   };
 }
@@ -121,14 +122,22 @@ export function createAccountPool(options) {
     try {
       for (const entry of fs.readdirSync(homesRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(entry.name)) continue;
-        const authPath = path.join(homesRoot, entry.name, "auth.json");
-        if (fs.existsSync(path.join(homesRoot, entry.name, POOL_REMOVED_FILE))) {
+        const slot = path.join(homesRoot, entry.name);
+        const authPath = path.join(slot, "auth.json");
+        if (fs.existsSync(path.join(slot, POOL_REMOVED_FILE))) {
           if (!removedLogged.has(entry.name)) log(`账号 ${entry.name} 跳过：explicitly-removed-from-pool`);
           removedLogged.add(entry.name);
           continue;
         }
         removedLogged.delete(entry.name);
-        if (fs.existsSync(authPath)) {
+        const externalFile = path.join(slot, EXTERNAL_CODEX_FILE);
+        if (fs.existsSync(externalFile)) {
+          try {
+            const { version, sourcePath } = JSON.parse(fs.readFileSync(externalFile, "utf8"));
+            if (version !== 1 || !path.isAbsolute(sourcePath) || fs.existsSync(authPath)) throw new Error("invalid-external-slot");
+            found.push({ id: entry.name, authPath: sourcePath, writable: false, external: true });
+          } catch { log(`账号 ${entry.name} 跳过：external-source-invalid`); }
+        } else if (fs.existsSync(authPath)) {
           found.push({ id: entry.name, authPath, writable: entry.name !== "primary" });
         }
       }
@@ -156,7 +165,16 @@ export function createAccountPool(options) {
         let data = "";
         response.on("data", (chunk) => { data += chunk.toString("utf8"); });
         response.on("end", () => {
-          if (response.statusCode !== 200) return reject(new Error(`refresh HTTP ${response.statusCode}`));
+          if (response.statusCode !== 200) {
+            // Only known machine-readable reasons may enter logs; never log the OAuth body.
+            let code = "";
+            try {
+              const payload = JSON.parse(data);
+              const candidate = payload.error?.code || payload.error;
+              if (["refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated", "invalid_grant", "invalid_client", "invalid_request", "access_denied"].includes(candidate)) code = candidate;
+            } catch { /* HTTP status remains the observable reason. */ }
+            return reject(new Error(`refresh HTTP ${response.statusCode}${code ? ` (${code})` : ""}`));
+          }
           try { resolve(JSON.parse(data)); } catch (error) { reject(error); }
         });
       });
@@ -174,7 +192,10 @@ export function createAccountPool(options) {
     const existing = refreshInFlight.get(member.id);
     if (existing) return existing;
     const last = state.lastRefreshTry.get(member.id) || 0;
-    if (now() - last < REFRESH_RETRY_GAP_MS) return Promise.resolve(false);
+    if (now() - last < REFRESH_RETRY_GAP_MS) {
+      log(`账号 ${member.id} 刷新跳过：retry-backoff，剩余 ${Math.ceil((REFRESH_RETRY_GAP_MS - (now() - last)) / 1000)}s`);
+      return Promise.resolve(false);
+    }
     state.lastRefreshTry.set(member.id, now());
     const task = refreshOnce(member).finally(() => refreshInFlight.delete(member.id));
     refreshInFlight.set(member.id, task);
@@ -182,12 +203,14 @@ export function createAccountPool(options) {
   }
 
   async function refreshOnce(member) {
+    if (!member.writable) { log(`账号 ${member.id} 跳过刷新：external-or-primary-readonly`); return false; }
     let refreshToken;
-    try { refreshToken = readAuthFile(member.authPath).refreshToken; } catch { return false; }
-    if (!refreshToken) return false;
+    try { refreshToken = readAuthFile(member.authPath).refreshToken; }
+    catch { log(`账号 ${member.id} 刷新失败：auth-read-failed`); return false; }
+    if (!refreshToken) { log(`账号 ${member.id} 刷新失败：missing-refresh-token`); return false; }
     try {
       const tokens = await (refreshTransport || defaultRefreshTransport)(refreshToken);
-      if (!tokens?.access_token) return false;
+      if (!tokens?.access_token) { log(`账号 ${member.id} 刷新失败：missing-access-token-in-response`); return false; }
       const value = JSON.parse(fs.readFileSync(member.authPath, "utf8"));
       // An explicit login may have replaced credentials while refresh was in flight.
       // Never overwrite that newer identity with the old refresh response.
@@ -253,7 +276,12 @@ export function createAccountPool(options) {
       try { auth = readAuthFile(member.authPath); }
       catch { blockers.push(`${member.id}:auth.json 不可用`); continue; }
       const expiry = jwtExpiryMs(auth.token);
-      if (expiry && expiry - now() < REFRESH_AHEAD_MS) {
+      if (member.external && (!expiry || expiry <= now())) {
+        blockers.push(`${member.id}:外部 token 已过期或不可验证`);
+        log(`账号 ${member.id} 跳过：external-token-expired-or-invalid`);
+        continue;
+      }
+      if (member.writable && expiry && expiry - now() < REFRESH_AHEAD_MS) {
         if (await refresh(member)) {
           try { auth = readAuthFile(member.authPath); } catch { /* 沿用旧 token。 */ }
         } else if (expiry <= now()) {
@@ -284,7 +312,7 @@ export function createAccountPool(options) {
     }
     if (statusCode === 401) {
       if (account.useDownstream) return "give-up";
-      if (await refresh(account.member)) return "retry";
+      if (!account.member.external && await refresh(account.member)) return "retry";
       cooldown(account.id, parseCooldownUntilMs(401, bodyText, headers, now()), "401 token 失效");
       return "switch";
     }
@@ -361,7 +389,8 @@ export function createAccountPool(options) {
         cooldownMinLeft: until > now() ? Math.ceil((until - now()) / 60_000) : 0,
         tokenExpDays,
         // primary 走下游请求自带的 Authorization(客户端自己刷新),文件里的 token 过期与否不影响它。
-        identity: member.writable ? "pool" : "downstream",
+        identity: member.id === "primary" ? "downstream" : "pool",
+        refreshOwner: member.external ? "external" : member.id === "primary" ? "downstream" : "pool",
       };
     });
   }
@@ -375,15 +404,17 @@ export function createAccountPool(options) {
 // 返回 { response, account, drained }：drained 非空表示响应体已被本环读掉（调用方
 // 需用它重建下游响应）；pinnedUnavailable 时返回 { pinnedUnavailable }，由调用方
 // 合成 429 显式报错。
-export async function sendWithAccountFailover({ pool, headers, send, applyIdentity, drain, decode, log = () => {} }) {
+export async function sendWithAccountFailover({ pool, headers, send, applyIdentity, drain, decode, log = () => {}, onQuotaExhausted, isCancelled = () => false }) {
   if (!pool) return { response: await send(headers), account: null, drained: null, attempts: 1, accountsTried: ["downstream"] };
   let account = await pool.pick(new Set()).catch(() => null);
   if (account?.pinnedUnavailable) return { pinnedUnavailable: account, attempts: 0, accountsTried: [] };
   if (!account) return { response: await send(headers), account: null, drained: null, attempts: 1, accountsTried: ["downstream"] };
   const tried = new Set([account.id]);
   const accountsTried = [];
+  const resetTried = new Set();
   let attempts = 0;
   for (;;) {
+    if (isCancelled()) throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
     attempts += 1;
     accountsTried.push(account.id);
     const response = await send(applyIdentity(headers, account));
@@ -392,6 +423,24 @@ export async function sendWithAccountFailover({ pool, headers, send, applyIdenti
     const raw = await drain(response);
     const text = decode(raw, response.headers);
     log(`上游 HTTP ${status} 账号=${account.id} ${text.slice(0, 200)}`);
+    // Only the explicit Codex quota error is redeemable, never generic rate
+    // limiting. The handler additionally confirms fresh window exhaustion.
+    let quotaExhausted = false;
+    try { const error = JSON.parse(text)?.error; quotaExhausted = error?.type === "usage_limit_reached" || error?.code === "usage_limit_reached"; }
+    catch { /* A non-JSON 429 is not a quota signal; logged below. */ }
+    if (status === 429 && onQuotaExhausted && !quotaExhausted) log(`自动额度卡 ${account.id}：skipped reason=non-quota-429`);
+    // At most one redemption check and one same-identity replay per account.
+    if (status === 429 && quotaExhausted && onQuotaExhausted && !resetTried.has(account.id) && !isCancelled()) {
+      resetTried.add(account.id);
+      let restored = false;
+      try { restored = await onQuotaExhausted(account, applyIdentity(headers, account)); }
+      catch { log(`自动额度卡 ${account.id}：failed reason=reset-handler-error; keeping original failover`); }
+      if (restored) {
+        log(`账号 ${account.id} 额度已恢复，原身份重发本条请求`);
+        continue;
+      }
+    }
+    if (isCancelled()) throw Object.assign(new Error("request cancelled"), { name: "AbortError" });
     const action = await pool.onUpstreamFailure(account, status, text, response.headers);
     if (action === "retry") {
       // 401 刷新成功：重挑一次（可能换 active）；挑不出可用的就沿用当前账号重发。

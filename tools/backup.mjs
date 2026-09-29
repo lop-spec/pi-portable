@@ -10,7 +10,7 @@ import path from "node:path";
 const args = process.argv.slice(2);
 const labelAt = args.indexOf("--label");
 const label = labelAt >= 0 ? String(args[labelAt + 1] || "").replace(/[^\w.-]+/g, "-") : "";
-const files = args.filter((a, i) => a !== "--label" && (labelAt < 0 || i !== labelAt + 1));
+const files = args.filter((a, i) => a !== "--label" && (labelAt < 0 || i !== labelAt + 1)); // labelAt=-1 时 i!==0 会丢掉第一个文件
 if (!files.length) { console.error("用法：node backup.mjs <文件...> [--label <标签>]"); process.exit(2); }
 
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);

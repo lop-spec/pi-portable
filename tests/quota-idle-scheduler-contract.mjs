@@ -26,7 +26,9 @@ function fakeApi({ failMode = false, timeoutPrompt = false, failCreate = false, 
 }
 
 test('stock host is exclusively the peer; local/unknown hosts never opt in', () => {
-  assert.equal(stockBacktestsAllowed('DESKTOP-3EGB4LB'), true);
+  assert.equal(stockBacktestsAllowed('LOP-HOME'), true);
+  assert.equal(stockBacktestsAllowed('lop-home'), true);
+  assert.equal(stockBacktestsAllowed('DESKTOP-3EGB4LB'), false);
   assert.equal(stockBacktestsAllowed('YANGYONG'), false);
   assert.equal(stockBacktestsAllowed('other'), false);
 });
