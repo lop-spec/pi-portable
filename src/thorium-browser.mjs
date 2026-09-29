@@ -26,15 +26,16 @@ export function resolveThoriumExecutable({ env = process.env, exists = fs.exists
 }
 
 // Unpacked extensions installed persistently (Secure Preferences location 4), keyed by lower-cased path.
-// Unreadable/missing prefs → empty set, so callers fall back to --load-extension.
-export function persistentExtensionPaths({ userHome = os.userInfo().homedir, readFile = fs.readFileSync } = {}) {
+// Unreadable prefs → unknown, so never risk converting a persistent extension to command-line-only.
+export function persistentExtensionPaths({ userHome = os.userInfo().homedir, readFile = fs.readFileSync, log = console.warn } = {}) {
   try {
     const prefs = JSON.parse(readFile(path.join(dailyThoriumProfile({ userHome }), "Default", "Secure Preferences"), "utf8"));
     return new Set(Object.values(prefs.extensions?.settings || {})
       .filter((entry) => entry?.location === 4 && typeof entry.path === "string")
       .map((entry) => path.resolve(entry.path).toLowerCase()));
-  } catch {
-    return new Set();
+  } catch (error) {
+    log(`[thorium] persistent extension detection failed; omitting --load-extension: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
   }
 }
 
@@ -48,7 +49,7 @@ export function dailyThoriumArgs({ exists = fs.existsSync, userHome = os.userInf
   const extensions = ["auto-close-old-tabs", "authenticator"]
     .map((name) => path.join(root, "Extensions", name))
     .filter((directory) => exists(path.join(directory, "manifest.json")))
-    .filter((directory) => !persistent.has(path.resolve(directory).toLowerCase()));
+    .filter((directory) => persistent && !persistent.has(path.resolve(directory).toLowerCase()));
   return [
     // Suppress chrome.debugger infobars for this trusted daily browser profile.
     // Browser automation uses the extension bridge, never a native debug port.

@@ -664,9 +664,9 @@ async function openWindow() {
     const win = spawn(cmd[0], args, { stdio: "ignore", windowsHide: false, detached: true });
     win.on("error", (error) => log(`Thorium 开窗失败:${error.message}`));
     win.unref();
-    const loadFlag = args.find((arg) => arg.startsWith("--load-extension="));
-    // Only matters on a cold start; if Thorium is already running the flags are ignored.
-    log(`Thorium 日常资料开窗请求已发送;CDP 仅本机 :9222;扩展:${loadFlag ? `命令行加载(未持久安装) ${loadFlag.slice(17)}` : "持久安装,不带 --load-extension"};浏览器不归 Pi 退出清理`);
+    const loadFlag = args.some((arg) => arg.startsWith("--load-extension="));
+    // Cold-start flags are ignored if Thorium is already running. No native CDP port is used.
+    log(`Thorium 日常资料开窗请求已发送;扩展:${loadFlag ? "加载未持久安装扩展" : "不传 --load-extension"};浏览器不归 Pi 退出清理`);
     return;
   }
   // --user-data-dir 独立配置 → 独立应用身份,任务栏图标取 pi-web 自带 favicon/manifest 图标
