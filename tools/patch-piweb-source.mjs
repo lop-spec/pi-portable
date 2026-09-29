@@ -12,6 +12,7 @@ import { conversationMessageText, toConversationNodeLine, conversationUserQuesti
 import { applyServiceTierRpc } from './patch-piweb-service-tier.mjs';
 import { integrateProjects } from './patch-piweb-projects.mjs';
 import { integrateContextActions } from './patch-piweb-context.mjs';
+import { integrateModelMenu } from './patch-piweb-model-menu.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -419,6 +420,7 @@ function rememberSessionView(value: SessionData): void {
   // Search reads the original JSONL through its own endpoint.
   change('app/api/sessions/route.ts', '        sessions,\n        portableProjects:', '        sessions: sessions.map(s => ({ ...s, firstMessage: s.firstMessage.slice(0, 320) })),\n        portableProjects:');
   integrateContextActions({ get, set, change, prepend, template });
+  integrateModelMenu({ set, change, prepend, template });
   const pkg = JSON.parse(get('package.json'));
   pkg.piPortable = { upstreamRef: upstream.ref, sourceOverlay: 1 };
   set('package.json', JSON.stringify(pkg, null, 2) + '\n');
