@@ -13,6 +13,7 @@ import { applyServiceTierRpc } from './patch-piweb-service-tier.mjs';
 import { integrateProjects } from './patch-piweb-projects.mjs';
 import { integrateContextActions } from './patch-piweb-context.mjs';
 import { integrateModelMenu } from './patch-piweb-model-menu.mjs';
+import { integrateProcessTimeline } from './patch-piweb-process-timeline.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -322,18 +323,7 @@ export function integrate(getFile) {
     setPendingSearchScroll(null);
     onSearchTargetHandled?.(pendingSearchScroll);`);
 
-  change(chat, '                const processViews: ReactNode[] = [];', '                const processViews: ReactNode[] = [];\n                const portableToolViews: ReactNode[] = [];');
-  change(chat, '                  const message = processIdx === finalAssistantIdx', '                  const originalProcessMessage = processIdx === finalAssistantIdx');
-  change(chat, '                  const blocks = getDisplayableAssistantBlocks(message);', `                  const hasTools = originalProcessMessage.content.some(block => block.type === 'toolCall');
-                  if (hasTools) portableToolViews.push(renderMessage(processIdx, {
-                    attachRef: false, keyPrefix: 'portable-tools', showTimestamp: false,
-                    messageOverride: withAssistantBlocks(originalProcessMessage, originalProcessMessage.content.map(block => block.type === 'toolCall' ? block : { type: 'text', text: '' })),
-                  }));
-                  // Preserve indices for deferred thinking, but do not render tool
-                  // cards twice when the native process group is expanded.
-                  const message = hasTools ? withAssistantBlocks(originalProcessMessage, originalProcessMessage.content.map(block => block.type === 'toolCall' ? { type: 'text', text: '' } : block)) : originalProcessMessage;
-                  const blocks = getDisplayableAssistantBlocks(message);`);
-  change(chat, '                if (processViews.length > 0) {', '                rendered.push(...portableToolViews);\n                if (processViews.length > 0) {');
+  // Process rendering (reasoning visible, tool runs folded) lives in patch-piweb-process-timeline.mjs.
 
   const context = 'app/api/sessions/[id]/context/route.ts';
   prepend(context, 'import { collectConversationNodeRecords } from "@/lib/pi-portable-runtime.js";\n');
@@ -351,6 +341,7 @@ export function integrate(getFile) {
   change('app/api/sessions/route.ts', '        sessions,\n        portableProjects:', '        sessions: sessions.map(s => ({ ...s, firstMessage: s.firstMessage.slice(0, 320) })),\n        portableProjects:', 2);
   integrateContextActions({ get, set, change, prepend, template });
   integrateModelMenu({ set, change, prepend, template });
+  integrateProcessTimeline({ get, set, change, prepend, template });
   const pkg = JSON.parse(get('package.json'));
   pkg.piPortable = { upstreamRef: upstream.ref, sourceOverlay: 1 };
   set('package.json', JSON.stringify(pkg, null, 2) + '\n');

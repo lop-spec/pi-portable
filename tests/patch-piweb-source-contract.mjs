@@ -46,7 +46,10 @@ test('unknown upstream anchors abort the entire plan before any file writes', ()
 
 test('native draft preservation, lazy pagination and virtualization are not replaced', () => {
   assert.equal(integrated.has('lib/draft-store.ts'), false);
-  assert.equal(integrated.has('lib/session-reader.ts'), false);
+  // Only the inline-thinking threshold of the native reader changes (process timeline).
+  const reader = read('lib/session-reader.ts').replaceAll('\r\n', '\n');
+  assert.equal(integrated.get('lib/session-reader.ts'), reader.replace('          block.type === "thinking" && block.thinking.trim() !== ""', '          block.type === "thinking" && block.thinking.trim().length > 2000'));
+  assert.notEqual(integrated.get('lib/session-reader.ts'), reader);
   assert.equal(integrated.has('lib/highlight.ts'), false);
   assert.match(integrated.get('components/SessionSidebar.tsx'), /getSessionListIndices\(/);
   assert.match(integrated.get('components/ChatWindow.tsx'), /tail: 200, signal: controller.signal/);
@@ -215,9 +218,29 @@ test('new draft model choices persist before sending; follow-up busy state retai
   assert.doesNotMatch(integrated.get('components/PortableNodes.tsx'), /onMouseEnter/);
 });
 
-test('history process groups keep tool cards visible exactly once', () => {
+test('turn process renders as a timeline: reasoning visible, tool runs folded once', () => {
   const chat = integrated.get('components/ChatWindow.tsx');
-  assert.match(chat, /rendered.push\(\.\.\.portableToolViews\)/);
-  assert.match(chat, /block.type === 'toolCall' \? \{ type: 'text', text: '' \} : block/);
-  assert.match(chat, /ProcessDetailsGroup/);
+  assert.doesNotMatch(chat, /portableToolViews/);
+  assert.doesNotMatch(chat, /<ProcessDetailsGroup /);
+  assert.match(chat, /import \{ PortableProcessTimeline, type PortableTimelineEntry \} from "\.\/PortableProcessTimeline";/);
+  // Finished turns, the live tail and a lazy-load window starting mid-turn share the timeline.
+  assert.match(chat, /portableProcessTimeline\(userIdx, userIdx \+ 1, finalAssistantIdx, \{ finalIdx: finalAssistantIdx, finalBlocks: finalProcessBlocks/);
+  assert.match(chat, /portableProcessTimeline\(userIdx, userIdx \+ 1, endIdx - 1, \{ live: true \}\)/);
+  assert.match(chat, /findFinalAssistantIndex\(messages, idx - 1, segmentEnd\)/);
+  assert.doesNotMatch(chat, /if \(!isMessageGroupAnchor\(msg\)\) \{\n\s+rendered\.push\(renderMessage\(idx\)\);/);
+  // Failed intermediate replies keep the native error view; tool results are not rendered twice.
+  assert.match(chat, /const broken = i !== options\.finalIdx && Boolean\(getAssistantErrorMessage\(message\) \|\| isAssistantTruncated\(message\)\)/);
+  assert.match(chat, /if \(item\.role === "toolResult"\) continue;/);
+  const timeline = integrated.get('components/PortableProcessTimeline.tsx');
+  assert.ok(timeline.startsWith('"use client";'));
+  assert.match(timeline, /if \(last\?\.type === "tools"\) last\.calls\.push\(call\)/);
+  assert.match(timeline, /const \[open, setOpen\] = useState\(false\)/);
+  assert.match(timeline, /const expanded = open \|\| Boolean\(target\)/);
+  assert.match(timeline, /\{failed\} 条失败/);
+  for (const label of ['运行 ${count.bash} 条命令', '读取 ${count.read.size} 个文件', '搜索 ${count.search} 次', '修改 ${count.change.size} 个文件']) assert.ok(timeline.includes(label), label);
+  const view = integrated.get('components/MessageView.tsx');
+  assert.match(view, /export \{ ToolCallBlock as PortableToolCallBlock, TextBlock as PortableTextBlock, loadThinkingContent as portableLoadThinkingContent, getToolPreview as portableToolPreview \};/);
+  assert.match(view, /useState\(\(\) => Boolean\(streaming\) \|\| isThinkingExpandedByDefault\(\)\)/);
+  assert.match(integrated.get('lib/session-reader.ts'), /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
+  assert.match(integrated.get('app/globals.css'), /\.pw-tool-fold\{/);
 });
