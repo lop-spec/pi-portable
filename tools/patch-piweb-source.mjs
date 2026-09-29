@@ -35,7 +35,7 @@ export function integrate(getFile) {
   };
   const input = 'components/ChatInput.tsx', hook = 'hooks/useAgentSession.ts', chat = 'components/ChatWindow.tsx', sidebar = 'components/SessionSidebar.tsx';
   change('bin/pi-web.js', 'const child = spawn(process.execPath, [nextBin, ...nextArgs], {', 'const child = spawn(process.execPath, [nextBin, ...nextArgs], {\n  windowsHide: true,');
-  const runtime = [getClipboardPastePlan, normalizeClipboardImages, formatAtMentions, uploadClipboardFiles, filterSessionsForWorktree, conversationMessageText, toConversationNodeLine, conversationUserQuestion, collectConversationNodeRecords].map(fn => `export ${fn.toString()}`).join('\n\n');
+  const runtime = normalize([getClipboardPastePlan, normalizeClipboardImages, formatAtMentions, uploadClipboardFiles, filterSessionsForWorktree, conversationMessageText, toConversationNodeLine, conversationUserQuestion, collectConversationNodeRecords].map(fn => `export ${fn.toString()}`).join('\n\n'));
   set('lib/pi-portable-runtime.js', `${runtime}\n\nexport function readPreference(key, fallback = null) {\n  if (typeof window === 'undefined') return fallback;\n  try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); }\n  catch (error) { console.error('[pi-web] preference read failed:', key, error); return fallback; }\n}\nexport function rememberPreference(key, value) {\n  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch (error) { console.error('[pi-web] preference write failed:', key, error); }\n}\n`);
   set('components/PortableControls.tsx', template('PortableControls.tsx'));
   set('lib/portable-image-urls.ts', template('portable-image-urls.ts'));
@@ -64,8 +64,45 @@ export function integrate(getFile) {
   change(sidebar, '<PiWebTitle />', '<PiWebTitle />\n          <span data-pi-archive-slot="true" style={{ width: 48, height: 32, flexShrink: 0 }} />');
   // The portal uses a reserved native slot, not a guessed gap or React siblings.
   change(sidebar, '      onClick={confirmDelete || renaming ? undefined : onClick}', '      data-pi-session-id={session.id}\n      onClick={confirmDelete || renaming ? undefined : onClick}');
-
+  change(sidebar, '  const restoredRef = useRef(false);', `  const restoredRef = useRef(false);
+  const restoredSnapshotIdRef = useRef<string | null>(null);
+  // Restore only the selected row metadata immediately; refresh from disk in parallel.
+  useEffect(() => {
+    if (!initialSessionId || skipInitialProjectSelection || restoredRef.current) return;
+    try {
+      const stored = localStorage.getItem('pi-web:last-selected-info');
+      const info = stored ? JSON.parse(stored) as SessionInfo : null;
+      if (!info || info.id !== initialSessionId) return;
+      if (typeof info.cwd !== 'string' || typeof info.path !== 'string' || typeof info.firstMessage !== 'string' || typeof info.created !== 'string' || typeof info.modified !== 'string' || typeof info.messageCount !== 'number') {
+        console.error('[pi-web] initial session preview invalid; waiting for catalogue');
+        return;
+      }
+      restoredRef.current = true;
+      restoredSnapshotIdRef.current = info.id;
+      setSelectedCwd(info.cwd);
+      onSelectSession(info, true);
+    } catch (error) { console.error('[pi-web] initial session preview unavailable:', error); }
+  }, [initialSessionId, skipInitialProjectSelection, onSelectSession]);
+  useEffect(() => {
+    const id = restoredSnapshotIdRef.current;
+    if (loading || error || !id) return;
+    restoredSnapshotIdRef.current = null;
+    const current = allSessions.find(s => s.id === id);
+    if (!current && selectedSessionId === id) {
+      try { localStorage.removeItem('pi-web:last-selected-info'); } catch (cause) { console.error('[pi-web] preview cleanup failed:', cause); }
+      onSessionDeleted?.(id);
+    }
+  }, [allSessions, loading, error, selectedSessionId, onSessionDeleted]);`);
+  change(sidebar, `        {loading && (
+          <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
+            {t("sidebar.loading")}
+          </div>
+        )}
+`, '');
   const shell = 'components/AppShell.tsx';
+  change(shell, '    setLastOpenSession(projectKey, selectedSession.id);', `    setLastOpenSession(projectKey, selectedSession.id);
+    try { localStorage.setItem('pi-web:last-selected-info', JSON.stringify({ ...selectedSession, firstMessage: selectedSession.firstMessage.slice(0, 320) })); }
+    catch (error) { console.error('[pi-web] initial session preview save failed:', error); }`);
   change(shell, `    if (
       currentProject === newProject
       && (selectedSession !== null || currentFreshCwd === cwd)
@@ -93,10 +130,84 @@ export function integrate(getFile) {
   change(models, 'return Response.json(await loadModelsWithCache(cwd, () => loadModels(cwd)));', 'return Response.json(await (new URL(req.url).searchParams.get("refresh") === "1" ? loadModels(cwd, true) : loadModelsWithCache(cwd, () => loadModels(cwd))));');
   change(models, '  } catch {\n    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));', '  } catch (error) {\n    console.error("[pi-web] model listing failed:", error);\n    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));');
 
-  prepend(hook, 'import { readPreference, rememberPreference } from "@/lib/pi-portable-runtime.js";\n');
+  prepend(hook, `import { readPreference, rememberPreference } from "@/lib/pi-portable-runtime.js";
+// Browser-only, bounded preview cache. Disk and the live AgentSession remain authoritative.
+const sessionViewCache = new Map<string, SessionData>();
+function cachedSessionView(id: string): SessionData | null {
+  if (typeof window === "undefined") return null;
+  const value = sessionViewCache.get(id) ?? null;
+  if (value) { sessionViewCache.delete(id); sessionViewCache.set(id, value); }
+  return value;
+}
+function rememberSessionView(value: SessionData): void {
+  if (typeof window === "undefined") return;
+  sessionViewCache.delete(value.sessionId);
+  sessionViewCache.set(value.sessionId, value);
+  while (sessionViewCache.size > 4) sessionViewCache.delete(sessionViewCache.keys().next().value!);
+}
+`);
+  change(hook, `  const [data, setData] = useState<SessionData | null>(null);
+  const [loading, setLoading] = useState(!isNew);
+  const [error, setError] = useState<string | null>(null);
+  const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [entryIds, setEntryIds] = useState<string[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [hasEarlierMessages, setHasEarlierMessages] = useState(false);`, `  const initialView = useRef(session ? cachedSessionView(session.id) : null).current;
+  const [data, setData] = useState<SessionData | null>(initialView);
+  const [loading, setLoading] = useState(!isNew && !initialView);
+  const [error, setError] = useState<string | null>(null);
+  const [activeLeafId, setActiveLeafId] = useState<string | null>(initialView?.leafId ?? null);
+  const [messages, setMessages] = useState<AgentMessage[]>(initialView?.context.messages ?? []);
+  const [entryIds, setEntryIds] = useState<string[]>(initialView?.context.entryIds ?? []);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(initialView?.context.oldestEntryId ?? null);
+  const [hasEarlierMessages, setHasEarlierMessages] = useState(initialView?.context.hasMore ?? false);`);
+  change(hook, `      if (res.status === 404) {
+        if (showLoading) {
+          setData(null);
+          setActiveLeafId(null);
+          setMessages([]);
+          setEntryIds([]);
+          setHistoryCursor(null);
+          setHasEarlierMessages(false);
+          setError(null);
+        }
+        return null;
+      }`, `      if (res.status === 404) {
+        sessionViewCache.delete(sid);
+        if (sessionIdRef.current !== sid) return null;
+        setData(null);
+        setActiveLeafId(null);
+        setMessages([]);
+        setEntryIds([]);
+        setHistoryCursor(null);
+        setHasEarlierMessages(false);
+        setError("Session not found");
+        return null;
+      }`);
+  change(hook, '      const d = await res.json() as SessionData;', '      const responseText = await res.text();\n      const d = JSON.parse(responseText) as SessionData;');
+  change(hook, '      const persistedMessages = d.context.messages;\n      setData(d);', `      const persistedMessages = d.context.messages;
+      if (responseText.length <= 2_000_000) rememberSessionView(d);
+      else console.warn('[pi-web] history preview exceeds cache limit:', sid, responseText.length);
+      setData(d);`);
+  change(hook, '      loadSession(session.id, true, true).then((agentState) => {', '      loadSession(session.id, !initialView, true).then((agentState) => {');
+  change(input, '  isStreaming: boolean;', '  isStreaming: boolean;\n  loadingHistory?: boolean;');
+  change(input, 'onSteer, onFollowUp, isStreaming, model,', 'onSteer, onFollowUp, isStreaming, loadingHistory = false, model,');
+  change(input, '[value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]', '[value, attachedImages, isStreaming, loadingHistory, runBuiltinCommand, onSend, clearInput, onAudioUnlock]');
+  change(chat, '      isStreaming={sessionBusy}', '      isStreaming={sessionBusy}\n      loadingHistory={loading}');
+  change(chat, `  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-text-muted">
+         {t("chat.loadingSession")}
+      </div>
+    );
+  }
+
+`, '  // Keep the composer and layout mounted while the cold history loads.\n  // Sending stays disabled until the authoritative response arrives.\n\n');
   change(hook, 'useState<SelectedModel | null>(null);\n  const [toolPreset', 'useState<SelectedModel | null>(() => readPreference("pi-last-model"));\n  const [toolPreset');
-  change(hook, 'useState<ToolPreset>("default")', 'useState<ToolPreset>("full")');
+  change(hook, 'useState<ToolPreset>("default")', 'useState<ToolPreset>(() => initialView?.toolNames !== undefined ? getPresetFromToolNames(initialView.toolNames) : "full")');
   change(hook, 'useState<ThinkingLevelOption>("auto")', `useState<ThinkingLevelOption>(() => {
+    if (initialView?.context.thinkingLevel) return initialView.context.thinkingLevel as ThinkingLevelOption;
     if (typeof window === 'undefined') return 'medium';
     try { const value = localStorage.getItem('pi-last-thinking-level'); return ['off','minimal','low','medium','high','xhigh','max'].includes(value ?? '') ? value as ThinkingLevelOption : 'medium'; }
     catch (error) { console.error('[pi-web] last thinking preference read failed:', error); return 'medium'; }
@@ -175,7 +286,8 @@ export function integrate(getFile) {
   useEffect(() => { setPasteStatus({ busy: (pendingPastes.current.get(pasteTarget) ?? 0) > 0, error: "" }); }, [pasteTarget]);
   const [toolDropdownOpen, setToolDropdownOpen]`);
   change(input, '    const msg = value.trim();', '    if ((pendingPastes.current.get(pasteTargetRef.current) ?? 0) > 0) return;\n    const msg = value.trim();', 2);
-  change(input, 'disabled={!value.trim() && !attachedImages.length}', 'disabled={pasteStatus.busy || (!value.trim() && !attachedImages.length)}');
+  change(input, '  const handleSend = useCallback(async () => {\n    if ((pendingPastes.current.get(pasteTargetRef.current) ?? 0) > 0) return;', '  const handleSend = useCallback(async () => {\n    if (loadingHistory || (pendingPastes.current.get(pasteTargetRef.current) ?? 0) > 0) return;');
+  change(input, 'disabled={!value.trim() && !attachedImages.length}', 'disabled={loadingHistory || pasteStatus.busy || (!value.trim() && !attachedImages.length)}');
   change(input, 'const canQueueStreamingMessage = hasInputText || attachedImages.length > 0;', 'const canQueueStreamingMessage = !pasteStatus.busy && (hasInputText || attachedImages.length > 0);');
   change(input, 'const THINKING_LEVELS = ["auto",', 'const THINKING_LEVELS = [');
   change(input, '  auto: "chat.thinkingUseDefault", off:', '  off:');
@@ -303,6 +415,9 @@ export function integrate(getFile) {
     // \`before\` is the oldest entry already on the client;`);
   change(context, '  } catch (error) {\n    return NextResponse.json', '  } catch (error) {\n    console.error("[pi-web] conversation context failed:", error);\n    return NextResponse.json');
   integrateProjects({ set, change, prepend, template });
+  // The catalogue is navigation metadata, not a transport for entire prompts.
+  // Search reads the original JSONL through its own endpoint.
+  change('app/api/sessions/route.ts', '        sessions,\n        portableProjects:', '        sessions: sessions.map(s => ({ ...s, firstMessage: s.firstMessage.slice(0, 320) })),\n        portableProjects:');
   integrateContextActions({ get, set, change, prepend, template });
   const pkg = JSON.parse(get('package.json'));
   pkg.piPortable = { upstreamRef: upstream.ref, sourceOverlay: 1 };

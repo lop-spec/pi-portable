@@ -175,8 +175,46 @@ test('clipboard uploads cannot escape their draft or submit before all files set
   assert.match(input, /new Map<string, number>\(\)/);
   assert.match(input, /!pasteMountedRef.current \|\| target !== pasteTargetRef.current/);
   assert.match(input, /files saved in original project, not inserted into another draft/);
-  assert.equal(input.split('if ((pendingPastes.current.get(pasteTargetRef.current) ?? 0) > 0) return;').length - 1, 2);
+  assert.match(input, /if \(loadingHistory \|\| \(pendingPastes\.current\.get\(pasteTargetRef\.current\) \?\? 0\) > 0\) return;/);
+  assert.match(input, /if \(\(pendingPastes\.current\.get\(pasteTargetRef\.current\) \?\? 0\) > 0\) return;/);
   assert.match(input, /busy: pending > 0/);
+});
+
+test('session list transports previews only; hot history reuses a bounded browser view and cold load keeps the composer', () => {
+  const list = integrated.get('app/api/sessions/route.ts');
+  assert.match(list, /firstMessage: s\.firstMessage\.slice\(0, 320\)/);
+  const hook = integrated.get('hooks/useAgentSession.ts');
+  assert.match(hook, /typeof window === "undefined"/);
+  assert.match(hook, /while \(sessionViewCache\.size > 4\)/);
+  assert.match(hook, /const initialView = useRef\(session \? cachedSessionView\(session\.id\) : null\)\.current/);
+  assert.match(hook, /loadSession\(session\.id, !initialView, true\)/);
+  assert.match(hook, /responseText\.length <= 2_000_000\) rememberSessionView\(d\)/);
+  assert.match(hook, /sessionViewCache\.delete\(sid\);[\s\S]*?setError\("Session not found"\)/);
+  assert.match(integrated.get('components/ChatWindow.tsx'), /loadingHistory=\{loading\}/);
+  assert.doesNotMatch(integrated.get('components/ChatWindow.tsx'), /t\("chat\.loadingSession"\)/);
+  assert.match(integrated.get('components/ChatInput.tsx'), /disabled=\{loadingHistory \|\| pasteStatus\.busy/);
+  const sidebar = integrated.get('components/SessionSidebar.tsx');
+  assert.match(sidebar, /info\.id !== initialSessionId/);
+  assert.match(sidebar, /onSessionDeleted\?\.\(id\)/);
+  assert.doesNotMatch(sidebar, /t\("sidebar\.loading"\)/);
+  assert.match(integrated.get('components/AppShell.tsx'), /localStorage\.setItem\('pi-web:last-selected-info'/);
+  const start = hook.indexOf('const sessionViewCache =');
+  const js = hook.slice(start, hook.indexOf('\nimport ', start))
+    .replace('Map<string, SessionData>', 'Map')
+    .replaceAll('id: string', 'id')
+    .replace('): SessionData | null', ')')
+    .replace('value: SessionData', 'value')
+    .replace('): void', ')')
+    .replace('value!', 'value');
+  const browser = vm.runInNewContext(`${js}; ({ cachedSessionView, rememberSessionView })`, { Map, window: {} });
+  for (let i = 0; i < 4; i++) browser.rememberSessionView({ sessionId: String(i) });
+  assert.equal(browser.cachedSessionView('0').sessionId, '0'); // moves to MRU
+  browser.rememberSessionView({ sessionId: '4' });
+  assert.equal(browser.cachedSessionView('1'), null); // LRU evicted
+  assert.equal(browser.cachedSessionView('0').sessionId, '0');
+  const server = vm.runInNewContext(`${js}; ({ cachedSessionView, rememberSessionView })`, { Map });
+  server.rememberSessionView({ sessionId: 'private' });
+  assert.equal(server.cachedSessionView('private'), null);
 });
 
 test('new draft model choices persist before sending; follow-up busy state retains its menu and returns focus', () => {
