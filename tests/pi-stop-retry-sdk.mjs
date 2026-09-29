@@ -90,7 +90,7 @@ try {
       check(events.filter(e => e.type === "auto_retry_start").length === scenario.retries, `${scenario.name}: bounded retries`);
       check(tools === (scenario.tools || 0), `${scenario.name}: exactly-once completed tools`);
       check(events.some(e => e.type === "agent_end"), `${scenario.name}: lifecycle ends`);
-      if (scenario.reload) check(session.agent.state.systemPrompt.includes("offline reloaded prompt"), "native reload takes effect without restarting or dropping the tool result");
+      if (scenario.reload) check(session.systemPrompt.includes("offline reloaded prompt"), "native reload takes effect without restarting or dropping the tool result");
       console.log(`PASS ${scenario.name} calls=${calls} retries=${scenario.retries} tools=${tools}`);
     } finally { session.dispose(); }
   }

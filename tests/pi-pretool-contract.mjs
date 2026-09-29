@@ -91,7 +91,7 @@ try {
     const seen = [];
     const messages = await runAgentLoop([{ role: "user", content: "offline fixture", timestamp: Date.now() }],
       { systemPrompt: "", messages: [], tools: [tool] },
-      { model, convertToLlm: (m) => m, toolExecution: "parallel", shouldStopAfterTurn: () => true,
+      { model, convertToLlm: (m) => m, toolExecution: "parallel", finishTurn: () => ({ action: "end" }),
         beforeToolCall: gate ? async ({ toolCall, args }) => {
           const before = structuredClone(args);
           const result = await gate.emitToolCall({ type: "tool_call", toolName: toolCall.name, toolCallId: toolCall.id, input: args });
