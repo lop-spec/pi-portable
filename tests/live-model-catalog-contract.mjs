@@ -37,7 +37,7 @@ const legacySettings = () => ({
   retry: { enabled: false },
 });
 
-test("native Codex provider retains old sessions and exposes fixed plus future models", () => {
+test("native Codex provider retains old sessions but selects only GPT 6 and later", () => {
   const result = buildLiveModelConfiguration(legacyModels(), legacySettings());
   assert.equal(result.ok, true);
   assert.ok(result.models.providers["codex-bridge"], "legacy provider must remain for historical sessions");
@@ -48,19 +48,17 @@ test("native Codex provider retains old sessions and exposes fixed plus future m
   assert.deepEqual(live.headers, { originator: "pi_web" }, "identity-bearing legacy headers must not be copied");
   assert.deepEqual(result.settings.enabledModels, LIVE_CODEX_MODEL_PATTERNS);
   assert.equal(result.settings.enabledModels.includes(NEWER_CODEX_MODEL_PATTERN), true);
-  assert.deepEqual(
-    ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-10-nova"].filter((id) => {
-      // This mirrors the intended major-version meaning without coupling tests to minimatch internals.
-      const major = Number(/^gpt-(\d+)/u.exec(id)?.[1]);
-      return id === "gpt-5.6-sol" || id === "gpt-5.6-terra" || major >= 6;
-    }),
-    ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-10-nova"],
-  );
+  assert.equal(result.settings.enabledModels.some(pattern => pattern.includes("5.6")), false);
   assert.equal(result.settings.defaultProvider, LIVE_CODEX_PROVIDER);
   assert.equal(result.settings.defaultModel, DEFAULT_CODEX_MODEL);
   assert.equal(result.settings.transport, "sse");
-  assert.equal(result.settings.modelThinkingLevels["openai-codex/gpt-5.6-sol"], "max");
-  assert.equal(result.settings.modelThinkingLevels["openai-codex/gpt-5.6-terra"], "max");
+  const sol = live.models.find(model => model.id === "gpt-6.1-sol");
+  assert.equal(sol.api, "openai-codex-responses");
+  assert.equal(sol.contextWindow, 272000);
+  assert.equal(sol.maxTokens, 128000);
+  assert.equal(sol.thinkingLevelMap.max, "max");
+  assert.equal(result.settings.modelThinkingLevels["codex-bridge/gpt-5.6-sol"], "max");
+  assert.equal(result.settings.modelThinkingLevels["openai-codex/gpt-5.6-sol"], undefined);
 });
 
 test("provider wildcards cannot leak older Codex models into the managed selector", () => {
@@ -84,16 +82,30 @@ test("provider wildcards cannot leak older Codex models into the managed selecto
 
 test("subsequent launcher runs preserve a user-selected global default and transport", () => {
   const first = buildLiveModelConfiguration(legacyModels(), legacySettings());
-  first.settings.defaultModel = "gpt-5.6-terra";
+  first.settings.defaultModel = "gpt-6-sol";
   first.settings.transport = "auto";
   first.settings.unrelated = { keep: true };
   const second = buildLiveModelConfiguration(first.models, first.settings);
   assert.equal(second.ok, true);
   assert.equal(second.settings.defaultProvider, LIVE_CODEX_PROVIDER);
-  assert.equal(second.settings.defaultModel, "gpt-5.6-terra");
+  assert.equal(second.settings.defaultModel, "gpt-6-sol");
   assert.equal(second.settings.transport, "auto", "an explicit later transport choice must not be reset");
   assert.deepEqual(second.settings.unrelated, { keep: true });
   assert.deepEqual(second.settings.enabledModels, LIVE_CODEX_MODEL_PATTERNS);
+});
+
+test("existing 5.6 native default and custom entry are retired on restart", () => {
+  const models = legacyModels();
+  models.providers[LIVE_CODEX_PROVIDER] = { models: [{ id: "gpt-5.6-terra" }, { id: "gpt-6-sol" }] };
+  const settings = legacySettings();
+  settings.defaultProvider = LIVE_CODEX_PROVIDER;
+  settings.defaultModel = "gpt-5.6-terra";
+  settings.modelThinkingLevels["openai-codex/gpt-5.6-terra"] = "max";
+  const result = buildLiveModelConfiguration(models, settings);
+  assert.equal(result.settings.defaultModel, "gpt-6.1-sol");
+  assert.equal(result.settings.modelThinkingLevels["openai-codex/gpt-5.6-terra"], undefined);
+  assert.equal(result.models.providers[LIVE_CODEX_PROVIDER].models.some(model => model.id.startsWith("gpt-5.6")), false);
+  assert.ok(result.models.providers["codex-bridge"].models.some(model => model.id === "gpt-5.6-sol"));
 });
 
 test("file auth removes native subprocess auth but preserves historical provider and headers", () => {

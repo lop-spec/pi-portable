@@ -19,7 +19,7 @@ test('GPT-6 efforts preserve user settings, register missing models, and remain 
   assert.equal(provider.modelOverrides['gpt-6-astra'].contextWindow, 1050000);
   for (const id of GPT6_CODEX_IDS) assert.deepEqual(provider.modelOverrides[id].thinkingLevelMap, GPT6_THINKING_MAP);
   assert.deepEqual(Object.values(GPT6_THINKING_MAP).filter(Boolean), ['low', 'medium', 'high', 'xhigh', 'max']);
-  assert.deepEqual(provider.models.map(model => model.id), ['gpt-6-sol', 'gpt-6-luna']);
+  assert.deepEqual(provider.models.map(model => model.id), ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol']);
   assert.deepEqual(buildLiveModelConfiguration(result.models, result.settings, { fileAuth: true }), result);
   const custom = models();
   custom.providers['openai-codex'].models = [{ id: 'gpt-6-sol', name: 'Keep name', contextWindow: 500000 }];

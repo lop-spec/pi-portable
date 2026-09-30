@@ -11,19 +11,15 @@ import path from "node:path";
 
 export const LEGACY_CODEX_PROVIDER = "codex-bridge";
 export const LIVE_CODEX_PROVIDER = "openai-codex";
-export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
-export const FIXED_CODEX_MODELS = Object.freeze(["gpt-5.6-sol", "gpt-5.6-terra"]);
+export const DEFAULT_CODEX_MODEL = "gpt-6.1-sol";
 // Match GPT major versions >= 6, including future two-digit majors, while not
 // exposing the older 5.x catalogue. Pi resolves enabledModels with minimatch.
 export const NEWER_CODEX_MODEL_PATTERN = "openai-codex/gpt-@([6-9]|[1-9][0-9]*)*";
-export const LIVE_CODEX_MODEL_PATTERNS = Object.freeze([
-  ...FIXED_CODEX_MODELS.map((id) => `${LIVE_CODEX_PROVIDER}/${id}`),
-  NEWER_CODEX_MODEL_PATTERN,
-]);
+export const LIVE_CODEX_MODEL_PATTERNS = Object.freeze([NEWER_CODEX_MODEL_PATTERN]);
 export const MANAGED_PROVIDER_NAME = "Codex live catalogue via 8794";
 // The bundled catalogue predates Sol/Luna. Ultra is an orchestration mode,
 // not a thinking effort that the single-agent Responses adapter can send.
-export const GPT6_CODEX_IDS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]);
+export const GPT6_CODEX_IDS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
 export const GPT6_THINKING_MAP = Object.freeze({
   off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
 });
@@ -107,8 +103,10 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput, { fileAu
   }
   // Register absent models through the native custom-model interface, keeping
   // user metadata. Zero cost means subscription usage is unpriced here.
-  native.models = Array.isArray(native.models) ? native.models : [];
-  for (const [id, name] of [["gpt-6-sol", "GPT-6 Sol"], ["gpt-6-luna", "GPT-6 Luna"]]) {
+  native.models = Array.isArray(native.models)
+    ? native.models.filter(model => !/^gpt-5\.6(?:-|$)/u.test(model?.id ?? ""))
+    : [];
+  for (const [id, name] of [["gpt-6-sol", "GPT-6 Sol"], ["gpt-6-luna", "GPT-6 Luna"], ["gpt-6.1-sol", "GPT-6.1 Sol"]]) {
     const existingModel = native.models.find(model => model.id === id);
     if (existingModel) existingModel.thinkingLevelMap = { ...GPT6_THINKING_MAP };
     else native.models.push({
@@ -133,16 +131,15 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput, { fileAu
       ? settings.defaultModel.trim()
       : DEFAULT_CODEX_MODEL;
     settings.defaultProvider = LIVE_CODEX_PROVIDER;
-    settings.defaultModel = inherited;
-  } else if (settings.defaultProvider === LIVE_CODEX_PROVIDER && !settings.defaultModel) {
+    settings.defaultModel = /^gpt-5\.6(?:-|$)/u.test(inherited) ? DEFAULT_CODEX_MODEL : inherited;
+  } else if (settings.defaultProvider === LIVE_CODEX_PROVIDER
+      && (!settings.defaultModel || /^gpt-5\.6(?:-|$)/u.test(settings.defaultModel))) {
     settings.defaultModel = DEFAULT_CODEX_MODEL;
   }
 
   const thinking = isRecord(settings.modelThinkingLevels) ? settings.modelThinkingLevels : {};
-  const legacySolLevel = thinking[`${LEGACY_CODEX_PROVIDER}/${DEFAULT_CODEX_MODEL}`];
-  for (const id of FIXED_CODEX_MODELS) {
-    const key = `${LIVE_CODEX_PROVIDER}/${id}`;
-    if (!thinking[key]) thinking[key] = legacySolLevel || "max";
+  for (const key of Object.keys(thinking)) {
+    if (/^openai-codex\/gpt-5\.6(?:-|$)/u.test(key)) delete thinking[key];
   }
   for (const id of GPT6_CODEX_IDS) {
     const key = `${LIVE_CODEX_PROVIDER}/${id}`;

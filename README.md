@@ -48,10 +48,10 @@ Windows 上的便携 pi-web 运行面：原生 Pi AgentSession、ChatGPT Codex R
 
 ### 模型、账号与过载
 
-- 模型按钮读取 Pi 官方动态目录：固定展示 `gpt-5.6-sol`、`gpt-5.6-terra`，并自动纳入 GPT 6 及后续大版本；打开按钮会强制刷新，不靠手工改 `models.json`。
-- 初次迁移的全局默认是 `gpt-5.6-sol`；按钮切换通过 Pi 原生 `setModel(..., { persist: true })` 写入全局默认，新会话继承，已有会话继续以自身 `model_change` 为准。
+- 模型按钮读取 Pi 动态目录：只展示 GPT 6 及后续大版本；已补入 `gpt-6.1-sol`，不再展示 GPT-5.6；打开按钮会强制刷新。
+- 初次迁移或旧 5.6 默认迁移到 `gpt-6.1-sol`；已有 GPT 6 默认及会话选择保持不变。按钮切换通过 Pi 原生 `setModel(..., { persist: true })` 写入全局默认。
 - 账号池保留自动 sticky、401/429 冷却和切换，也允许用户从额度面板即时切号。
-- `gpt-5.6-sol` 只在首个有效输出前因明确 overload/5xx 按 `terra → luna → reserve` 有界 fallback；显式选择 Terra 或新模型不会被静默改回 Sol。
+- 历史 `gpt-5.6-sol` 会话仍保留旧 provider 的恢复能力；仅该旧模型遇到首个有效输出前的明确 overload/5xx 时按 `terra → luna → reserve` 有界 fallback，新模型不会被静默切到旧版。
 - reasoning、文本或工具调用一旦开始输出，本次响应即 committed，之后不重放。
 - bridge 是该 provider 的重试责任层；Pi agent-level retry 在运行配置中关闭，避免跨层乘法重试。
 - 响应头和 metrics 记录 requested/upstream model、实际账号、出口和尝试数，不记录 token 或 prompt 正文。
