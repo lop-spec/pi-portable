@@ -25,7 +25,11 @@ export function defaultIndexPath() {
   if (process.env.PI_COMPACT_INDEX_FILE) return path.resolve(process.env.PI_COMPACT_INDEX_FILE);
   // Portable Pi rewrites HOME / USERPROFILE. The global rule is the single source of truth.
   const agentDir = process.env.PI_CODING_AGENT_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const rules = fs.readFileSync(path.join(agentDir, "AGENTS.md"), "utf8");
+  // The agent dir's CLAUDE.md links to the single global rule file; AGENTS.md is the legacy name
+  // (2026-09-30: reading only AGENTS.md made this extension fail to load after the rename).
+  const rulesFile = ["CLAUDE.md", "AGENTS.md"].map(name => path.join(agentDir, name)).find(file => fs.existsSync(file));
+  if (!rulesFile) throw new Error("global-rules-missing: " + path.join(agentDir, "CLAUDE.md"));
+  const rules = fs.readFileSync(rulesFile, "utf8");
   const match = rules.match(/`([^`\r\n]+[\\/]pi-compact\.md)`/);
   if (match && path.isAbsolute(match[1])) return path.resolve(match[1]);
   // The 2026-09-21 rule rewrite names only pi-memory.md absolutely and the index as

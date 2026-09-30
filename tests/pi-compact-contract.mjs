@@ -42,6 +42,16 @@ await check("index-path-from-rules-not-portable-home", () => {
     assert.equal(defaultIndexPath(), path.join(temp, "archive/pi-compact.md"));
     fs.writeFileSync(path.join(agent, "AGENTS.md"), `读一次 \`${memory}\` 与 \`pi-compact.md\`。`);
     assert.throws(() => defaultIndexPath(), /absolute-pi-compact-path-missing-in-global-rules/, "without 同目录 the relative name stays unresolved");
+    // The agent dir now carries CLAUDE.md (a link to the global rule file) instead of AGENTS.md.
+    const claudeOnly = path.join(temp, "agent-claude"); fs.mkdirSync(claudeOnly);
+    fs.writeFileSync(path.join(claudeOnly, "CLAUDE.md"), `新会话读一次 \`${memory}\`；独立新任务读一次同目录 \`pi-compact.md\`。`);
+    process.env.PI_CODING_AGENT_DIR = claudeOnly;
+    assert.equal(defaultIndexPath(), path.join(temp, "archive/pi-compact.md"));
+    fs.writeFileSync(path.join(claudeOnly, "AGENTS.md"), `默认读取一次 \`${target}\`。`);
+    assert.equal(defaultIndexPath(), path.join(temp, "archive/pi-compact.md"), "CLAUDE.md wins over a stale AGENTS.md");
+    const none = path.join(temp, "agent-none"); fs.mkdirSync(none);
+    process.env.PI_CODING_AGENT_DIR = none;
+    assert.throws(() => defaultIndexPath(), /global-rules-missing/);
   } finally { for (const n of names) { if (saved[n] === undefined) delete process.env[n]; else process.env[n] = saved[n]; } }
 });
 await check("unlimited-exact-goal", () => {
