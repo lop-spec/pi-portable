@@ -1793,7 +1793,9 @@
     ["native", "默认"],
     ["priority", "Fast"],
   ];
-  const supportedCodexModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]);
+  // Keep in step with GPT6_CODEX_IDS (live-model-catalog.mjs): 2026-09-30 GPT-6.1 Sol was added to the
+  // picker without this list, so its Fast switch stayed greyed out and it ran on the default tier.
+  const supportedCodexModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
   let selected = "native", explicitSelection = false, button, panel, note, currentModel = null;
   let migrationWarning = "";
   const supportsTier = model => model?.provider === "openai-codex" && supportedCodexModels.has(model.id);

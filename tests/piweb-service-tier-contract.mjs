@@ -90,3 +90,12 @@ test('quota and tier use the model anchor, preserve native default and reject un
   const launcher = fs.readFileSync(new URL('../src/launcher.mjs', import.meta.url), 'utf8');
   assert.match(launcher, /patch-piweb-service-tier\.mjs/);
 });
+
+test('every GPT-6 model in the picker can switch to Fast', () => {
+  const ui = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
+  const catalog = fs.readFileSync(new URL('../src/live-model-catalog.mjs', import.meta.url), 'utf8');
+  const supported = new Set([...ui.match(/const supportedCodexModels = new Set\(\[([^\]]*)\]\)/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]));
+  const picker = [...catalog.match(/export const GPT6_CODEX_IDS = Object\.freeze\(\[([^\]]*)\]\)/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  assert.ok(picker.length >= 4 && picker.includes('gpt-6.1-sol'), 'picker ids must be readable');
+  for (const id of picker) assert.ok(supported.has(id), `${id} is in the model picker but the Fast switch is disabled for it`);
+});
