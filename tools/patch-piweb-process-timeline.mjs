@@ -1,7 +1,8 @@
 // Source integration: Claude-style process timeline (lop 2026-09-29「中文推理过程被吃掉了，
 // 显示的命令太多了，应该折叠到中文推理里面，就像是 claude 一样」).
-// Each turn's reasoning (model narration and thinking summaries) stays visible; every run of
-// consecutive tool calls folds into one row under it. Live and finished turns share the layout.
+// 2026-09-30 (「直接都隐藏命令」「英文推理折叠，中文还是跟之前一样的显示」): the Chinese narration
+// stays visible, consecutive thinking summaries fold into one row, tool calls are not shown.
+// Live and finished turns share the layout.
 // Replaces the 0.9.0 overlay that pulled every tool card out of the collapsed process group.
 export const INLINE_THINKING_CHARS = 2000;
 
@@ -11,13 +12,8 @@ export function integrateProcessTimeline({ get, set, change, prepend, template }
 
   // The timeline reuses the native renderers instead of copying them.
   set(view, get(view) + '\nexport { ToolCallBlock as PortableToolCallBlock, TextBlock as PortableTextBlock, loadThinkingContent as portableLoadThinkingContent, getToolPreview as portableToolPreview };\n');
-  // The live bubble shows its reasoning while it streams.
-  change(view, '    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;',
-    '    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} streaming={isStreaming} />;');
-  change(view, 'export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {\n  block: ThinkingContent;',
-    'export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex, streaming }: {\n  streaming?: boolean;\n  block: ThinkingContent;');
-  change(view, '  const [expanded, setExpanded] = useState(isThinkingExpandedByDefault);',
-    '  const [expanded, setExpanded] = useState(() => Boolean(streaming) || isThinkingExpandedByDefault());');
+  // The live bubble keeps the native thinking block, collapsed by default like the timeline
+  // (lop 2026-09-30「英文推理折叠」); the 09-29 force-expand while streaming is gone.
 
   // History keeps short reasoning inline so the timeline shows it without one request per
   // block; only long reasoning stays deferred behind "展开全文".

@@ -218,7 +218,7 @@ test('new draft model choices persist before sending; follow-up busy state retai
   assert.doesNotMatch(integrated.get('components/PortableNodes.tsx'), /onMouseEnter/);
 });
 
-test('turn process renders as a timeline: reasoning visible, tool runs folded once', () => {
+test('turn process renders as a timeline: narration visible, thinking folded, tool calls hidden', () => {
   const chat = integrated.get('components/ChatWindow.tsx');
   assert.doesNotMatch(chat, /portableToolViews/);
   assert.doesNotMatch(chat, /<ProcessDetailsGroup /);
@@ -237,10 +237,30 @@ test('turn process renders as a timeline: reasoning visible, tool runs folded on
   assert.match(timeline, /const \[open, setOpen\] = useState\(false\)/);
   assert.match(timeline, /const expanded = open \|\| Boolean\(target\)/);
   assert.match(timeline, /\{failed\} 条失败/);
+  // lop 2026-09-30: tool calls are hidden (a search hit is the one exception), consecutive thinking
+  // summaries fold into one row closed by default, and the Chinese narration stays visible.
+  assert.match(timeline, /if \(!showTool\(block\)\) return;/);
+  assert.match(timeline, /buildTimelineItems\(entries, block => block === searchBlock\)/);
+  assert.match(timeline, /if \(last\?\.type === "thinking"\) last\.blocks\.push\(item\)/);
+  assert.ok(timeline.includes('已思考 ${blocks.length} 步') && timeline.includes('正在思考'));
+  assert.match(timeline, /live=\{Boolean\(live\) && index === items\.length - 1\}/);
+  assert.match(timeline, /className="pw-reason">\s*<div data-message-text[^>]*><PortableTextBlock /);
   for (const label of ['运行 ${count.bash} 条命令', '读取 ${count.read.size} 个文件', '搜索 ${count.search} 次', '修改 ${count.change.size} 个文件']) assert.ok(timeline.includes(label), label);
   const view = integrated.get('components/MessageView.tsx');
   assert.match(view, /export \{ ToolCallBlock as PortableToolCallBlock, TextBlock as PortableTextBlock, loadThinkingContent as portableLoadThinkingContent, getToolPreview as portableToolPreview \};/);
-  assert.match(view, /useState\(\(\) => Boolean\(streaming\) \|\| isThinkingExpandedByDefault\(\)\)/);
+  // The live bubble's thinking stays collapsed by default (no force-expand while streaming).
+  assert.match(view, /const \[expanded, setExpanded\] = useState\(isThinkingExpandedByDefault\);/);
+  assert.doesNotMatch(view, /streaming=\{isStreaming\}/);
   assert.match(integrated.get('lib/session-reader.ts'), /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
   assert.match(integrated.get('app/globals.css'), /\.pw-tool-fold\{/);
+  assert.match(integrated.get('app/globals.css'), /\.pw-think-cards\{/);
+  // Composer: the model selector (and the gauge/⚡ controls anchored on it) sits first in the
+  // right control group, as in 0.9.0; attach and follow-up stay left.
+  const input = integrated.get('components/ChatInput.tsx');
+  const left = input.indexOf('{/* LEFT:'), spacer = input.indexOf('{/* spacer */}'), right = input.indexOf('{/* RIGHT:');
+  const selector = input.indexOf('<ModelSelector');
+  assert.ok(left > 0 && spacer > left && right > spacer && selector > right, 'model selector must be in the right group');
+  assert.equal(input.split('<ModelSelector').length - 1, 1);
+  assert.ok(input.indexOf('<PortableFollowup') > left && input.indexOf('<PortableFollowup') < spacer, 'follow-up stays left');
+  assert.ok(selector < input.indexOf('{onThinkingLevelChange && ('), 'model selector precedes the thinking level control');
 });

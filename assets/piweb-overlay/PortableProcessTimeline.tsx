@@ -5,19 +5,22 @@ import { PortableTextBlock, PortableToolCallBlock, portableLoadThinkingContent, 
 import { isEmptyThinkingBlock } from "@/lib/message-display";
 import { applyPatchResultHasFailures } from "@/lib/apply-patch";
 import { isApplyPatchToolName, isEditToolName, isWriteToolName } from "@/lib/tool-names";
-import type { AssistantContentBlock, AssistantMessage, ThinkingContent, ToolCallContent, ToolResultMessage } from "@/lib/types";
+import type { AssistantContentBlock, AssistantMessage, TextContent, ThinkingContent, ToolCallContent, ToolResultMessage } from "@/lib/types";
 
-// One turn's process as a timeline: reasoning (model narration and thinking
-// summaries) stays visible, and each run of consecutive tool calls folds into
-// a single row under the reasoning that led to it.
+// One turn's process as a timeline (lop 2026-09-30「直接都隐藏命令」「英文推理折叠，中文还是
+// 跟之前一样的显示」): the model's Chinese narration stays visible, each run of consecutive
+// thinking summaries folds into one row, and tool calls are not shown. The full history view
+// still lists every call; only a search hit on a tool call is kept so the jump still lands.
 export type PortableTimelineEntry =
   | { kind: "node"; key: string; node: ReactNode }
   | { kind: "assistant"; key: string; entryId?: string; message: AssistantMessage };
 
 type ToolItem = { block: ToolCallContent; entryId?: string; timestamp?: number };
+type ThinkingItem = { block: ThinkingContent; entryId?: string; blockIndex: number };
 type Item =
   | { type: "node"; key: string; node: ReactNode }
-  | { type: "reason"; key: string; block: AssistantContentBlock; entryId?: string; blockIndex: number }
+  | { type: "text"; key: string; block: TextContent; entryId?: string }
+  | { type: "thinking"; key: string; blocks: ThinkingItem[] }
   | { type: "tools"; key: string; calls: ToolItem[] };
 
 type Props = {
@@ -32,20 +35,28 @@ type Props = {
   onOpenSession?: (sessionId: string) => void;
 };
 
-export function buildTimelineItems(entries: PortableTimelineEntry[]): Item[] {
+export function buildTimelineItems(entries: PortableTimelineEntry[], showTool: (block: ToolCallContent) => boolean = () => false): Item[] {
   const items: Item[] = [];
   for (const entry of entries) {
     if (entry.kind === "node") { items.push({ type: "node", key: entry.key, node: entry.node }); continue; }
     (entry.message.content ?? []).forEach((block, blockIndex) => {
       if (block.type === "toolCall") {
+        if (!showTool(block)) return;
         const call = { block, entryId: entry.entryId, timestamp: entry.message.timestamp };
         const last = items.at(-1);
         if (last?.type === "tools") last.calls.push(call);
         else items.push({ type: "tools", key: `tools-${block.toolCallId}`, calls: [call] });
         return;
       }
-      if (block.type === "text" ? !block.text.trim() : block.type !== "thinking" || isEmptyThinkingBlock(block)) return;
-      items.push({ type: "reason", key: `${entry.key}-${blockIndex}`, block, entryId: entry.entryId, blockIndex });
+      if (block.type === "text") {
+        if (block.text.trim()) items.push({ type: "text", key: `${entry.key}-${blockIndex}`, block, entryId: entry.entryId });
+        return;
+      }
+      if (block.type !== "thinking" || isEmptyThinkingBlock(block)) return;
+      const item = { block, entryId: entry.entryId, blockIndex };
+      const last = items.at(-1);
+      if (last?.type === "thinking") last.blocks.push(item);
+      else items.push({ type: "thinking", key: `thinking-${entry.key}-${blockIndex}`, blocks: [item] });
     });
   }
   return items;
@@ -86,6 +97,7 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
+// Only rendered for a search hit on a tool call; ordinary tool runs are hidden.
 function ToolGroup({ calls, toolResults, live, searchEntryId, searchBlock, onOpenSession }: { calls: ToolItem[] } & Pick<Props, "toolResults" | "live" | "searchEntryId" | "searchBlock" | "onOpenSession">) {
   const [open, setOpen] = useState(false);
   const target = calls.find(call => call.entryId === searchEntryId && call.block === searchBlock);
@@ -150,22 +162,51 @@ function Thinking({ block, sessionId, entryId, blockIndex }: { block: ThinkingCo
   );
 }
 
+// Folded by default. As the live tail it shows a spinner and the newest heading, so progress stays
+// visible without opening it; a search hit inside opens it.
+function ThinkingGroup({ blocks, sessionId, live, searchEntryId, searchBlock }: { blocks: ThinkingItem[]; live: boolean } & Pick<Props, "sessionId" | "searchEntryId" | "searchBlock">) {
+  const [open, setOpen] = useState(false);
+  const target = blocks.find(item => item.entryId === searchEntryId && item.block === searchBlock);
+  const expanded = open || Boolean(target);
+  const latest = live ? thinkingLines(blocks[blocks.length - 1].block.thinking).at(-1) : undefined;
+  return (
+    <div className="pw-think-group">
+      <button type="button" className="pw-tool-fold" aria-expanded={expanded} onClick={() => setOpen(value => !value)}>
+        <Chevron open={expanded} />
+        {live && <span className="pw-tool-spinner" aria-hidden="true" />}
+        <span className="pw-tool-summary">{live ? "正在思考" : `已思考 ${blocks.length} 步`}</span>
+        {latest && <span className="pw-tool-running">{latest}</span>}
+      </button>
+      {expanded && (
+        <div className="pw-think-cards">
+          {blocks.map(item => (
+            <div key={`${item.entryId}-${item.blockIndex}`} data-entry-id={item.entryId} data-search-target={item === target || undefined}>
+              <Thinking block={item.block} sessionId={sessionId} entryId={item.entryId} blockIndex={item.blockIndex} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PortableProcessTimeline({ entries, toolResults, cwd, sessionId, searchEntryId, searchBlock, live, onOpenFile, onOpenSession }: Props) {
-  const items = buildTimelineItems(entries);
+  const items = buildTimelineItems(entries, block => block === searchBlock);
   if (items.length === 0) return null;
   return (
     <div className="pw-process-timeline">
-      {items.map(item => {
+      {items.map((item, index) => {
         if (item.type === "node") return <div key={item.key}>{item.node}</div>;
         if (item.type === "tools") {
           return <ToolGroup key={item.key} calls={item.calls} toolResults={toolResults} live={live} searchEntryId={searchEntryId} searchBlock={searchBlock} onOpenSession={onOpenSession} />;
         }
+        if (item.type === "thinking") {
+          return <ThinkingGroup key={item.key} blocks={item.blocks} sessionId={sessionId} live={Boolean(live) && index === items.length - 1} searchEntryId={searchEntryId} searchBlock={searchBlock} />;
+        }
         const isTarget = item.entryId === searchEntryId && item.block === searchBlock;
         return (
           <div key={item.key} data-entry-id={item.entryId} className="pw-reason">
-            {item.block.type === "text"
-              ? <div data-message-text data-search-target={isTarget || undefined}><PortableTextBlock block={item.block} cwd={cwd} onOpenFile={onOpenFile} /></div>
-              : <div data-search-target={isTarget || undefined}><Thinking block={item.block as ThinkingContent} sessionId={sessionId} entryId={item.entryId} blockIndex={item.blockIndex} /></div>}
+            <div data-message-text data-search-target={isTarget || undefined}><PortableTextBlock block={item.block} cwd={cwd} onOpenFile={onOpenFile} /></div>
           </div>
         );
       })}

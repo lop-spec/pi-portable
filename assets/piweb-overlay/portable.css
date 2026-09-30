@@ -42,6 +42,8 @@
 .pw-tool-running{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:11px}
 .pw-tool-spinner{flex-shrink:0;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite}
 .pw-tool-cards{display:flex;flex-direction:column;gap:6px;margin:4px 0 8px 16px;min-width:0}
+.pw-think-group{margin:0 0 2px;min-width:0}
+.pw-think-cards{display:flex;flex-direction:column;gap:4px;margin:2px 0 8px 16px;min-width:0}
 @media(pointer:coarse){.pw-tool-fold{min-height:36px}}
 @media(max-width:767px){.pw-conversation-nodes{top:8px;right:6px}.pw-node-panel{max-height:calc(100dvh - 100px)}.model-selector.is-toolbar{margin-left:76px}}
 @media(pointer:coarse){.pw-followup-menu button{min-height:44px}}

@@ -14,6 +14,7 @@ import { integrateProjects } from './patch-piweb-projects.mjs';
 import { integrateContextActions } from './patch-piweb-context.mjs';
 import { integrateModelMenu } from './patch-piweb-model-menu.mjs';
 import { integrateProcessTimeline } from './patch-piweb-process-timeline.mjs';
+import { integrateComposerLayout } from './patch-piweb-composer-layout.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -342,6 +343,7 @@ export function integrate(getFile) {
   integrateContextActions({ get, set, change, prepend, template });
   integrateModelMenu({ set, change, prepend, template });
   integrateProcessTimeline({ get, set, change, prepend, template });
+  integrateComposerLayout({ change });
   const pkg = JSON.parse(get('package.json'));
   pkg.piPortable = { upstreamRef: upstream.ref, sourceOverlay: 1 };
   set('package.json', JSON.stringify(pkg, null, 2) + '\n');
