@@ -40,5 +40,23 @@ export function splitModelMenu(options, primaryKeys) {
   return { primary, more: options.filter(option => !chosen.has(modelMenuKey(option))), fallback: false };
 }
 
+/**
+ * Where the "更多模型" side panel goes, from the menu's box and the visible viewport. It has to
+ * fit on screen with its real width: 2026-09-30 the check assumed 240 px while the panel grows to
+ * ~390 px, so with the selector in the right control group the panel ran off the right edge and
+ * the pin stars at the row ends were unreachable. Prefers the right side, then the left; when
+ * neither has room for a readable panel it returns null and the caller lists the models inline.
+ */
+export const SIDE_PANEL = Object.freeze({ want: 340, max: 380, min: 220, gap: 4, edge: 8 });
+export function placeSidePanel(anchor, viewport, size = SIDE_PANEL) {
+  const right = viewport.width - anchor.right - size.gap - size.edge;
+  const left = anchor.left - size.gap - size.edge;
+  const side = right >= size.want ? 'right' : left >= size.want ? 'left' : right >= left ? 'right' : 'left';
+  const room = side === 'right' ? right : left;
+  if (room < size.min) return null;
+  // One shape for both sides: the client type-checks this .mjs return value, and a union hides left/right.
+  return { side, maxWidth: Math.min(size.max, room), left: anchor.right + size.gap, right: viewport.width - anchor.left + size.gap };
+}
+
 /** Pin a model (appended at the end) or unpin it. */
 export const togglePrimaryModel = (primaryKeys, key) => primaryKeys.includes(key) ? primaryKeys.filter(k => k !== key) : [...primaryKeys, key];

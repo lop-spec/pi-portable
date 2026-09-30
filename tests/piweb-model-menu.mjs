@@ -4,7 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { integrate } from '../tools/patch-piweb-source.mjs';
-import { DEFAULT_PRIMARY_MODELS, modelMenuKey, normalizeModelMenu, splitModelMenu, togglePrimaryModel } from '../assets/piweb-overlay/portable-model-menu.mjs';
+import { DEFAULT_PRIMARY_MODELS, modelMenuKey, normalizeModelMenu, placeSidePanel, splitModelMenu, togglePrimaryModel } from '../assets/piweb-overlay/portable-model-menu.mjs';
 
 const option = (provider, modelId, name = modelId) => ({ provider, modelId, name });
 const catalogue = [
@@ -68,5 +68,39 @@ test('ModelSelector renders the primary list with "更多模型" and a server-ke
   assert.match(route, /projectMutationAllowed\(req\)/);
   assert.match(route, /export async function PUT/);
   assert.equal(files.get('lib/portable-model-menu.mjs'), fs.readFileSync(path.join(repo, 'assets/piweb-overlay/portable-model-menu.mjs'), 'utf8').replaceAll('\r\n', '\n'));
-  assert.match(files.get('components/PortableModelList.tsx'), /更多模型/);
+  const list = files.get('components/PortableModelList.tsx');
+  assert.match(list, /更多模型/);
+  // The side panel is placed from its real width, never from a guessed 240 px.
+  assert.match(list, /placeSidePanel\(moreRect, \{ width: viewportWidth \}\)/);
+  assert.doesNotMatch(list, /\+ 4 \+ 240 <= viewportWidth/);
+  assert.match(list, /className="pw-model-side"/);
+  assert.match(list, /maxWidth: 150/, 'the current model name must not widen the menu');
+});
+
+test('the side panel stays on screen: right when it fits, left when the right edge is too close, inline when neither fits', () => {
+  const inView = (place, anchor, width) => {
+    const box = place.side === 'right' ? { l: place.left, r: place.left + place.maxWidth } : { l: width - place.right - place.maxWidth, r: width - place.right };
+    return box.l >= 0 && box.r <= width && (place.side === 'right' ? box.l >= anchor.right : box.r <= anchor.left);
+  };
+  // lop's screenshot: menu 1252-1660 on a 2000 px screen; the old check picked the right side and ran off the edge.
+  const wide = { left: 1252, right: 1660 };
+  const flipped = placeSidePanel(wide, { width: 2000 });
+  assert.equal(flipped.side, 'left');
+  assert.ok(inView(flipped, wide, 2000));
+  // Room on the right: keep the old placement.
+  const roomy = { left: 300, right: 700 };
+  assert.equal(placeSidePanel(roomy, { width: 1600 }).side, 'right');
+  assert.equal(placeSidePanel(roomy, { width: 1600 }).left, 704);
+  // Every menu position on every common width either fits or falls back to the inline list.
+  for (const width of [1024, 1280, 1366, 1440, 1600, 1920, 2560]) for (let right = 260; right <= width - 8; right += 37) {
+    const anchor = { left: right - 290, right };
+    const place = placeSidePanel(anchor, { width });
+    if (place) assert.ok(inView(place, anchor, width), `width ${width} menu ends at ${right}: ${JSON.stringify(place)}`);
+  }
+  // A narrow window with no side wide enough for a readable panel lists the models inline instead.
+  assert.equal(placeSidePanel({ left: 40, right: 330 }, { width: 400 }), null);
+  // Only a cramped side left: clamp to it rather than overflow.
+  const cramped = placeSidePanel({ left: 8, right: 300 }, { width: 600 });
+  assert.equal(cramped.side, 'right');
+  assert.ok(cramped.maxWidth <= 600 - 300 - 12);
 });
