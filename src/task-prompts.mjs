@@ -100,15 +100,6 @@ export function globalRuleSection(agent, title) {
   if (matches.length !== 1) throw Error(`全局规则章节缺失或重复：${heading}`);
   return '## ' + matches[0].trim();
 }
-export function memoryTaskPrompt(root, agent, dir) {
-  const rules = globalRulesText(agent).split(/\r?\n/);
-  const selected = ['索引最小化', '记忆最小化'].map(title => {
-    const matches = rules.filter(line => line.startsWith(`- **${title}**`));
-    if (matches.length !== 1) throw Error(`全局规则条目缺失或重复：${title}`);
-    return matches[0];
-  });
-  return [loadTaskPrompt(root, 'daily-pi-memory'), ...selected, fs.readFileSync(path.join(dir, 'INSTRUCTIONS.md'), 'utf8')].join('\n\n');
-}
 export function renderTaskPrompt(template, values) {
   return template.replace(/\{\{([a-zA-Z]+)\}\}/g, (_, key) => {
     if (!Object.hasOwn(values, key)) throw Error(`未知任务提示变量：${key}`);
