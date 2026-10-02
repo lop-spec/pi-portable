@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {ExtensionBrowserRuntime,adaptToolArguments} from '../src/browser-agent/extension-runtime.mjs';
+import {ExtensionBrowserRuntime,adaptToolArguments,SIDE_SNAPSHOT_CHARS} from '../src/browser-agent/extension-runtime.mjs';
 const dir=await fs.mkdtemp(path.join(os.tmpdir(),'pi-extension-contract-'));
 try {
   const input={ref:'e4',text:'typed',submit:false};
@@ -46,6 +46,15 @@ try {
   assert.equal(calls.at(-1).name,'browser_snapshot');
   await assert.rejects(runtime.execute({action:'select_tab',tabIndex:1}),/only tabIndex 0/);
   await assert.rejects(runtime.execute({action:'goto',url:'javascript:alert(1)'}),/navigation is allowed/);
+  // 非 snapshot 动作附带的快照截到 SIDE_SNAPSHOT_CHARS 并给出全文路径；snapshot 动作保留 45000。
+  await fs.mkdir(runtime.outputDir,{recursive:true});
+  const yml=path.join(runtime.outputDir,'page-big.yml');await fs.writeFile(yml,'- ref: f1e1\n'+'x'.repeat(30000),'utf8');
+  runtime.call=async()=>({content:[{type:'text',text:`done\n[Snapshot](${yml})`}]});
+  const side=(await runtime.execute({action:'goto',url:'https://example.com/big'})).content[0].text;
+  assert(side.length<SIDE_SNAPSHOT_CHARS+600,`side snapshot not capped: ${side.length}`);
+  assert.match(side,/快照已截至 8000 字符，全文 30012 字符：.*page-big\.yml/);
+  const full=(await runtime.execute({action:'snapshot'})).content[0].text;
+  assert(full.length>30000&&!full.includes('快照已截至'));
   const source=await fs.readFile(new URL('../src/browser-agent/index.ts',import.meta.url),'utf8');
   assert(source.includes('extension-runtime.mjs'));
   assert(!source.includes('new BrowserRuntime('));

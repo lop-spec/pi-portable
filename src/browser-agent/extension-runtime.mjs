@@ -7,6 +7,7 @@ import {ensureBackgroundBroker} from './background-client.mjs';
 import { importFreshModule } from './fresh-module.mjs';
 const { resolvePlaywrightModule } = await importFreshModule(new URL('./runtime.mjs', import.meta.url));
 const { readDailyBrowserSelection, resolveDailyBrowserExecutable, resolveDailyPlaywrightModule } = await importFreshModule(new URL('./daily-browser.mjs', import.meta.url));
+export const SIDE_SNAPSHOT_CHARS = 8000;
 
 // Follow the installed official tool schema instead of guessing by version.
 export function adaptToolArguments(schema,args) {
@@ -176,7 +177,9 @@ export class ExtensionBrowserRuntime {
       if(item.type!=='text'){content.push(item);continue;}
       let text=item.text;
       const links=[...text.matchAll(/\[Snapshot\]\(([^)]+\.yml)\)/g)];
-      for(const link of links){const file=path.resolve(link[1]);const relative=path.relative(this.outputDir,file);if(relative.startsWith('..')||path.isAbsolute(relative)||!/^page-[^/\\]+\.yml$/.test(path.basename(file)))continue;try{text+='\n\n'+(await fs.readFile(file,'utf8')).slice(0,45000);}catch(error){await this.log('extension-snapshot-read-failed',{reason:error.code,file});}}
+      // 非 snapshot 动作附带的快照只留开头：09-25~10-02 的 55 次大结果（均 4 万字符）里仅 2 次下一步用了其中的 ref。
+      const snapCap=p.action==='snapshot'?45000:SIDE_SNAPSHOT_CHARS;
+      for(const link of links){const file=path.resolve(link[1]);const relative=path.relative(this.outputDir,file);if(relative.startsWith('..')||path.isAbsolute(relative)||!/^page-[^/\\]+\.yml$/.test(path.basename(file)))continue;try{const yml=await fs.readFile(file,'utf8');text+='\n\n'+yml.slice(0,snapCap);if(yml.length>snapCap){text+=`\n[快照已截至 ${snapCap} 字符，全文 ${yml.length} 字符：${file.replaceAll('\\','/')}；找 ref 可 grep 该文件或用 action=snapshot]`;await this.log('extension-side-snapshot-capped',{action:p.action,chars:yml.length,cap:snapCap});}}catch(error){await this.log('extension-snapshot-read-failed',{reason:error.code,file});}}
       if(text.length>60000){const file=path.join(this.outputDir,`result-${Date.now()}.txt`);await fs.writeFile(file,text,'utf8');await this.log('extension-result-truncated',{file,chars:text.length});text=text.slice(0,60000)+`\n[Truncated; full text: ${file}]`;}
       content.push({type:'text',text:this.redact?.(text)??text});
     }
