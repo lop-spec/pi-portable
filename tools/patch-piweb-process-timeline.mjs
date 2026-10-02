@@ -3,6 +3,9 @@
 // 2026-09-30 (「直接都隐藏命令」「英文推理折叠，中文还是跟之前一样的显示」): the Chinese narration
 // stays visible, consecutive thinking summaries fold into one row, tool calls are not shown.
 // Live and finished turns share the layout.
+// 2026-10-02 (「如果不是中文推理过程那就直接不要显示了」): a thinking block with no Chinese text (encrypted GPT
+// reasoning arrives empty, other providers send English headings) is not rendered at all, not even as a
+// folded row, live or finished. Supersedes the 09-30 "已思考 N 步" row for English reasoning.
 // Replaces the 0.9.0 overlay that pulled every tool card out of the collapsed process group.
 export const INLINE_THINKING_CHARS = 2000;
 
@@ -14,6 +17,11 @@ export function integrateProcessTimeline({ get, set, change, prepend, template }
   set(view, get(view) + '\nexport { ToolCallBlock as PortableToolCallBlock, TextBlock as PortableTextBlock, loadThinkingContent as portableLoadThinkingContent, getToolPreview as portableToolPreview };\n');
   // The live bubble keeps the native thinking block, collapsed by default like the timeline
   // (lop 2026-09-30「英文推理折叠」); the 09-29 force-expand while streaming is gone.
+  // One predicate feeds the native bubble, the timeline and the turn grouping, so a block without
+  // Chinese text (empty, English, or a deferred block whose preview has none) vanishes everywhere.
+  change('lib/message-display.ts',
+    'export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {\n  return block.type === "thinking" && !block.deferred && !options.isStreaming && block.thinking.trim() === "";',
+    'export function isEmptyThinkingBlock(block: AssistantContentBlock, _options: DisplayOptions = {}): block is ThinkingContent {\n  return block.type === "thinking" && !/[\\u3400-\\u9fff]/u.test(block.thinking);');
 
   // History keeps short reasoning inline so the timeline shows it without one request per
   // block; only long reasoning stays deferred behind "展开全文".

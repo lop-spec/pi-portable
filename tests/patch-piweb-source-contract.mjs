@@ -252,6 +252,16 @@ test('turn process renders as a timeline: narration visible, thinking folded, to
   assert.match(view, /const \[expanded, setExpanded\] = useState\(isThinkingExpandedByDefault\);/);
   assert.doesNotMatch(view, /streaming=\{isStreaming\}/);
   assert.match(integrated.get('lib/session-reader.ts'), /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
+  // lop 2026-10-02: reasoning without Chinese text is not shown at all (live or finished).
+  const display = integrated.get('lib/message-display.ts');
+  const hideSource = display.match(/export function isEmptyThinkingBlock[^\n]*\n[^\n]*\n\}/)?.[0];
+  assert.ok(hideSource, 'isEmptyThinkingBlock source');
+  assert.ok(hideSource.includes('return block.type === "thinking" && !/[\\u3400-\\u9fff]/u.test(block.thinking);'));
+  const isHidden = vm.runInNewContext(`(${hideSource.replace('export function', 'function').replace(/\(block: [^)]*\): block is ThinkingContent/, '(block, _options)')})`, {});
+  for (const thinking of ['', '  ', '**Planning the fix**', 'Inspecting files']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), true, JSON.stringify(thinking));
+  for (const thinking of ['先看一下配置', '**Planning** 然后检查', '分析中']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), false, thinking);
+  assert.equal(isHidden({ type: 'thinking', thinking: 'English preview of a long block', deferred: true }), true);
+  assert.equal(isHidden({ type: 'text', text: '' }), false);
   assert.match(integrated.get('app/globals.css'), /\.pw-tool-fold\{/);
   assert.match(integrated.get('app/globals.css'), /\.pw-think-cards\{/);
   // Composer: the model selector (and the gauge/⚡ controls anchored on it) sits first in the
