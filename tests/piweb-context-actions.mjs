@@ -8,7 +8,7 @@ import { renamePhysicalProject, relocateCopiedProject, projectLeafTarget } from 
 import { validateProjectDeletion, deleteProjectDirectory, deleteSessionFiles, withProjectDeletionLock, assertProjectAvailable } from '../assets/piweb-overlay/portable-context-store.mjs';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-context-'));
 const folder = name => { const p = path.join(root, name); fs.mkdirSync(p, { recursive: true }); return p; };
-test('physical rename updates all native cwd headers, registry and nested projects; preserves every history byte and original JSONL paths', () => {
+test('physical rename updates all native cwd headers, registry and nested projects; preserves every history byte and original JSONL paths', async () => {
   const p = folder('中文 项目'), child = folder('中文 项目/sub'), marker = path.join(p, 'asset'); fs.writeFileSync(marker, 'unchanged');
   const store = new ProjectStore(path.join(root, 'projects.json')); store.add(p); store.add(child);
   const sessionRoot = folder('rename-sessions');
@@ -18,37 +18,39 @@ test('physical rename updates all native cwd headers, registry and nested projec
     return { id, cwd, path: file, bytes };
   });
   const args = { root: p, name: '新的项目名称', registry: store, sessions, sessionRoot, knownRoots: [p] };
-  const result = renamePhysicalProject(args), target = path.join(root, args.name);
+  const result = await renamePhysicalProject(args), target = path.join(root, args.name);
   assert.ok(!fs.existsSync(p)); assert.equal(fs.readFileSync(path.join(target,'asset'), 'utf8'), 'unchanged');
   assert.ok(new ProjectStore(store.file).read().projects.some(p => p.name === args.name && p.root === target));
   assert.ok(store.read().projects.some(p => p.root === path.join(target, 'sub')));
-  assert.equal(result.sessionIds.length, 2); assert.ok(result.backups.length >= 3);
+  assert.equal(result.sessionIds.length, 2); assert.equal(result.backups.length, 2, 'registry backup + one journal of the original session headers');
+  assert.equal(JSON.parse(fs.readFileSync(result.backups[1], 'utf8')).sessions.length, 2);
+  assert.deepEqual(fs.readdirSync(sessionRoot).sort(), ['rename-0.jsonl', 'rename-1.jsonl'], 'no full-file backup copies next to the sessions');
   sessions.forEach(s => { const b = fs.readFileSync(s.path); assert.deepEqual(b.subarray(b.indexOf(10)+1), s.bytes.subarray(s.bytes.indexOf(10)+1)); assert.equal(JSON.parse(b.subarray(0,b.indexOf(10))).cwd, path.join(target,path.relative(p,s.cwd))); });
   store.remove(target); assert.ok(fs.existsSync(path.join(target, 'asset')));
 });
-test('rename rejects path traversal, reserved names, target conflicts and invalid session headers before any filesystem change', () => {
+test('rename rejects path traversal, reserved names, target conflicts and invalid session headers before any filesystem change', async () => {
   const p = folder('rename-reject'), conflict = folder('conflict'), sessionRoot = folder('reject-sessions');
   const store = new ProjectStore(path.join(root,'reject.json')); store.add(p);
   for (const name of [' ', '..', '../escape', 'a/b', 'a\\\\b', 'NUL', 'CON.txt', 'a.', 'a ', 'LPT1', 'a:b']) assert.throws(() => projectLeafTarget(p, name), name);
   const args = {root:p,name:'conflict',registry:store,sessions:[],sessionRoot,knownRoots:[p]};
-  assert.throws(() => renamePhysicalProject(args)); assert.ok(fs.existsSync(conflict)); assert.ok(fs.existsSync(p));
+  await assert.rejects(renamePhysicalProject(args)); assert.ok(fs.existsSync(conflict)); assert.ok(fs.existsSync(p));
   const file=path.join(sessionRoot,'bad.jsonl');fs.writeFileSync(file,'{"type":"session","id":"other"}\n');
-  assert.throws(() => renamePhysicalProject({...args,name:'valid',sessions:[{id:'bad',cwd:p,path:file}]}));assert.ok(fs.existsSync(p));assert.ok(!fs.existsSync(path.join(root,'valid')));
+  await assert.rejects(renamePhysicalProject({...args,name:'valid',sessions:[{id:'bad',cwd:p,path:file}]}));assert.ok(fs.existsSync(p));assert.ok(!fs.existsSync(path.join(root,'valid')));
 });
-test('rename rolls back folder and headers if registry commit fails', () => {
+test('rename rolls back folder and headers if registry commit fails', async () => {
   const p=folder('rollback-project'), sessionRoot=folder('rollback-sessions'), file=path.join(sessionRoot,'s.jsonl');
   const before=Buffer.from(JSON.stringify({type:'session',id:'rollback',cwd:p})+'\n{"history":true}\n');fs.writeFileSync(file,before);
   const store=new ProjectStore(path.join(root,'rollback.json'));store.add(p);const registryBefore=fs.readFileSync(store.file);store.rebase=()=>{throw Error('injected registry failure')};
-  assert.throws(()=>renamePhysicalProject({root:p,name:'rollback-target',registry:store,sessions:[{id:'rollback',cwd:p,path:file}],sessionRoot,knownRoots:[p]}),/injected/);
+  await assert.rejects(renamePhysicalProject({root:p,name:'rollback-target',registry:store,sessions:[{id:'rollback',cwd:p,path:file}],sessionRoot,knownRoots:[p]}),/injected/);
   assert.ok(fs.existsSync(p));assert.ok(!fs.existsSync(path.join(root,'rollback-target')));assert.deepEqual(fs.readFileSync(file),before);assert.deepEqual(fs.readFileSync(store.file),registryBefore);
 });
-test('copy relocation preserves original folders, nested cwd, exact history, categories and deduplicated destination', () => {
+test('copy relocation preserves original folders, nested cwd, exact history, categories and deduplicated destination', async () => {
   const p=folder('copy-source'), child=folder('copy-source/nested'), target=folder('copy-target'), sr=folder('copy-sessions'), file=path.join(sr,'copy.jsonl');
   const bytes=Buffer.from(JSON.stringify({type:'session',id:'copy',cwd:child})+'\n{"history":"same"}\n');fs.writeFileSync(file,bytes);
   const store=new ProjectStore(path.join(root,'copy-projects.json'));store.add(p);store.add(target);const state=store.read();state.categories=[{name:'local only',root}];store.save(state);
   const args={root:p,target,registry:store,sessions:[{id:'copy',cwd:child,path:file}],sessionRoot:sr,knownRoots:[p]};
-  assert.throws(()=>relocateCopiedProject(args));assert.deepEqual(fs.readFileSync(file),bytes);
-  folder('copy-target/nested');const result=relocateCopiedProject(args);assert.ok(fs.existsSync(p));assert.ok(fs.existsSync(target));
+  await assert.rejects(relocateCopiedProject(args));assert.deepEqual(fs.readFileSync(file),bytes);
+  folder('copy-target/nested');const result=await relocateCopiedProject(args);assert.ok(fs.existsSync(p));assert.ok(fs.existsSync(target));
   assert.equal(store.read().projects.filter(p=>p.root===target).length,1);assert.deepEqual(store.read().categories,state.categories);assert.equal(result.sessionIds.length,1);
   const after=fs.readFileSync(file);assert.deepEqual(after.subarray(after.indexOf(10)+1),bytes.subarray(bytes.indexOf(10)+1));
   assert.equal(JSON.parse(after.subarray(0,after.indexOf(10))).cwd,path.join(target,'nested'));
@@ -98,6 +100,15 @@ test('session file deletion rejects out-of-root files', () => {
 test('session lock is shared with moving and blocks concurrent writes', async () => {
   await withSessionMoveLock(['delete-id'], async () => { assert.throws(() => assertSessionNotMoving('delete-id')); });
   assert.doesNotThrow(() => assertSessionNotMoving('delete-id'));
+});
+test('deleting a conversation needs only the confirm button; deleting a project folder still needs its full path typed', () => {
+  const ui = fs.readFileSync(new URL('../assets/piweb-overlay/PortableContextActions.tsx', import.meta.url), 'utf8');
+  const session = ui.slice(ui.indexOf('export function SessionContextActions'));
+  const project = ui.slice(ui.indexOf('export function ProjectContextActions'), ui.indexOf('export function SessionContextActions'));
+  assert.doesNotMatch(session, /输入「删除」/); assert.doesNotMatch(session, /value !== '删除'/);
+  assert.match(session, /confirmId: session\.id/, 'the server still gets the explicit id confirmation');
+  assert.match(session, /disabled=\{busy \|\| \(action === 'move' && !value\)\}/, 'the delete button is enabled without typing');
+  assert.match(project, /输入完整路径确认/); assert.match(project, /value !== project\.root/);
 });
 test('icon menus reuse native event and immediate archive, no model calls or polling', () => {
   const ui = fs.readFileSync(new URL('../assets/piweb-overlay/PortableContextActions.tsx', import.meta.url), 'utf8');

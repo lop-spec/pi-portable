@@ -4,8 +4,8 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { atomicWrite, projectMutationAllowed } from '@/lib/portable-project-store.mjs';
 import { normalizeModelMenu } from '@/lib/portable-model-menu.mjs';
 
-// Which models the model menu lists directly (the rest go under "更多模型"); one file for
-// every browser of this pi-web, next to web-projects.json.
+// Which models the model menu lists directly (the rest go under "更多模型", and hidden ones under
+// its third level "隐藏模型"); one file for every browser of this pi-web, next to web-projects.json.
 export const dynamic = 'force-dynamic';
 const file = () => join(getAgentDir(), 'web-model-menu.json');
 
@@ -32,7 +32,7 @@ export async function PUT(req: Request) {
   }
   try {
     const menu = normalizeModelMenu(await req.json());
-    atomicWrite(file(), JSON.stringify({ primary: menu.primary }, null, 2) + '\n');
+    atomicWrite(file(), JSON.stringify({ primary: menu.primary, hidden: menu.hidden }, null, 2) + '\n');
     return Response.json(menu, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     console.error('[pi-web model menu] save failed', error);

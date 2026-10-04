@@ -863,6 +863,29 @@
     document.addEventListener("click", immediateActionClick, true);
   }
 
+  // The model menu's "一键归档超过 N 天的对话" button calls this. The conversation that is open
+  // (?session=) is sent as `keep`, so nothing is archived from under the reader.
+  async function archiveOlder(days) {
+    const keep = [new URL(window.location.href).searchParams.get("session")].filter(Boolean);
+    const response = await nativeFetch("/__pi_archive_older", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ days, keep }),
+    });
+    let body = null;
+    try { body = await response.json(); } catch {}
+    if (!response.ok || !body?.ok) {
+      const message = `${words().requestFailed}：${String(body?.error || `HTTP ${response.status}`)}`;
+      console.error("[pi-web archive]", message);
+      throw new Error(message);
+    }
+    state.archivedCount += Number(body.groupCount) || 0;
+    scheduleDecorate();
+    if (body.groupCount > 0) requestNativeRefresh();
+    return body;
+  }
+  window.__piArchiveOlder = archiveOlder;
+
   function decorate() {
     state.scheduled = false;
     if (!document.body) return;

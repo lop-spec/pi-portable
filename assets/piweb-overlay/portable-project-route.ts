@@ -38,13 +38,13 @@ export async function POST(req: Request) {
         const ids = affected.map(s => s.id);
         const mutate = async () => withSessionMoveLock(ids, async () => {
           if (hasBusyRpcSessionInProject(cwd) || hasBusyRpcSessionInProject(target)) throw new Error('项目内有正在运行或启动的对话，请先停止');
-          for (const sid of ids) await getRpcSession(sid)?.shutdown();
+          await Promise.all(ids.map(sid => getRpcSession(sid)?.shutdown()));
           let result;
-          if (body.action === 'rename') result = renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });
+          if (body.action === 'rename') result = await renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });
           else {
             if (!statSync(target).isDirectory()) throw new Error('复制目标不存在');
             if (!registry.read().projects.some((p: { root: string }) => projectKey(p.root) === projectKey(target))) throw new Error('请先添加已复制的目标项目');
-            result = relocateCopiedProject({ root: cwd, target, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots });
+            result = await relocateCopiedProject({ root: cwd, target, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots });
           }
           ids.forEach(sid => invalidateSessionPathCache(sid)); invalidateSessionListCache(); allowFileRoot(target);
           return Response.json(result);

@@ -34,7 +34,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
       registry.add(cwd, info.projectRoot ?? cwd);
       for (const sid of ids) await getRpcSession(sid)?.shutdown();
-      const result = relocateSessionHeaders(family, cwd, join(getAgentDir(), 'sessions'));
+      const result = await relocateSessionHeaders(family, cwd, join(getAgentDir(), 'sessions'));
       ids.forEach(sid => invalidateSessionPathCache(sid));
       invalidateSessionListCache();
       allowFileRoot(cwd);

@@ -16,6 +16,9 @@ export const PIWEB_ACCOUNT_USAGE_PATH = "/__pi_account_usage";
 export const PIWEB_ACCOUNT_SELECT_PATH = "/__pi_account_select";
 export const PIWEB_ACCOUNT_LOGIN_PATH = "/__pi_account_login";
 export const PIWEB_ACCOUNT_AUTO_RESET_PATH = "/__pi_account_auto_reset";
+export const PIWEB_ARCHIVE_OLDER_PATH = "/__pi_archive_older";
+const ARCHIVE_OLDER_MAX_DAYS = 3650;
+const DAY_MS = 86_400_000;
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 
@@ -854,10 +857,95 @@ export class PiWebUiProxy {
     }
   }
 
+  /**
+   * Conversations (a root plus its subagent children) whose newest activity is older than `days`
+   * and that can be archived right now. A family with a running member, one the page has open,
+   * or one with an unreadable date is left alone; each skip is counted so nothing is silent.
+   */
+  archiveOlderPlan(catalogue, activeSessions, { days, running, keep }) {
+    const cutoff = this.now() - days * DAY_MS;
+    const known = new Set(catalogue.map((session) => String(session?.id || "")));
+    const families = [];
+    const skipped = { running: 0, kept: 0, unknownAge: 0 };
+    for (const root of activeSessions) {
+      const parentId = String(root?.relation?.parentSessionId || "");
+      if (root?.relation?.kind === "subagent" && parentId && known.has(parentId)) continue; // archived with its parent
+      const rootId = String(root?.id || "");
+      if (!rootId) continue;
+      const members = this.sessionFamily(catalogue, rootId);
+      const newest = Math.max(...members.map((member) => Date.parse(member?.modified)));
+      if (!Number.isFinite(newest)) { skipped.unknownAge += 1; continue; }
+      if (newest >= cutoff) continue;
+      if (members.some((member) => running.has(String(member.id)))) { skipped.running += 1; continue; }
+      if (members.some((member) => keep.has(String(member.id)))) { skipped.kept += 1; continue; }
+      families.push({ rootId, members });
+    }
+    return { families, skipped };
+  }
+
+  async handleArchiveOlder(request, response) {
+    if (!this.mutationOriginAllowed(request)) {
+      this.log("session-archive-older-rejected", { reason: "cross-origin mutation" });
+      this.jsonResponse(response, 403, { ok: false, error: "cross-origin session archive mutation rejected" });
+      return;
+    }
+    let days;
+    let keep;
+    try {
+      const body = await this.readControlJson(request, 8192);
+      days = Number(body?.days);
+      keep = new Set((Array.isArray(body?.keep) ? body.keep : []).map(String));
+    } catch (error) {
+      this.log("session-archive-older-rejected", { reason: normalizeError(error?.message || error) });
+      this.jsonResponse(response, 400, { ok: false, error: "invalid archive request" });
+      return;
+    }
+    if (!Number.isInteger(days) || days < 1 || days > ARCHIVE_OLDER_MAX_DAYS) {
+      this.log("session-archive-older-rejected", { reason: "invalid days", days });
+      this.jsonResponse(response, 400, { ok: false, error: "days must be an integer from 1 to " + ARCHIVE_OLDER_MAX_DAYS });
+      return;
+    }
+    try {
+      const catalogue = await this.fetchSessionCatalogue();
+      const running = await this.runningSessionsForArchive(2000);
+      const plan = this.archiveOlderPlan(catalogue, this.archiveStore.partition(catalogue).active, { days, running, keep });
+      let groupCount = 0;
+      let sessionCount = 0;
+      const failures = [];
+      for (const family of plan.families) {
+        try {
+          const result = this.archiveStore.archiveMany(family.members, family.rootId);
+          if (result.created) { groupCount += 1; sessionCount += result.createdCount; }
+        } catch (error) {
+          const message = normalizeError(error?.message || error);
+          failures.push({ sessionId: family.rootId, error: message });
+          this.log("session-archive-older-item-failed", { sessionId: family.rootId, error: message });
+        }
+      }
+      this.log("session-archive-older", { days, groupCount, sessionCount, skipped: plan.skipped, failed: failures.length });
+      this.jsonResponse(response, 200, {
+        ok: true,
+        days,
+        groupCount,
+        sessionCount,
+        skippedRunning: plan.skipped.running,
+        skippedKept: plan.skipped.kept,
+        skippedUnknownAge: plan.skipped.unknownAge,
+        failed: failures.length,
+        failures: failures.slice(0, 5),
+      });
+    } catch (error) {
+      const message = normalizeError(error?.message || error);
+      this.log("session-archive-older-failed", { days, error: message });
+      this.jsonResponse(response, 500, { ok: false, error: message });
+    }
+  }
+
   async handlePublicProxy(request, response) {
     const parsedUrl = new URL(request.url || "/", "http://127.0.0.1");
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ARCHIVE_UI_PATH) return this.serveArchiveUi(response);
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ACCOUNT_USAGE_PATH) return this.handleAccountUsageProxy(response, parsedUrl);
+    if (request.method === "POST" && parsedUrl.pathname === PIWEB_ARCHIVE_OLDER_PATH) return this.handleArchiveOlder(request, response);
     if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_AUTO_RESET_PATH) return this.handleAccountAutoReset(request, response);
     if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_SELECT_PATH) return this.handleAccountSelectProxy(request, response);
     if (parsedUrl.pathname === PIWEB_ACCOUNT_LOGIN_PATH) {
