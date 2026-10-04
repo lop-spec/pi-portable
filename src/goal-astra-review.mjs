@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {ROOT,HERE,site,run,entries,textOf} from './goal-inspect.mjs';
 import {reviewSessionBinding} from './goal-review-session.mjs';
-import {providerExtensionArgs} from './task-prompts.mjs';
+import {providerExtensionArgs, usesCodexQuota} from './task-prompts.mjs';
+export const FRESH_SESSIONS_KEPT=20;
+// 只轮转本运行器自己生成的新会话文件（fresh-sessions 目录），固定审查会话不动。
+export function pruneFreshSessions(dir,keep=FRESH_SESSIONS_KEPT){
+  const files=fs.readdirSync(dir).filter(f=>f.endsWith('.jsonl')).map(f=>({f,t:fs.statSync(path.join(dir,f)).mtimeMs})).sort((a,b)=>b.t-a.t);
+  for(const {f} of files.slice(keep))fs.rmSync(path.join(dir,f),{force:true});
+  return Math.max(0,files.length-keep);
+}
 export function astraCli(){
   const runtime=path.dirname(site().data);
   const webPackage=fs.realpathSync(path.join(runtime,'app/node_modules/@agegr/pi-web/package.json'));
@@ -15,12 +22,15 @@ export async function astraReview(prompt,log,settings,profile='astra'){
   if(!settings?.provider||!settings?.model||!settings?.effort)throw Error('Scheduled Pi model settings missing from task heading');
   const {provider,model}=settings,reasoning=settings.effort;
   const workName=profile==='astra'?'astra-cli':`${profile}-pi-cli`;
-  const work=path.join(site().data,'goal-review',workName),sessionDir=path.join(work,'sessions');fs.mkdirSync(sessionDir,{recursive:true});
+  // 网页模型（MiMo/Gemini 等）每次新开审查会话：固定会话 10-04 已涨到 263 MB，超出所有网页模型的单次上限，
+  // 且续用会沿用旧思考档。提醒历史来自原会话的 recentAdvice，不依赖审查对话。Codex 仍用固定会话。
+  const webModel=!usesCodexQuota(provider);
+  const work=path.join(site().data,'goal-review',workName),sessionDir=path.join(work,webModel?'fresh-sessions':'sessions');fs.mkdirSync(sessionDir,{recursive:true});
   const auth=path.join(site().agent,'extensions','codex-file-auth.ts');if(!fs.existsSync(auth))throw Error('Native Codex authentication extension not found; no auth fallback');
   const env={...process.env,PI_CODING_AGENT_DIR:site().agent,PI_PORTABLE_DATA:site().data,PI_PORTABLE_HOME:ROOT};
   // Isolate only review tools, NOT login state. No tools/extensions are installed into ordinary sessions.
   const binding=reviewSessionBinding(work);
-  const args=[astraCli(),'--print','--mode','json','--provider',provider,'--model',model,'--thinking',reasoning,...binding.args('astra'),'--session-dir',sessionDir,'--name',`长目标巡检 · ${profile} · ${model} ${reasoning} · ${HERE}`,'--no-extensions','--extension',auth,...providerExtensionArgs(site().agent,provider),'--extension',path.join(ROOT,'src/goal-review-tool.mjs'),'--tools','goal_inspect','--no-skills'];
+  const args=[astraCli(),'--print','--mode','json','--provider',provider,'--model',model,'--thinking',reasoning,...(webModel?[]:binding.args('astra')),'--session-dir',sessionDir,'--name',`长目标巡检 · ${profile} · ${model} ${reasoning} · ${HERE}`,'--no-extensions','--extension',auth,...providerExtensionArgs(site().agent,provider),'--extension',path.join(ROOT,'src/goal-review-tool.mjs'),'--tools','goal_inspect','--no-skills'];
   let final,id,lastActivity=Date.now();
   const heartbeat=setInterval(()=>log('review-progress',{profile:'astra',reviewSession:id,lastActivity}),20000);
   log('review-started',{profile:'astra',provider,model,effort:reasoning,transport:'native-cli',sessionDir});
@@ -35,7 +45,8 @@ export async function astraReview(prompt,log,settings,profile='astra'){
     if(!final||['error','aborted','length'].includes(final.stopReason))throw Error('Astra review did not complete: '+(final?.errorMessage||final?.stopReason||r.err.slice(-500)));
     if(final.model!==model)throw Error('Astra response model mismatch: '+final.model);
     const file=fs.readdirSync(sessionDir).find(f=>f.endsWith('_'+id+'.jsonl'));if(!file)throw Error('Native review session file not found');
-    binding.bind(id,path.join(sessionDir,file));
+    if(webModel){const pruned=pruneFreshSessions(sessionDir);if(pruned)log('review-fresh-sessions-pruned',{profile,pruned,kept:FRESH_SESSIONS_KEPT});}
+    else binding.bind(id,path.join(sessionDir,file));
     log('review-session',{profile:'astra',reviewSession:id});
     const all=entries(path.join(sessionDir,file));const actualEffort=all.findLast(e=>e.type==='thinking_level_change')?.thinkingLevel;
     if(actualEffort!==reasoning)throw Error('Astra thinking-level transcript mismatch: '+actualEffort);

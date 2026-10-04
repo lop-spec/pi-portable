@@ -35,3 +35,13 @@ test('missing pinned Pi history and corrupt identity do not silently start anoth
   fs.writeFileSync(path.join(work,'review-session.json'),JSON.stringify({id:'invalid'}));
   assert.throws(()=>reviewSessionBinding(work),/Invalid fixed/);
 });
+test('web-model reviews prune only their own fresh session files, newest kept',async()=>{
+  const {pruneFreshSessions}=await import('../src/goal-astra-review.mjs');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'fresh-sessions-'));
+  for(let i=0;i<5;i++){const f=path.join(dir,`s${i}.jsonl`);fs.writeFileSync(f,'{}');const t=new Date(Date.now()-(5-i)*60000);fs.utimesSync(f,t,t);}
+  fs.writeFileSync(path.join(dir,'note.txt'),'keep');
+  assert.equal(pruneFreshSessions(dir,2),3);
+  assert.deepEqual(fs.readdirSync(dir).sort(),['note.txt','s3.jsonl','s4.jsonl']);
+  assert.equal(pruneFreshSessions(dir,2),0);
+  fs.rmSync(dir,{recursive:true,force:true});
+});

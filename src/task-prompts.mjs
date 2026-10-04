@@ -87,7 +87,7 @@ export const modelKey = m => `${m.provider}/${m.model}/${m.thinkingLevel}`;
 // 本次运行的候选顺序 [首选, 次选]。alternate=on 时按 rotationFile 记录的上次首选轮换，
 // 选定即写回（失败的那次也算一次，保证两模型轮流）；记录不可读时按标题顺序并返回原因供日志。
 export function modelOrder(settings, rotationFile) {
-  const pick = m => ({provider: m.provider ?? settings.provider, model: m.model, thinkingLevel: m.thinkingLevel, effort: m.effort ?? m.thinkingLevel});
+  const pick = m => ({provider: m.provider ?? settings.provider, model: m.model, thinkingLevel: m.thinkingLevel ?? m.effort, effort: m.effort ?? m.thinkingLevel});
   const order = [pick(settings)];
   if (settings.fallback) order.push(pick(settings.fallback));
   let note = settings.alternate ? 'alternate' : 'fixed';

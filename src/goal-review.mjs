@@ -43,7 +43,7 @@ function configuredProfile(profile,goals){
   const base=PROFILES[profile];if(!base)throw Error('Profile must be astra or fable');
   if(!goals.includes(PROMPTS_START))return {...base,provider:profile==='fable'?'claude-code':'openai-codex',fallback:profile==='fable'?LEGACY_FALLBACK:undefined,resume:REVIEW_RESUME};
   const settings=taskModelSettings(goals,'goal-review-'+profile);
-  return {...base,provider:settings.provider,model:settings.model,effort:settings.effort,fallback:settings.fallback,resume:settings.resume};
+  return {...base,provider:settings.provider,model:settings.model,effort:settings.effort,thinkingLevel:settings.thinkingLevel,fallback:settings.fallback,resume:settings.resume,alternate:settings.alternate};
 }
 export function reviewPrompt(profile,goals,catalog,settings=configuredProfile(profile,goals)){
   if(goals.includes(PROMPTS_START)){
