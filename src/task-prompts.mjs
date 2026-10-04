@@ -30,9 +30,9 @@ export function loadTaskPrompt(root, id) {
 }
 const THINKING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 // Providers a task heading may name that come from an extension, not Pi's built-ins.
-// pi-chatgpt-web = pi-chat's ChatGPT web models (AcBoter), linked into pi-web's agent
+// pi-chatgpt-web = pi-chat's ChatGPT web models (AcBoter); pi-mimo-web is registered by the same extension. Linked into pi-web's agent
 // extensions by pi-chatgpt-web/tools/pi-chat-instance.mjs setup.
-const EXTENSION_PROVIDERS = { 'pi-chatgpt-web': 'pi-chatgpt-web/index.ts' };
+const EXTENSION_PROVIDERS = { 'pi-chatgpt-web': 'pi-chatgpt-web/index.ts', 'pi-mimo-web': 'pi-chatgpt-web/index.ts' };
 /** Extra CLI args so a runner started with --no-extensions still has the task's provider. */
 export function providerExtensionArgs(agent, provider) {
   const rel = EXTENSION_PROVIDERS[provider];

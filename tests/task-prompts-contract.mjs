@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {taskPrompt,stripTaskPrompts,renderTaskPrompt,loadTaskPrompt,taskModelSettings,loadTaskModelSettings,globalRuleSection} from '../src/task-prompts.mjs';
+import os from 'node:os';
+import {taskPrompt,stripTaskPrompts,renderTaskPrompt,loadTaskPrompt,taskModelSettings,loadTaskModelSettings,globalRuleSection,providerExtensionArgs,usesCodexQuota} from '../src/task-prompts.mjs';
 import {site} from '../src/goal-inspect.mjs';
 import path from 'node:path';
 import {reviewPrompt,activeGoalText,emptyGoals,parseDecisions} from '../src/goal-review.mjs';
@@ -59,4 +60,18 @@ test('a review profile removed from the goal list is skipped before any inspecti
   const result=await tick('fable',{work,goalsFile,logFn:(event,details)=>events.push([event,details?.reason]),inspectSource:()=>{throw Error('must not inspect')},quotaCheck:async()=>{throw Error('must not reserve')}});
   assert.deepEqual(result,{skipped:'profile-not-configured',modelCalls:0});
   assert.ok(events.some(([event,reason])=>event==='skip'&&reason==='profile-not-in-goal-list'),'skip reason must be logged');
+});
+test('web-model task headings load the shared web extension and skip the codex quota',()=>{
+  const agent=fs.mkdtempSync(path.join(os.tmpdir(),'task-provider-'));
+  fs.mkdirSync(path.join(agent,'extensions','pi-chatgpt-web'),{recursive:true});
+  fs.writeFileSync(path.join(agent,'extensions','pi-chatgpt-web','index.ts'),'');
+  const file=path.join(agent,'extensions','pi-chatgpt-web','index.ts');
+  for(const provider of ['pi-chatgpt-web','pi-mimo-web']){
+    assert.deepEqual(providerExtensionArgs(agent,provider),['--extension',file]);
+    assert.equal(usesCodexQuota(provider),false);
+  }
+  assert.deepEqual(providerExtensionArgs(agent,'openai-codex'),[]);
+  assert.equal(usesCodexQuota('openai-codex'),true);
+  assert.deepEqual(taskModelSettings(wrap('m','x','pi-mimo-web/mimo-web-pro/high'),'m'),{provider:'pi-mimo-web',model:'mimo-web-pro',thinkingLevel:'high',effort:'high'});
+  fs.rmSync(agent,{recursive:true,force:true});
 });
