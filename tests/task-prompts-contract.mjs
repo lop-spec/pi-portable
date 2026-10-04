@@ -75,3 +75,31 @@ test('web-model task headings load the shared web extension and skip the codex q
   assert.deepEqual(taskModelSettings(wrap('m','x','pi-mimo-web/mimo-web-pro/high'),'m'),{provider:'pi-mimo-web',model:'mimo-web-pro',thinkingLevel:'high',effort:'high'});
   fs.rmSync(agent,{recursive:true,force:true});
 });
+test('alternate=on rotates primary/fallback per run and first-round model failures are detected',async()=>{
+  const {modelOrder,modelKey,firstRoundModelFailure,switchSessionModel}=await import('../src/task-prompts.mjs');
+  const head='pi-mimo-web/mimo-web-pro/high;fallback=pi-gemini-web/gemini-web-3.8-flash/high;alternate=on;resume=pi-mimo-web/mimo-web-pro/high';
+  const settings=taskModelSettings(wrap('goal-review-astra','x',head),'goal-review-astra');
+  assert.equal(settings.alternate,true);
+  assert.throws(()=>taskModelSettings(wrap('a','x','pi-mimo-web/mimo-web-pro/high;alternate=on'),'a'),/alternate 需要 fallback/);
+  assert.throws(()=>taskModelSettings(wrap('a','x',head.replace('alternate=on','alternate=yes')),'a'),/alternate 只接受 on/);
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rotation-'));const file=path.join(dir,'r.json');
+  const firsts=[1,2,3,4].map(()=>modelOrder(settings,file).order[0].provider);
+  assert.deepEqual(firsts,['pi-mimo-web','pi-gemini-web','pi-mimo-web','pi-gemini-web']);
+  const {order}=modelOrder(settings,file);assert.deepEqual(order.map(modelKey),['pi-mimo-web/mimo-web-pro/high','pi-gemini-web/gemini-web-3.8-flash/high']);
+  // 无 alternate：固定首选在前，不写状态
+  const fixed=taskModelSettings(wrap('m','x','pi-mimo-web/mimo-web-pro/high;fallback=pi-gemini-web/gemini-web-3.8-flash/high'),'m');
+  const f2=path.join(dir,'none.json');assert.deepEqual(modelOrder(fixed,f2).order.map(m=>m.provider),['pi-mimo-web','pi-gemini-web']);assert.equal(fs.existsSync(f2),false);
+  // 只写 model/level 的 fallback 沿用首选 provider
+  assert.equal(modelOrder(taskModelSettings(wrap('m','x','openai-codex/gpt-6-sol/high;fallback=gpt-6-luna/high'),'m')).order[1].provider,'openai-codex');
+  // 第一轮失败判定
+  const sess=(...ms)=>{const p=path.join(dir,`s${Math.random()}.jsonl`);fs.writeFileSync(p,ms.map(m=>JSON.stringify({type:'message',message:m})).join('\n'));return p;};
+  assert.equal(firstRoundModelFailure(sess({role:'user'},{role:'assistant',stopReason:'error',errorMessage:'ACBOTER_ROW_AMBIGUOUS'})),'ACBOTER_ROW_AMBIGUOUS');
+  assert.equal(firstRoundModelFailure(sess({role:'user'},{role:'assistant',stopReason:'toolUse'},{role:'toolResult'},{role:'assistant',stopReason:'error'})),null,'after a tool ran, never replay');
+  assert.equal(firstRoundModelFailure(sess({role:'user'},{role:'assistant',stopReason:'stop'})),null);
+  assert.equal(firstRoundModelFailure(path.join(dir,'missing.jsonl')),null);
+  // 同会话切模型并读回
+  const calls=[];const api=async(route,body)=>{calls.push(body.type);return body.type==='get_state'?{data:{model:{provider:'pi-gemini-web',id:'gemini-web-3.8-flash'},thinkingLevel:'high'}}:{}};
+  await switchSessionModel(api,'/r',order[1]);assert.deepEqual(calls,['set_model','set_thinking_level','get_state']);
+  await assert.rejects(switchSessionModel(api,'/r',order[0]),/读回不一致/);
+  fs.rmSync(dir,{recursive:true,force:true});
+});

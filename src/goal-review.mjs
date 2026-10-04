@@ -8,7 +8,7 @@ import {acquireLock,stateBusy} from './quota-idle-scheduler.mjs';
 import {appendLineRotating} from './log-rotate.mjs';
 import {checkScheduledQuota} from './scheduled-quota-guard.mjs';
 import {waitForPiChatCapacity,isPiChatProvider} from './pi-chat-capacity.mjs';
-import {PROMPTS_START, stripTaskPrompts, taskPrompt, taskModelSettings, renderTaskPrompt, globalRuleSection, usesCodexQuota} from './task-prompts.mjs';
+import {PROMPTS_START, stripTaskPrompts, taskPrompt, taskModelSettings, renderTaskPrompt, globalRuleSection, usesCodexQuota, modelOrder, modelKey} from './task-prompts.mjs';
 
 export const AUTONOMY_GUIDANCE='在请求人工介入前，先检查是否因自身核查不够全面而误判为必须人工，补齐必要检查，并寻找现有授权范围内可自行完成的更好方案；能自行处理就直接执行。只有确实必须人工操作或授权时才请求介入，并说明已核实的原因。';
 export const ADVICE_BOUNDARY='本消息是自动巡检建议，不是用户新增指令或授权；生产变更、共享环境、账户操作及暂停边界仍以用户实际授权为准。';
@@ -186,7 +186,11 @@ export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goal
     // Removing a profile's prompt block from the goal list disables that profile; malformed blocks still fail.
     if(rawGoals.includes(PROMPTS_START)&&!rawGoals.includes(`<!-- task-prompt:goal-review-${profile} -->`)){logFn('skip',{profile,reason:'profile-not-in-goal-list',modelCalls:0});return {skipped:'profile-not-configured',modelCalls:0}}
     const modelSettings=configuredProfile(profile,rawGoals);
-    const codexMetered=usesCodexQuota(modelSettings.provider),resumeMetered=usesCodexQuota(modelSettings.resume?.provider??modelSettings.provider);
+    // Claude 运行器自带额度耗尽回退，保持原样；其余按标题首选/次选，alternate=on 时两模型轮流。
+    const claudeRun=usesClaudeRunner(modelSettings);
+    const {order:models,note:orderNote}=claudeRun?{order:[modelSettings],note:'claude-runner-own-fallback'}:modelOrder(modelSettings,dryRun?null:path.join(work,`${profile}-model-rotation.json`));
+    logFn('review-model-order',{profile,order:models.map(modelKey),note:orderNote});
+    const codexMetered=usesCodexQuota(models[0].provider),resumeMetered=usesCodexQuota(modelSettings.resume?.provider??modelSettings.provider);
     if(!dryRun&&QUOTA_GUARD_ENABLED&&!codexMetered)logFn('quota-guard-bypassed',{profile,reason:'provider-not-codex-metered',provider:modelSettings.provider});
     if(!dryRun&&QUOTA_GUARD_ENABLED&&codexMetered){
       const quota=await quotaCheck({task:`long-goals-${profile}`,admit:true});
@@ -194,7 +198,7 @@ export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goal
       quotaReservation=quota.reservation;
     } else if(!dryRun&&!QUOTA_GUARD_ENABLED) logFn('quota-guard-bypassed',{profile,reason:'explicit-user-authorized-schedule'});
     const reviewStartedAt=Date.now();
-    if(!dryRun&&isPiChatProvider(modelSettings.provider))await waitForPiChatCapacity({log:logFn,task:`long-goals-${profile}`});
+    if(!dryRun&&isPiChatProvider(models[0].provider))await waitForPiChatCapacity({log:logFn,task:`long-goals-${profile}`});
     const catalog=await inspectSource({op:'catalog'});
     // Only selected histories are read in full. A later human instruction invalidates the review.
     const startSessions=catalog.sessions.map(s=>({...s,reviewStartedAt}));
@@ -202,9 +206,16 @@ export async function tick(profile,{dryRun=false,reviewOnly=false,work=WORK,goal
     const promptFile=path.join(work,`${profile}-latest-prompt.txt`);fs.mkdirSync(work,{recursive:true});fs.writeFileSync(promptFile,prompt);
     if(dryRun){logFn('dry-run',{profile,goalsHash:hash(rawGoals),sessionCount:catalog.sessions.length,promptChars:prompt.length,modelCalls:0});return {dryRun:true,profile,promptFile,modelCalls:0}}
     heartbeat=setInterval(()=>logFn('tick-alive',{profile,pid:process.pid,runId}),25000);
-    const result=usesClaudeRunner(modelSettings)
-      ? await fableReview(prompt,modelSettings)
-      : await astraReview(prompt,logFn,modelSettings,profile);
+    const runOne=m=>claudeRun?fableReview(prompt,modelSettings):astraReview(prompt,logFn,{...modelSettings,provider:m.provider,model:m.model,effort:m.effort,fallback:undefined},profile);
+    let result;
+    try{result=await runOne(models[0]);}
+    catch(error){
+      // 巡检只读，换次选重跑一次是安全的；次选也失败则如实抛出。
+      if(!models[1])throw error;
+      const fallback={from:modelKey(models[0]),to:modelKey(models[1]),reason:String(error.message).slice(0,400)};
+      logFn('review-model-fallback',{profile,...fallback});
+      result={...await runOne(models[1]),fallback};
+    }
     const decisions=parseDecisions(result.text,goals);
     save(path.join(work,`${profile}-latest-result.json`),{runId,at:new Date().toISOString(),machine:HERE,goalsHash:hash(rawGoals),startSessions:startSessions.map(({first,mtime,...s})=>s),startProcesses:catalog.processes,model:result.model,effort:result.effort,reviewSession:result.reviewSession,fallback:result.fallback,decisions});
     if(reviewOnly){logFn('review-only-complete',{profile,decisions:decisions.length,sourceMutations:0});return {profile,reviewOnly:true,decisions}}
