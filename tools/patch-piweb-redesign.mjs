@@ -22,8 +22,9 @@ export function readRedesignManifest(root = REDESIGN_ROOT) {
 /** @param {{ get: (name: string) => string, set: (name: string, value: string) => void }} api */
 export function integrateRedesign({ get, set }, root = REDESIGN_ROOT) {
   const manifest = readRedesignManifest(root);
-  /** @type {string[]} */
-  const applied = [];
+  /** @type {[string, string][]} */
+  const staged = [];
+  // Validate every template first; nothing is written until all of them check out ("zero writes").
   for (const [name, entry] of Object.entries(manifest.files || {})) {
     let current = null;
     try { current = get(name); } catch (error) { if (entry.baseSha) throw new Error(`${name}: redesign base missing (${error instanceof Error ? error.message : String(error)}); zero writes`); }
@@ -33,8 +34,8 @@ export function integrateRedesign({ get, set }, root = REDESIGN_ROOT) {
     if (!fs.existsSync(file)) throw new Error(`${name}: redesign template missing; zero writes`);
     const next = normalize(fs.readFileSync(file, 'utf8'));
     if (sha(next) !== entry.sha) throw new Error(`${name}: redesign template hash mismatch; zero writes`);
-    set(name, next);
-    applied.push(name);
+    staged.push([name, next]);
   }
-  return applied;
+  for (const [name, next] of staged) set(name, next);
+  return staged.map(([name]) => name);
 }

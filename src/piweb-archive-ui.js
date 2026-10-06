@@ -803,6 +803,20 @@
     return host;
   }
 
+  // Archived-view head count = the SELECTED project's archived conversations. The proxy header (state.archivedCount) counts every
+  // project, but the list is filtered to the selected one (QA F13: "858 个对话" above 「没有已归档的会话」), so the redesigned sidebar
+  // publishes the number it actually shows in html[data-pi-session-archive-project-count]; it leaves the attribute off while the new
+  // list is still loading, and then no number is shown rather than a wrong one. A sidebar without the archive slot never publishes
+  // it and keeps the global number.
+  function archivedHeaderCount() {
+    const raw = document.documentElement.dataset.piSessionArchiveProjectCount;
+    if (raw !== undefined) {
+      const count = Number(raw);
+      return Number.isFinite(count) && count >= 0 ? count : null;
+    }
+    return host?.closest?.("[data-pi-archive-slot]") ? null : state.archivedCount;
+  }
+
   function renderControl() {
     if (!control) return;
     const text = words();
@@ -814,9 +828,10 @@
       ? `${icon("back")}<span>${text.back}</span>`
       : `${icon("archive")}<span>${text.archivedView}</span>${state.archivedCount > 0 ? `<span class="pw-num">${state.archivedCount}</span>` : ""}`;
     if (control.innerHTML !== markup) control.innerHTML = markup;
-    const metaText = archivedView ? text.archivedConversations(state.archivedCount) : "";
+    const headerCount = archivedView ? archivedHeaderCount() : null;
+    const metaText = headerCount === null ? "" : text.archivedConversations(headerCount);
     if (meta.textContent !== metaText) meta.textContent = metaText;
-    meta.hidden = !archivedView;
+    meta.hidden = !metaText;
   }
 
   // No per-row archive shortcut (lop 2026-09-15「remove row archive shortcut and reclaim title width」,
@@ -1111,6 +1126,9 @@
     renderControl();
     decorateRows();
     if (document.documentElement.dataset.piSessionArchiveView !== state.view) document.documentElement.dataset.piSessionArchiveView = state.view;
+    // All projects' archived count, for the sidebar's empty state (「本项目没有归档，其他项目共 N 个」).
+    const total = String(state.archivedCount);
+    if (document.documentElement.dataset.piSessionArchiveTotal !== total) document.documentElement.dataset.piSessionArchiveTotal = total;
   }
 
   function scheduleDecorate() {
@@ -1121,6 +1139,9 @@
 
   const start = () => {
     enableImmediateActions();
+    // The sidebar publishes the selected project's archived count once its list is loaded and announces the change
+    // with this event; re-render the head then (an event, not an observer on documentElement).
+    document.addEventListener("pi-web:archive-project-count", scheduleDecorate);
     window.__piUiSlots.register({ name: "archive", slot: "archive", order: 0, host: archiveHost(), onMount: scheduleDecorate });
     // New rows, roving tabindex and selection changes arrive through the sidebar-scoped watcher.
     window.__piUiSlots.onSidebarChange(() => { syncOptimisticLayout(); decorateRows(); });

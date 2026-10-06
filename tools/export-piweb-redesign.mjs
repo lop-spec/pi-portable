@@ -13,7 +13,10 @@ const arg = name => { const i = process.argv.indexOf(name); return i > 0 ? proce
 const source = path.resolve(arg('--source') || '');
 const base = arg('--base');
 if (!source || !base) throw new Error('usage: export-piweb-redesign.mjs --source <dev checkout> --base <commit>');
-const DEV_ONLY = [/^next\.config\.ts$/, /^tsconfig\.json$/, /^\.next/, /(^|\/)_历史版本\//, /\.bak-/, /^\.pi-portable-overlay\.json$/, /^next-env\.d\.ts$/, /^tsconfig\.tsbuildinfo$/];
+const DEV_ONLY = [/^tsconfig\.json$/, /^\.next/, /(^|\/)_历史版本\//, /\.bak-/, /^\.pi-portable-overlay\.json$/, /^next-env\.d\.ts$/, /^tsconfig\.tsbuildinfo$/];
+// Dev-checkout scaffolding that must never ship: the preview-build distDir switch in next.config.ts.
+const DEV_SWITCH = /\n {2}\/\/ dev-only \(redesign preview builds\)[^\n]*\n {2}\.\.\.\(process\.env\.PI_NEXT_DIST_DIR[^\n]*/u;
+const stripDevOnly = (name, content) => name === 'next.config.ts' ? content.replace(DEV_SWITCH, '') : content;
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const normalize = value => value.replaceAll('\r\n', '\n');
 const git = (...args) => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8', windowsHide: true, maxBuffer: 256 << 20 });
@@ -28,7 +31,8 @@ if (deleted.length) throw new Error(`deleting upstream files is not supported by
 fs.rmSync(path.join(REDESIGN_ROOT, 'files'), { recursive: true, force: true });
 const files = {};
 for (const { status, name } of changed.sort((a, b) => a.name.localeCompare(b.name))) {
-  const content = normalize(fs.readFileSync(path.join(source, name), 'utf8'));
+  const content = stripDevOnly(name, normalize(fs.readFileSync(path.join(source, name), 'utf8')));
+  if (content.includes('PI_NEXT_DIST_DIR')) throw new Error(`${name}: dev-only preview switch survived stripping`);
   let baseSha = null;
   if (status !== 'A') baseSha = sha(normalize(git('show', `${base}:${name}`)));
   const out = path.join(REDESIGN_ROOT, 'files', name);

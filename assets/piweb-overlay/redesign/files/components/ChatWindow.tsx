@@ -1,0 +1,2465 @@
+"use client";
+import { PortableProcessTimeline, type PortableTimelineEntry, type TimelineEnd } from "./PortableProcessTimeline";
+import { CompressIcon } from "./conversation/icons";
+import { PortableNodes } from "./PortableNodes";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
+import Image from "next/image";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
+import { normalizeCustomPanelLines } from "@/lib/ansi";
+import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
+import { getAssistantErrorMessage, getDisplayableAssistantBlocks, isAssistantTruncated, isCompactionMessage, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
+import { buildQuotedSelection } from "@/lib/quoted-selection";
+import { MessageView } from "./MessageView";
+import { MarkdownBody } from "./MarkdownBody";
+import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import { ExtensionStatusBar } from "./ExtensionStatusBar";
+import { AnsiText } from "./AnsiText";
+import { useI18n } from "@/hooks/useI18n";
+import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
+import { useDragDrop } from "@/hooks/useDragDrop";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
+import type { SessionStatsInfo } from "@/lib/pi-types";
+import type { AppUpdateResponse } from "@/lib/api-types";
+import type { ToolEntry } from "@/lib/tool-presets";
+import { findChatScrollAnchor, type ChatScrollAnchorCandidate, type ChatScrollPosition } from "@/lib/chat-scroll-position";
+import { getPromptAnchorSpacerHeight, isScrollAtTail } from "@/lib/chat-lazy-load";
+import {
+  buildTurnModel,
+  MAX_MOUNTED_TURNS,
+  resolveTurnWindow,
+  tailTurnWindow,
+  windowGapHeight,
+  WINDOW_STEP,
+  type TurnDescriptor,
+  type TurnWindow,
+} from "./conversation/turn-model";
+
+interface Props {
+  session: SessionInfo | null;
+  searchTarget?: { sessionId: string; entryId: string; blockIndex?: number } | null;
+  onSearchTargetHandled?: (target: { sessionId: string; entryId: string }) => void;
+  initialScrollPosition?: ChatScrollPosition | null;
+  onScrollPositionChange?: (sessionId: string, position: ChatScrollPosition) => void;
+  sessionRunning?: boolean;
+  newSessionCwd: string | null;
+  newSessionDraftKey: string | null;
+  onAgentEnd?: () => void;
+  onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
+  onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
+  onSessionForked?: (newSessionId: string) => void;
+  modelsRefreshKey?: number;
+  chatInputRef?: React.RefObject<ChatInputHandle | null>;
+  onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
+  onSystemPromptChange?: (prompt: string | null) => void;
+  onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
+  onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
+  onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
+  onSessionStatsPanelOpen?: () => void;
+  onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
+  onOpenFile?: (filePath: string, page?: number) => void;
+  onOpenSession?: (sessionId: string) => void;
+  onAskInNewChat?: (prompt: string, sourceSessionId: string, sourceEntryId: string) => Promise<void>;
+  quoteSelectionEnabled?: boolean;
+  initialPrompt?: string;
+  onInitialPromptConsumed?: () => void;
+  /** Completion sound state + controls, owned by AppShell so tasks finishing in
+   *  a non-active workspace can still ring. */
+  soundEnabled?: boolean;
+  onSoundToggle?: () => void;
+  playDoneSound?: () => void;
+  unlockAudio?: () => void;
+}
+
+function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
+  if (phase?.kind === "running_tools") {
+    const latest = phase.tools[phase.tools.length - 1];
+    if (latest?.progress) {
+      return `${t("chat.runningNamedTool", { name: latest.name })} ${latest.progress}`;
+    }
+    const names = phase.tools.map((t) => t.name);
+    if (names.length === 0) return t("chat.runningTool");
+    if (names.length === 1) return t("chat.runningNamedTool", { name: names[0] });
+    if (names.length <= 3) return t("chat.runningTools", { names: names.join(", ") });
+    return t("chat.runningToolsMore", { names: names.slice(0, 2).join(", "), count: names.length - 2 });
+  }
+  if (phase?.kind === "waiting_model") return t("chat.waitingModel");
+  if (phase?.kind === "running_command") return t("chat.runningCommand");
+  return null;
+}
+
+const CHAT_COLUMN_PADDING = 16;
+
+function NewSessionUpdateLink({
+  label,
+}: {
+  label: (version: string) => string;
+}) {
+  const [update, setUpdate] = useState<AppUpdateResponse | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/app-update", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return response.json() as Promise<AppUpdateResponse>;
+      })
+      .then((result) => {
+        if (result?.updateAvailable && result.latestVersion && result.releaseUrl) {
+          setUpdate(result);
+        }
+      })
+      .catch(() => {
+        // Update checks are best-effort and must not interrupt a new session.
+      });
+    return () => controller.abort();
+  }, []);
+
+  if (!update) return null;
+  const accessibleLabel = label(update.latestVersion);
+
+  return (
+    <a
+      href={update.releaseUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={accessibleLabel}
+      aria-label={accessibleLabel}
+      onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; }}
+      onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        alignSelf: "center",
+        gap: 3,
+        minHeight: 32,
+        minWidth: 0,
+        padding: "0 4px",
+        background: "transparent",
+        borderRadius: 5,
+        color: "var(--accent)",
+        fontSize: 12,
+        fontWeight: 600,
+        lineHeight: 1.2,
+        textDecoration: "none",
+        transition: "background 0.12s",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>v{update.latestVersion}</span>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+        <path d="M7 17 17 7" />
+        <path d="M7 7h10v10" />
+      </svg>
+    </a>
+  );
+}
+
+function hasFinalAssistantAnswer(message: AgentMessage): boolean {
+  if (message.role !== "assistant") return false;
+  return splitFinalAssistantBlocks(message as AssistantMessage).answerBlocks.some((block) => (
+    block.type === "image" || (block.type === "text" && block.text.trim().length > 0)
+  ));
+}
+
+function findFinalAssistantIndex(messages: AgentMessage[], userIdx: number, endIdx: number): number {
+  for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
+    if (hasFinalAssistantAnswer(messages[candidateIdx])) return candidateIdx;
+  }
+  for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
+    if (messages[candidateIdx]?.role === "assistant") return candidateIdx;
+  }
+  return -1;
+}
+
+function getUserInputText(message: AgentMessage): string | null {
+  if (message.role !== "user") return null;
+  if (typeof message.content === "string") {
+    const text = message.content.trim();
+    return text.length > 0 ? text : null;
+  }
+  const text = message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : null;
+}
+
+function withAssistantBlocks(
+  message: AssistantMessage,
+  content: AssistantContentBlock[],
+  options: { omitUsage?: boolean } = {},
+): AssistantMessage {
+  const next = { ...message, content };
+  if (options.omitUsage) next.usage = undefined;
+  return next;
+}
+
+function turnEnd(message: AgentMessage | undefined): TimelineEnd | null {
+  if (message?.role !== "assistant") return null;
+  const reply = message as AssistantMessage;
+  // stop / length finished normally; a turn whose last reply still wanted tools was cut off.
+  const status = reply.stopReason === "error" ? "error" : reply.stopReason === "stop" || reply.stopReason === "length" || !reply.stopReason ? "done" : "stopped";
+  return { status, at: reply.timestamp };
+}
+
+/** Shared, rarely changing inputs of every turn (kept in one memoized object). */
+interface TurnRenderContext {
+  modelNames: Record<string, string>;
+  messageCwd?: string;
+  sessionKey?: string;
+  onOpenFile?: (filePath: string, page?: number) => void;
+  onOpenSession?: (sessionId: string) => void;
+  sessionBusy: boolean;
+  isNew: boolean;
+  handleFork: (entryId: string) => void;
+  handleNavigate: (entryId: string) => Promise<boolean>;
+  handleEditContent: (message: UserMessage) => void;
+  forkingEntryId: string | null;
+  attachLastUser: (element: HTMLDivElement | null) => void;
+}
+
+interface TurnViewProps {
+  turn: TurnDescriptor;
+  ctx: TurnRenderContext;
+  /** Only the turn holding the jump target receives these. */
+  searchEntryId?: string;
+  searchBlock?: AssistantContentBlock;
+  /** Only the running turn receives these. */
+  streamingReply?: AssistantMessage | null;
+  livePhase?: string | null;
+}
+
+// One displayed turn: anchor message → process timeline → final answer → trailing items,
+// rendered as flat siblings (the lazy-load window and scroll restore read
+// `content.children[data-entry-id]`). Memoized on the turn descriptor, so finished turns
+// skip rendering while another turn streams or older pages load. The first top-level
+// element carries `data-pw-turn` for the render window's measurements.
+const TurnView = memo(function TurnView({ turn, ctx, searchEntryId, searchBlock, streamingReply, livePhase }: TurnViewProps) {
+  const nodes = useMemo(() => {
+    const { modelNames, messageCwd, sessionKey, onOpenFile, onOpenSession, sessionBusy, isNew, handleFork, handleNavigate, handleEditContent, forkingEntryId, attachLastUser } = ctx;
+    const { messages, entryIds } = turn;
+    const toolResultsMap = turn.toolResults as Map<string, ToolResultMessage>;
+    const count = messages.length;
+    let marked = false;
+    const mark = () => {
+      if (marked) return undefined;
+      marked = true;
+      return turn.key;
+    };
+    const keyOf = (idx: number) => entryIds[idx] ?? `${turn.key}#${idx}`;
+
+    const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
+      const msg = options.messageOverride ?? messages[idx];
+      const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
+      const keyPrefix = options.keyPrefix ?? "message";
+      const messageKey = keyOf(idx);
+      let showTimestamp = false;
+      if (msg.role === "assistant") {
+        showTimestamp = true;
+        let decided = false;
+        for (let j = idx + 1; j < count; j++) {
+          const r = messages[j].role;
+          if (r === "user") { decided = true; break; }
+          if (r === "assistant") { showTimestamp = false; decided = true; break; }
+        }
+        if (!decided && turn.assistantFollows) showTimestamp = false;
+        // Hide on the currently-streaming tail (the streaming bubble owns the live timestamp)
+        if (showTimestamp && turn.streamingTail && idx === count - 1) {
+          showTimestamp = false;
+        }
+      }
+      if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
+      const view = (
+        <MessageView
+          key={`${keyPrefix}-view-${messageKey}`}
+          message={msg}
+          toolResults={toolResultsMap}
+          modelNames={modelNames}
+          cwd={messageCwd}
+          onOpenFile={onOpenFile}
+          onOpenSession={onOpenSession}
+          entryId={entryIds[idx]}
+          searchBlock={entryIds[idx] === searchEntryId ? searchBlock : undefined}
+          onFork={sessionBusy || isNew ? undefined : handleFork}
+          forking={forkingEntryId === entryIds[idx]}
+          onNavigate={sessionBusy ? undefined : handleNavigate}
+          onEditContent={handleEditContent}
+          showTimestamp={showTimestamp}
+          prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : turn.prevTimestamp}
+          sessionId={sessionKey}
+          writtenFiles={options.writtenFiles}
+        />
+      );
+      if (!isVisible || options.attachRef === false) return view;
+      return (
+        <div key={`${keyPrefix}-${messageKey}`} className={isMessageGroupAnchor(msg) ? "pw-turn-start" : undefined} data-entry-id={entryIds[idx]} data-pw-turn={mark()} ref={idx === turn.lastUserLocal ? attachLastUser : undefined}>
+          {view}
+        </div>
+      );
+    };
+
+    // Outside a timeline a compaction summary collapses to the same one-line marker;
+    // the full summary stays in 完整历史.
+    const compactionLine = (idx: number): ReactNode => (
+      <div key={`compaction-${keyOf(idx)}`} className="pw-compaction-line" data-entry-id={entryIds[idx]} data-pw-turn={mark()}>
+        <span data-search-target={(Boolean(entryIds[idx]) && entryIds[idx] === searchEntryId) || undefined}><CompressIcon />上下文已自动压缩</span>
+      </div>
+    );
+    const renderLoose = (idx: number): ReactNode => isCompactionMessage(messages[idx]) ? compactionLine(idx) : renderMessage(idx);
+
+    // The reply being streamed renders inside the live turn's timeline — the same
+    // component and hiding rules as finished steps, so nothing changes shape when a
+    // step completes.
+    const portableProcessTimeline = (anchorIdx: number, from: number, to: number, options: { live?: boolean; finalIdx?: number; finalBlocks?: AssistantContentBlock[]; omitFinalUsage?: boolean; startedAt?: number; end?: TimelineEnd | null } = {}): ReactNode => {
+      const entries: PortableTimelineEntry[] = [];
+      for (let i = from; i <= to; i++) {
+        const item = messages[i];
+        if (item.role === "toolResult") continue;
+        if (isCompactionMessage(item)) {
+          entries.push({ kind: "compaction", key: `compaction-${keyOf(i)}`, entryId: entryIds[i], timestamp: (item as { timestamp?: number }).timestamp });
+          continue;
+        }
+        if (item.role !== "assistant") {
+          entries.push({ kind: "node", key: `node-${keyOf(i)}`, node: renderMessage(i, { attachRef: false, keyPrefix: "process" }) });
+          continue;
+        }
+        const message = i === options.finalIdx
+          ? withAssistantBlocks(item as AssistantMessage, options.finalBlocks ?? [], { omitUsage: options.omitFinalUsage })
+          : item as AssistantMessage;
+        // Failed or truncated intermediate replies: whatever they said stays in the
+        // rail, followed by one compact failure row (merged when the code repeats).
+        const broken = i !== options.finalIdx && Boolean(getAssistantErrorMessage(message) || isAssistantTruncated(message));
+        const hasBlocks = getDisplayableAssistantBlocks(message).length > 0;
+        if (!broken && !hasBlocks) continue;
+        if (hasBlocks) entries.push({ kind: "assistant", key: `msg-${keyOf(i)}`, entryId: entryIds[i], message });
+        if (broken) entries.push({ kind: "failure", key: `failure-${keyOf(i)}`, entryId: entryIds[i], message });
+      }
+      if (options.live && streamingReply) {
+        entries.push({ kind: "assistant", key: "streaming", message: streamingReply, streaming: true });
+      }
+      if (entries.length === 0 && !options.live) return null;
+      return (
+        <div key={turn.partial ? "process-timeline-partial" : `process-timeline-${keyOf(anchorIdx)}`} className="pw-proc-wrap" data-pw-turn={mark()}>
+          <PortableProcessTimeline
+            entries={entries}
+            toolResults={toolResultsMap}
+            cwd={messageCwd}
+            sessionId={sessionKey}
+            searchEntryId={searchEntryId}
+            searchBlock={searchBlock}
+            live={options.live}
+            modelNames={modelNames}
+            collapseKey={sessionKey && entryIds[anchorIdx] ? `${sessionKey}:${entryIds[anchorIdx]}` : undefined}
+            startedAt={options.startedAt}
+            end={options.end}
+            phase={options.live ? livePhase : null}
+            streamingMessage={options.live ? streamingReply : null}
+            onOpenFile={onOpenFile}
+            onOpenSession={onOpenSession}
+          />
+        </div>
+      );
+    };
+
+    const rendered: ReactNode[] = [];
+    const push = (node: ReactNode) => { if (node) rendered.push(node); };
+    if (turn.partial) {
+      // The loaded window starts in the middle of a turn (older pages not fetched):
+      // render that partial turn the same way, without a start time.
+      const finalIdx = turn.live ? -1 : findFinalAssistantIndex(messages as AgentMessage[], -1, count);
+      if (finalIdx < 0) {
+        push(portableProcessTimeline(0, 0, count - 1, { live: turn.live }));
+      } else {
+        const final = messages[finalIdx] as AssistantMessage;
+        const split = splitFinalAssistantBlocks(final);
+        const answer = split.answerBlocks.length > 0 || getAssistantErrorMessage(final) || isAssistantTruncated(final)
+          ? withAssistantBlocks(final, split.answerBlocks)
+          : null;
+        const processEnd = final.content.indexOf(split.answerBlocks[0]);
+        push(portableProcessTimeline(0, 0, finalIdx, { finalIdx, finalBlocks: final.content.slice(0, processEnd < 0 ? undefined : processEnd), omitFinalUsage: Boolean(answer), end: turnEnd(final) }));
+        if (answer) push(renderMessage(finalIdx, { messageOverride: answer }));
+        for (let idx = finalIdx + 1; idx < count; idx++) push(renderLoose(idx));
+      }
+      return rendered;
+    }
+
+    const startedAt = (messages[0] as { timestamp?: number }).timestamp;
+    // The running turn: user message + one live timeline that also carries the
+    // reply being streamed, even before any step has been saved.
+    if (turn.live) {
+      push(renderMessage(0));
+      push(portableProcessTimeline(0, 1, count - 1, { live: true, startedAt }));
+      return rendered;
+    }
+
+    const finalAssistantIdx = findFinalAssistantIndex(messages as AgentMessage[], 0, count);
+    if (finalAssistantIdx === -1) {
+      for (let idx = 0; idx < count; idx++) push(renderLoose(idx));
+      return rendered;
+    }
+
+    push(renderMessage(0));
+    const finalAssistant = messages[finalAssistantIdx] as AssistantMessage;
+    const finalSplit = splitFinalAssistantBlocks(finalAssistant);
+    const finalAnswerMessage = finalSplit.answerBlocks.length > 0 || getAssistantErrorMessage(finalAssistant) || isAssistantTruncated(finalAssistant)
+      ? withAssistantBlocks(finalAssistant, finalSplit.answerBlocks)
+      : null;
+    const finalProcessEnd = finalAssistant.content.indexOf(finalSplit.answerBlocks[0]);
+    // Keep the original prefix so deferred thinking retains its stored block indices.
+    const finalProcessBlocks = finalAssistant.content.slice(0, finalProcessEnd < 0 ? undefined : finalProcessEnd);
+    push(portableProcessTimeline(0, 1, finalAssistantIdx, { finalIdx: finalAssistantIdx, finalBlocks: finalProcessBlocks, omitFinalUsage: Boolean(finalAnswerMessage), startedAt, end: turnEnd(finalAssistant) }));
+
+    if (finalAnswerMessage) {
+      // Each tool call is stored as its own assistant entry, so the
+      // final answer alone carries no record of what the turn wrote.
+      // Gather the turn's assistant blocks and derive the file list
+      // from the write/edit calls among them.
+      const turnContent: AssistantContentBlock[] = [];
+      for (let i = 1; i <= finalAssistantIdx; i++) {
+        const m = messages[i];
+        if (m?.role === "assistant") {
+          for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
+        }
+      }
+      const writtenFiles = extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd);
+      push(renderMessage(finalAssistantIdx, {
+        messageOverride: finalAnswerMessage,
+        writtenFiles,
+      }));
+    }
+    for (let idx = finalAssistantIdx + 1; idx < count; idx++) push(renderLoose(idx));
+    return rendered;
+  }, [turn, ctx, searchEntryId, searchBlock, streamingReply, livePhase]);
+  return <>{nodes}</>;
+});
+
+/**
+ * Index of the last direct child of `content` whose top is at or above `y` (binary
+ * search: the children are stacked block boxes), or -1.
+ */
+function lastChildAtOrAbove(content: HTMLElement, y: number): number {
+  const children = content.children;
+  let lo = 0;
+  let hi = children.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (children[mid].getBoundingClientRect().top <= y) { best = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return best;
+}
+
+/**
+ * Scroll anchor for keeping the view still across commits: the first visible element
+ * that carries an entry id — a top-level message, or inside a process timeline the first
+ * visible narration/marker — because entry ids survive re-mounts (a partial first turn
+ * re-keyed by an older page). Falls back to the first visible top-level element.
+ */
+function findViewportAnchor(content: HTMLElement, viewportTop: number, viewportBottom: number): { element: HTMLElement; entryId?: string } | null {
+  const children = content.children;
+  let fallback: HTMLElement | null = null;
+  for (let index = Math.max(0, lastChildAtOrAbove(content, viewportTop)); index < children.length; index++) {
+    const child = children[index] as HTMLElement;
+    if (child.dataset.pwWindowGap || child.dataset.pwHistorySentinel !== undefined) continue;
+    const rect = child.getBoundingClientRect();
+    if (rect.bottom <= viewportTop + 1) continue;
+    if (rect.top >= viewportBottom) break;
+    fallback ??= child;
+    if (child.dataset.entryId) return { element: child, entryId: child.dataset.entryId };
+    const inner = child.querySelectorAll<HTMLElement>("[data-entry-id]");
+    let lo = 0;
+    let hi = inner.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (inner[mid].getBoundingClientRect().bottom > viewportTop + 1) { found = mid; hi = mid - 1; }
+      else lo = mid + 1;
+    }
+    if (found >= 0 && inner[found].getBoundingClientRect().top < viewportBottom) {
+      return { element: inner[found], entryId: inner[found].dataset.entryId };
+    }
+  }
+  return fallback ? { element: fallback } : null;
+}
+
+/** Scroll-position anchor for the unmount save: same rule as findChatScrollAnchor, O(log n) reads. */
+function findScrollAnchorChild(content: HTMLElement, viewportTop: number) {
+  const children = content.children;
+  const at = lastChildAtOrAbove(content, viewportTop);
+  const candidates: ChatScrollAnchorCandidate[] = [];
+  const candidate = (child: HTMLElement) => {
+    const rect = child.getBoundingClientRect();
+    candidates.push({ entryId: child.dataset.entryId!, top: rect.top, bottom: rect.bottom });
+  };
+  // The last entry starting at/above the viewport top and the first one below it are
+  // the only candidates findChatScrollAnchor can pick.
+  for (let index = at; index >= 0; index--) {
+    const child = children[index] as HTMLElement;
+    if (child.dataset.entryId) { candidate(child); break; }
+  }
+  for (let index = at + 1; index < children.length; index++) {
+    const child = children[index] as HTMLElement;
+    if (child.dataset.entryId) { candidate(child); break; }
+  }
+  return findChatScrollAnchor(candidates, viewportTop);
+}
+
+// Scrolling up only starts a history page within this distance of the top.
+const HISTORY_PREFETCH_PX = 1200;
+
+function ChatWindowView({ session, searchTarget: externalSearchTarget, onSearchTargetHandled: externalSearchHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+  const [nodeTarget, setNodeTarget] = useState<Props['searchTarget']>(null);
+  const [nodeNavigationError, setNodeNavigationError] = useState("");
+  const searchTarget = nodeTarget ?? externalSearchTarget;
+  const onSearchTargetHandled = useCallback((target: { sessionId: string; entryId: string }) => {
+    setNodeTarget(null); externalSearchHandled?.(target);
+  }, [externalSearchHandled]);
+
+  const { t } = useI18n();
+  const isMobile = useIsMobile();
+  const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
+
+  // Wrap onAgentEnd to play the completion sound. This is more reliable than
+  // wrapping handleAgentEventRef because useAgentSession overwrites that ref
+  // on every render (it syncs the latest callback), which would blow away an
+  // externally-installed wrapper after the first re-render.
+  const playDoneSoundRef = useRef(playDoneSound);
+  playDoneSoundRef.current = playDoneSound;
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+  const soundedExtensionDialogIdRef = useRef<string | null>(null);
+  const wrappedOnAgentEnd = useCallback(() => {
+    if (completionNotificationsEnabled && soundEnabledRef.current) {
+      playDoneSoundRef.current();
+    }
+    onAgentEnd?.();
+  }, [completionNotificationsEnabled, onAgentEnd]);
+
+  // 稳定化 onEditContent 引用，配合 React.memo 防止历史消息重渲染
+  const handleEditContent = useCallback((message: UserMessage) => {
+    chatInputRef?.current?.replaceMessage(message);
+  }, [chatInputRef]);
+
+  const initialScrollPositionRef = useRef(searchTarget ? null : initialScrollPosition ?? null);
+  const [pendingScrollRestore, setPendingScrollRestore] = useState<Extract<ChatScrollPosition, { atBottom: false }> | null>(() => {
+    const position = initialScrollPositionRef.current;
+    return position && !position.atBottom ? position : null;
+  });
+  const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
+  // Lets the hook's scrollToBottom mount the newest turns first when the render
+  // window has unmounted them (see the render window below).
+  const revealTailRef = useRef<((behavior: ScrollBehavior, options?: { scroll?: boolean; appending?: number }) => boolean) | null>(null);
+
+  const {
+    loading, error, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState,
+    agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    retryInfo, contextUsage, forkingEntryId,
+    isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
+    slashCommands, slashCommandsLoading, queuedMessages,
+    notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, setNoticePaused,
+    isAutoModelSelection,
+    isAutoThinkingSelection,
+    agentPhase,
+    isNew,
+    showScrollToBottom,
+    sessionIdRef, scrollContainerRef,
+    lastUserMsgRef, promptAnchorActive,
+    handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
+    handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
+    handleRecallQueue,
+    handleBuiltinSlashCommand,
+    handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands, scrollUserMsgToTop,
+    loadContext, activeLeafId, scrollToBottom, scrollToMessage, followStreamingTail,
+  } = useAgentSession({
+    session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
+    deferInitialScroll: Boolean(pendingScrollRestore),
+    revealTailRef,
+  });
+  const sessionBusy = agentRunning || bashRunning;
+  const [quotedSelection, setQuotedSelection] = useState<{
+    text: string;
+    top: number;
+    left: number;
+    sourceEntryId?: string;
+  } | null>(null);
+  const [quoteInputOpen, setQuoteInputOpen] = useState(false);
+  const [quoteSubmitting, setQuoteSubmitting] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const quotePopoverRef = useRef<HTMLDivElement | null>(null);
+  const quoteChatInputRef = useRef<ChatInputHandle | null>(null);
+  const closeQuotedSelection = useCallback(() => {
+    setQuotedSelection(null);
+    setQuoteInputOpen(false);
+    setQuoteError(null);
+  }, []);
+
+  useEffect(() => {
+    if (!quoteSelectionEnabled) closeQuotedSelection();
+  }, [quoteSelectionEnabled, closeQuotedSelection]);
+
+  const captureQuotedSelection = useCallback(() => {
+    if (!quoteSelectionEnabled || quoteInputOpen) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const root = messageContentRef.current;
+    if (!selection || selection.isCollapsed || !range || !root || !root.contains(range.commonAncestorContainer)) {
+      setQuotedSelection(null);
+      return;
+    }
+    const text = selection.toString().trim();
+    if (!text) {
+      setQuotedSelection(null);
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    const ancestor = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer as Element
+      : range.commonAncestorContainer.parentElement;
+    const start = range.startContainer.nodeType === Node.ELEMENT_NODE
+      ? range.startContainer as Element
+      : range.startContainer.parentElement;
+    const end = range.endContainer.nodeType === Node.ELEMENT_NODE
+      ? range.endContainer as Element
+      : range.endContainer.parentElement;
+    const sourceEntryId = [ancestor, start, end]
+      .map((element) => element?.closest<HTMLElement>("[data-message-role=\"assistant\"]")?.dataset.entryId)
+      .find((entryId): entryId is string => Boolean(entryId));
+    setQuotedSelection({
+      text,
+      top: Math.min(window.innerHeight - 44, rect.bottom + 8),
+      left: Math.max(64, Math.min(window.innerWidth - 64, rect.left + rect.width / 2)),
+      sourceEntryId,
+    });
+  }, [quoteSelectionEnabled, quoteInputOpen]);
+
+  useEffect(() => {
+    if (!quoteInputOpen || !quotedSelection) return;
+    quoteChatInputRef.current?.insertIfEmpty(buildQuotedSelection(
+      quotedSelection.text,
+      t("chat.quoteIntro"),
+      t("chat.quoteQuestion"),
+    ));
+  }, [quoteInputOpen, quotedSelection, t]);
+
+  useLayoutEffect(() => {
+    const popover = quotePopoverRef.current;
+    if (!popover || !quotedSelection) return;
+    const viewport = window.visualViewport;
+    const position = () => {
+      const rect = popover.getBoundingClientRect();
+      const top = viewport?.offsetTop ?? 0;
+      const left = viewport?.offsetLeft ?? 0;
+      popover.style.top = `${Math.max(top + 8, Math.min(quotedSelection.top, top + (viewport?.height ?? window.innerHeight) - rect.height - 8))}px`;
+      popover.style.left = `${Math.max(left + 8, Math.min(quotedSelection.left - rect.width / 2, left + (viewport?.width ?? window.innerWidth) - rect.width - 8))}px`;
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(popover);
+    window.addEventListener("resize", position);
+    viewport?.addEventListener("resize", position);
+    viewport?.addEventListener("scroll", position);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      viewport?.removeEventListener("resize", position);
+      viewport?.removeEventListener("scroll", position);
+    };
+  }, [quotedSelection, quoteInputOpen, quoteError]);
+
+  useEffect(() => {
+    if (!quotedSelection) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!quoteInputOpen && !quotePopoverRef.current?.contains(event.target as Node)) closeQuotedSelection();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!quoteSubmitting) closeQuotedSelection();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [quotedSelection, quoteInputOpen, quoteSubmitting, closeQuotedSelection]);
+
+  const askSelectionHere = useCallback(() => {
+    if (!quotedSelection) return;
+    chatInputRef?.current?.insertText(buildQuotedSelection(
+      quotedSelection.text,
+      t("chat.quoteIntro"),
+      t("chat.quoteQuestion"),
+    ));
+    window.getSelection()?.removeAllRanges();
+    closeQuotedSelection();
+  }, [chatInputRef, quotedSelection, closeQuotedSelection, t]);
+
+  const askSelectionInNewChat = useCallback(async (prompt: string) => {
+    const sourceSessionId = sessionIdRef.current ?? session?.id;
+    if (quoteSubmitting || !prompt.trim() || !quotedSelection?.sourceEntryId || !sourceSessionId || !onAskInNewChat) return;
+    setQuoteSubmitting(true);
+    setQuoteError(null);
+    unlockAudio?.();
+    try {
+      await onAskInNewChat(
+        prompt,
+        sourceSessionId,
+        quotedSelection.sourceEntryId,
+      );
+      closeQuotedSelection();
+    } catch (error) {
+      quoteChatInputRef.current?.restoreSubmission(prompt);
+      setQuoteError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQuoteSubmitting(false);
+    }
+  }, [onAskInNewChat, quotedSelection, quoteSubmitting, session?.id, sessionIdRef, closeQuotedSelection, unlockAudio]);
+
+  const initialPromptSentRef = useRef(false);
+  useEffect(() => {
+    if (loading || error || !initialPrompt || initialPromptSentRef.current) return;
+    initialPromptSentRef.current = true;
+    onInitialPromptConsumed?.();
+    void handleSend(initialPrompt);
+  }, [initialPrompt, loading, error, handleSend, onInitialPromptConsumed]);
+
+  useEffect(() => {
+    if (
+      !completionNotificationsEnabled
+      || !extensionDialog
+      || soundedExtensionDialogIdRef.current === extensionDialog.id
+    ) return;
+    soundedExtensionDialogIdRef.current = extensionDialog.id;
+    playDoneSoundRef.current();
+  }, [completionNotificationsEnabled, extensionDialog]);
+
+  // Register the abort handler for the global Esc shortcut
+  useEffect(() => {
+    registerAbortHandler(sessionBusy ? handleAbort : null);
+  }, [sessionBusy, handleAbort]);
+
+  // --- Lazy-load historical messages ---
+  // Older pages load when the user scrolls up near the top (or while the loaded turns
+  // do not fill the viewport). Prepending keeps the viewport on the same content (scroll
+  // anchor below), and at most MAX_MOUNTED_TURNS turns stay mounted: the rest are
+  // replaced by spacers holding their measured height.
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const messageContentRef = useRef<HTMLDivElement | null>(null);
+  const loadingOlderRef = useRef(false);
+  const scrolledUpRef = useRef(false);
+  const restoreStartedRef = useRef(false);
+  const pendingScrollRestoreRef = useRef(pendingScrollRestore);
+  pendingScrollRestoreRef.current = pendingScrollRestore;
+  const [pendingSearchScroll, setPendingSearchScroll] = useState<Props["searchTarget"]>(null);
+  const searchMessage = messages[entryIds.indexOf(pendingSearchScroll?.entryId ?? "")];
+  const searchBlock = searchMessage?.role === "assistant"
+    ? (pendingSearchScroll?.blockIndex === undefined
+      ? searchMessage.content.find((block) => block.type === "text")
+      : searchMessage.content[pendingSearchScroll.blockIndex])
+    : undefined;
+  const searchHistoryRef = useRef({ entryIds, historyCursor, hasEarlierMessages });
+  searchHistoryRef.current = { entryIds, historyCursor, hasEarlierMessages };
+
+  // Tool results: the persisted map only changes when a result message arrives; live
+  // command output (activeToolResults) is merged on top for the running turn.
+  const persistedToolResults = useMemo(() => {
+    const map = new Map<string, ToolResultMessage>();
+    for (const msg of messages) {
+      if (msg.role === "toolResult") map.set((msg as ToolResultMessage).toolCallId, msg as ToolResultMessage);
+    }
+    return map;
+  }, [messages]);
+  const toolResultsMap = useMemo(() => {
+    if (activeToolResults.size === 0) return persistedToolResults;
+    const map = new Map(activeToolResults);
+    for (const [id, result] of persistedToolResults) map.set(id, result);
+    return map;
+  }, [activeToolResults, persistedToolResults]);
+
+  // Turn model: grouping, final-answer split and per-turn tool results, rebuilt only
+  // when messages change; unchanged turns keep their descriptor (and skip rendering).
+  const turnCacheRef = useRef(new Map<string, TurnDescriptor>());
+  const turnModel = useMemo(() => {
+    // Only a running agent makes the last turn live. A `!` command (bashRunning) has its own
+    // phase line / pending bubble below the turns; treating it as live would regroup the
+    // finished last turn (final answer folded into the process, spinner, no usage footer).
+    const model = buildTurnModel(messages, entryIds, { busy: agentRunning, streaming: streamState.isStreaming }, toolResultsMap, turnCacheRef.current);
+    turnCacheRef.current = new Map(model.turns.map((turn) => [turn.key, turn]));
+    return model;
+  }, [messages, entryIds, agentRunning, streamState.isStreaming, toolResultsMap]);
+  const turns = turnModel.turns;
+
+  // Render window over the turns (keys, so prepends/appends keep it in place). A jump
+  // target (search hit, Q/A node, restored position) is always mounted.
+  const [turnWindow, setTurnWindow] = useState<TurnWindow>({ top: null, bottom: null });
+  const turnHeightsRef = useRef(new Map<string, number>());
+  const forcedEntryId = pendingSearchScroll?.entryId ?? pendingScrollRestore?.anchorEntryId ?? null;
+  const forcedTurnKey = forcedEntryId ? turnModel.turnOfEntry.get(forcedEntryId) ?? null : null;
+  const { topIndex, bottomIndex } = resolveTurnWindow(turns, turnWindow, forcedTurnKey);
+  const topGap = topIndex > 0 ? windowGapHeight(turns, 0, topIndex, turnHeightsRef.current) : 0;
+  const bottomGap = bottomIndex < turns.length ? windowGapHeight(turns, bottomIndex, turns.length, turnHeightsRef.current) : 0;
+  const windowRef = useRef({ turns, topIndex, bottomIndex });
+  windowRef.current = { turns, topIndex, bottomIndex };
+  const historyLoadRef = useRef({ sessionId: session?.id ?? sessionIdRef.current, activeLeafId, historyCursor, hasEarlierMessages, loadContext });
+  historyLoadRef.current = { sessionId: session?.id ?? sessionIdRef.current, activeLeafId, historyCursor, hasEarlierMessages, loadContext };
+
+  // Scroll anchor: the first visible top-level element and its offset in scroll
+  // coordinates, refreshed on every scroll and commit. When a commit moves it (older
+  // pages prepended, a spacer swapped for real turns), the view shifts back by the same
+  // amount — unless something already scrolled in this commit (jump, follow, restore,
+  // or the browser's own scroll anchoring).
+  const scrollAnchorRef = useRef<{ element: HTMLElement; entryId?: string; offset: number; scrollTop: number } | null>(null);
+  const recordScrollAnchor = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    if (!container || !content) {
+      scrollAnchorRef.current = null;
+      return;
+    }
+    const view = container.getBoundingClientRect();
+    const containerTop = view.top;
+    const anchor = findViewportAnchor(content, view.top, view.bottom);
+    scrollAnchorRef.current = anchor
+      ? { ...anchor, offset: anchor.element.getBoundingClientRect().top - containerTop + container.scrollTop, scrollTop: container.scrollTop }
+      : null;
+  }, [scrollContainerRef]);
+
+  // Only commits that change what sits above the viewport can move it: older pages
+  // prepended, the first turn re-keyed, or the render window's top/spacer changing.
+  // Stream frames and appends below skip the layout reads entirely.
+  const anchorLayoutKey = `${entryIds[0] ?? ""}|${turns[0]?.key ?? ""}|${topIndex > 0 ? turns[topIndex].key : ""}|${topGap}`;
+  const anchorLayoutKeyRef = useRef(anchorLayoutKey);
+  useLayoutEffect(() => {
+    if (anchorLayoutKeyRef.current === anchorLayoutKey) return;
+    anchorLayoutKeyRef.current = anchorLayoutKey;
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    const anchor = scrollAnchorRef.current;
+    if (container && content && anchor) {
+      // A turn that was re-keyed (e.g. a partial first turn completed by an older page)
+      // re-mounts its elements: find the anchor again by its entry id.
+      const element = anchor.element.isConnected
+        ? anchor.element
+        : anchor.entryId ? content.querySelector<HTMLElement>(`[data-entry-id="${CSS.escape(anchor.entryId)}"]`) : null;
+      if (element) {
+        const offset = element.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+        const delta = offset - anchor.offset;
+        if (Math.abs(delta) >= 1 && container.scrollTop === anchor.scrollTop) container.scrollTop += delta;
+      }
+    }
+    recordScrollAnchor();
+  });
+
+  // Keep the persisted window in line with what was rendered (a forced jump window
+  // stays after the jump), then unmount turns far from the viewport when over the cap.
+  useLayoutEffect(() => {
+    const top = topIndex > 0 ? turns[topIndex].key : null;
+    const bottom = bottomIndex < turns.length ? turns[bottomIndex].key : null;
+    if (top !== turnWindow.top || bottom !== turnWindow.bottom) {
+      setTurnWindow({ top, bottom });
+      return;
+    }
+    if (bottomIndex - topIndex <= MAX_MOUNTED_TURNS) return;
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    if (!container || !content) return;
+    const children = Array.from(content.children) as HTMLElement[];
+    const startOf = new Map<string, number>();
+    let endMarker = -1;
+    children.forEach((child, index) => {
+      if (child.dataset.pwTurn) startOf.set(child.dataset.pwTurn, index);
+      if (child.dataset.pwTurnsEnd !== undefined) endMarker = index;
+    });
+    if (endMarker < 0) return;
+    // Each mounted turn spans from its first element to the next turn's first element.
+    const spans: { top: number; bottom: number }[] = [];
+    const firstStart = startOf.get(turns[topIndex].key);
+    let previousBottom = firstStart !== undefined && firstStart > 0
+      ? children[firstStart - 1].getBoundingClientRect().bottom
+      : content.getBoundingClientRect().top;
+    for (let i = topIndex; i < bottomIndex; i++) {
+      const start = startOf.get(turns[i].key);
+      let end = endMarker;
+      for (let j = i + 1; j < bottomIndex; j++) {
+        const next = startOf.get(turns[j].key);
+        if (next !== undefined) { end = next; break; }
+      }
+      const bottom = start !== undefined && end - 1 >= start ? children[end - 1].getBoundingClientRect().bottom : previousBottom;
+      spans.push({ top: previousBottom, bottom });
+      previousBottom = bottom;
+    }
+    const view = container.getBoundingClientRect();
+    const keepFrom = view.top - container.clientHeight * 3;
+    const keepTo = view.bottom + container.clientHeight * 3;
+    let nextTop = topIndex;
+    let nextBottom = bottomIndex;
+    while (nextBottom - nextTop > MAX_MOUNTED_TURNS) {
+      const first = spans[nextTop - topIndex];
+      const last = spans[nextBottom - 1 - topIndex];
+      const trimTop = first.bottom < keepFrom;
+      const trimBottom = last.top > keepTo;
+      if (!trimTop && !trimBottom) break;
+      if (trimBottom && (!trimTop || last.top - view.bottom >= view.top - first.bottom)) nextBottom -= 1;
+      else nextTop += 1;
+    }
+    if (nextTop === topIndex && nextBottom === bottomIndex) return;
+    const heights = turnHeightsRef.current;
+    for (let i = topIndex; i < nextTop; i++) heights.set(turns[i].key, spans[i - topIndex].bottom - spans[i - topIndex].top);
+    for (let i = nextBottom; i < bottomIndex; i++) heights.set(turns[i].key, spans[i - topIndex].bottom - spans[i - topIndex].top);
+    setTurnWindow({ top: nextTop > 0 ? turns[nextTop].key : null, bottom: nextBottom < turns.length ? turns[nextBottom].key : null });
+  }, [turns, topIndex, bottomIndex, turnWindow, scrollContainerRef]);
+
+  // Grow the window toward a spacer that comes within 1.5 screens; a viewport deep
+  // inside a spacer (scrollbar drag) re-centres the window there.
+  const extendWindowRef = useRef<() => void>(() => {});
+  extendWindowRef.current = () => {
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    if (!container || !content) return;
+    const { turns: list, topIndex: top, bottomIndex: bottom } = windowRef.current;
+    if (top === 0 && bottom >= list.length) return;
+    const view = container.getBoundingClientRect();
+    const reach = container.clientHeight * 1.5;
+    const keyAt = (index: number) => (index > 0 && index < list.length ? list[index].key : null);
+    const heights = turnHeightsRef.current;
+    const turnAtOffset = (from: number, to: number, offset: number) => {
+      let index = from;
+      for (let used = 0; index < to - 1; index++) {
+        used += heights.get(list[index].key) ?? 0;
+        if (used > offset) break;
+      }
+      return index;
+    };
+    if (bottom < list.length) {
+      const gap = content.querySelector<HTMLElement>(":scope > [data-pw-window-gap=\"bottom\"]");
+      const rect = gap?.getBoundingClientRect();
+      if (rect && rect.top < view.bottom + reach) {
+        if (rect.top >= view.top - reach) {
+          setTurnWindow({ top: keyAt(top), bottom: bottom + WINDOW_STEP < list.length ? list[bottom + WINDOW_STEP].key : null });
+        } else {
+          const center = turnAtOffset(bottom, list.length, view.top - rect.top);
+          const start = Math.max(0, center - Math.floor(WINDOW_STEP / 2));
+          setTurnWindow({ top: keyAt(start), bottom: keyAt(Math.min(list.length, start + MAX_MOUNTED_TURNS)) });
+        }
+        return;
+      }
+    }
+    if (top > 0) {
+      const gap = content.querySelector<HTMLElement>(":scope > [data-pw-window-gap=\"top\"]");
+      const rect = gap?.getBoundingClientRect();
+      if (rect && rect.bottom > view.top - reach) {
+        if (rect.bottom <= view.bottom + reach) {
+          setTurnWindow({ top: keyAt(Math.max(0, top - WINDOW_STEP)), bottom: keyAt(bottom) });
+        } else {
+          const center = turnAtOffset(0, top, view.top - rect.top);
+          const start = Math.max(0, center - Math.floor(WINDOW_STEP / 2));
+          setTurnWindow({ top: keyAt(start), bottom: keyAt(Math.min(list.length, start + MAX_MOUNTED_TURNS)) });
+        }
+      }
+    }
+  };
+
+  // The hook's scrollToBottom first mounts the newest turns when they were unmounted,
+  // then jumps there directly: a smooth scroll across the spacer would make the window
+  // follow every intermediate position.
+  const pendingTailScrollRef = useRef<ScrollBehavior | null>(null);
+  // A send re-mounts the tail without scrolling (scroll: false): its own jump to the new
+  // user message runs in the commit that appends the turn, and a scroll to the very
+  // bottom would override it. `appending` keeps the window at the size cap.
+  revealTailRef.current = (_behavior, options) => {
+    const { turns: list, bottomIndex: bottom } = windowRef.current;
+    if (bottom >= list.length) return false;
+    if (options?.scroll !== false) pendingTailScrollRef.current = "instant";
+    setTurnWindow(tailTurnWindow(list, options?.appending ?? 0));
+    return true;
+  };
+
+  // Older history: one page at a time, only after the user scrolled up near the top
+  // (or when the loaded turns cannot fill the viewport, so there is nothing to scroll).
+  const maybeLoadOlderRef = useRef<() => void>(() => {});
+  maybeLoadOlderRef.current = () => {
+    const container = scrollContainerRef.current;
+    const { sessionId, activeLeafId: leafId, historyCursor, hasEarlierMessages, loadContext: load } = historyLoadRef.current;
+    // Skip while a page is already loading or nothing older exists.
+    if (!container || loadingOlderRef.current || !sessionId) return;
+    if (!hasEarlierMessages) return;
+    const oldestId = historyCursor;
+    if (!oldestId) return;
+    if (windowRef.current.topIndex > 0 || pendingScrollRestoreRef.current || !sentinelRef.current) return;
+    const scrollable = container.scrollHeight > container.clientHeight + 1;
+    if (scrollable && !(scrolledUpRef.current && container.scrollTop < HISTORY_PREFETCH_PX)) return;
+    loadingOlderRef.current = true;
+    scrolledUpRef.current = false;
+    void load(sessionId, leafId, oldestId).finally(() => {
+      loadingOlderRef.current = false;
+      requestAnimationFrame(() => {
+        // Still at the very top: the page brought nothing visible (only hidden tool
+        // calls), so the upward scroll's request for older content still stands.
+        if ((scrollContainerRef.current?.scrollTop ?? 1) <= 0) scrolledUpRef.current = true;
+        maybeLoadOlderRef.current();
+      });
+    });
+  };
+
+  // Where the reader is, refreshed after each scroll, so leaving the session (unmount)
+  // reports it without forcing a layout of the outgoing tree.
+  type SavedScrollPosition = { atBottom: true } | { atBottom: false; anchorEntryId: string; anchorOffset: number };
+  const savedScrollPositionRef = useRef<SavedScrollPosition | null>(null);
+  // True between a scroll and the idle-time measurement of the new position.
+  const scrollPositionStaleRef = useRef(false);
+  const measureScrollPosition = useCallback((): SavedScrollPosition | null => {
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    if (!container || !content) return null;
+    if (isScrollAtTail(container.scrollTop, container.clientHeight, container.scrollHeight)) return { atBottom: true };
+    // Binary search over the top-level children instead of measuring every one.
+    const anchor = findScrollAnchorChild(content, container.getBoundingClientRect().top);
+    return anchor ? { atBottom: false, ...anchor } : null;
+  }, [scrollContainerRef]);
+
+  useLayoutEffect(() => {
+    const sessionId = session?.id;
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    if (!sessionId || !onScrollPositionChange || !container || !content) return;
+    return () => {
+      if (pendingScrollRestoreRef.current) return;
+      const position = scrollPositionStaleRef.current || !savedScrollPositionRef.current
+        ? measureScrollPosition()
+        : savedScrollPositionRef.current;
+      if (!position) return;
+      if (position.atBottom) {
+        onScrollPositionChange(sessionId, { atBottom: true });
+        return;
+      }
+      onScrollPositionChange(sessionId, {
+        ...position,
+        oldestEntryId: searchHistoryRef.current.historyCursor,
+      });
+    };
+  }, [loading, measureScrollPosition, onScrollPositionChange, scrollContainerRef, session?.id]);
+
+  useEffect(() => {
+    if (searchTarget) setPendingScrollRestore(null);
+  }, [searchTarget]);
+
+  useEffect(() => {
+    const position = pendingScrollRestore;
+    const sessionId = session?.id;
+    if (!position || !sessionId || loading || searchTarget || restoreStartedRef.current) return;
+    restoreStartedRef.current = true;
+    const controller = new AbortController();
+
+    const locate = async () => {
+      const initialHistory = searchHistoryRef.current;
+      if (initialHistory.entryIds.includes(position.anchorEntryId)) {
+        setRestoreAnchorReady(true);
+        return;
+      }
+
+      loadingOlderRef.current = true;
+      let before = initialHistory.historyCursor;
+      let hasMore = initialHistory.hasEarlierMessages;
+      try {
+        while (hasMore && before && !controller.signal.aborted) {
+          const context = await loadContext(sessionId, activeLeafId, before, { signal: controller.signal });
+          if (controller.signal.aborted) return;
+          if (!context) {
+            scrollToBottom("instant");
+            setPendingScrollRestore(null);
+            return;
+          }
+          if (context.entryIds.includes(position.anchorEntryId)) {
+            setRestoreAnchorReady(true);
+            return;
+          }
+          if (context.oldestEntryId === position.oldestEntryId) break;
+          before = context.oldestEntryId;
+          hasMore = context.hasMore;
+        }
+        if (!controller.signal.aborted) {
+          scrollToBottom("instant");
+          setPendingScrollRestore(null);
+        }
+      } finally {
+        loadingOlderRef.current = false;
+      }
+    };
+
+    void locate();
+    return () => {
+      controller.abort();
+      // A branch change cancels restoration and must reveal the new context.
+      setPendingScrollRestore(null);
+    };
+  }, [activeLeafId, loadContext, loading, pendingScrollRestore, scrollToBottom, searchTarget, session?.id]);
+
+  useLayoutEffect(() => {
+    const position = pendingScrollRestore;
+    const content = messageContentRef.current;
+    if (!position || !content || searchTarget) return;
+    const element = Array.from(content.children).find((candidate) => (
+      candidate instanceof HTMLElement && candidate.dataset.entryId === position.anchorEntryId
+    ));
+    if (element instanceof HTMLElement) {
+      scrollToMessage(element, position.anchorOffset);
+      setPendingScrollRestore(null);
+      return;
+    }
+    if (restoreAnchorReady) {
+      scrollToBottom("instant");
+      setPendingScrollRestore(null);
+    }
+  }, [entryIds, pendingScrollRestore, restoreAnchorReady, scrollToBottom, scrollToMessage, searchTarget, turns]);
+
+  useEffect(() => {
+    if (!searchTarget || loading) return;
+    const controller = new AbortController();
+    const locate = async () => {
+      let ownsHistoryLoad = false;
+      try {
+        // Serialize with native upward pagination; never drop a click while it loads.
+        while (loadingOlderRef.current && !controller.signal.aborted) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        if (controller.signal.aborted) return;
+        const history = searchHistoryRef.current;
+        let found = history.entryIds.includes(searchTarget.entryId);
+        let before = history.historyCursor;
+        let hasMore = history.hasEarlierMessages;
+        const visited = new Set<string>();
+        if (!found) {
+          ownsHistoryLoad = true;
+          loadingOlderRef.current = true;
+        }
+        // Read-only ancestor pages are safe during streaming: loadContext prepends
+        // with functional state updates, preserving the live tail and SSE stream.
+        while (!found && hasMore && before && !controller.signal.aborted) {
+          if (visited.has(before)) throw new Error("历史分页游标没有前进");
+          visited.add(before);
+          const context = await loadContext(searchTarget.sessionId, activeLeafId, before, { tail: 200, signal: controller.signal });
+          if (controller.signal.aborted) return;
+          if (!context) throw new Error("历史消息加载失败，请重试");
+          found = context.entryIds.includes(searchTarget.entryId);
+          before = context.oldestEntryId;
+          hasMore = context.hasMore;
+        }
+        if (controller.signal.aborted) return;
+        if (!found) throw new Error("当前分支中找不到该消息");
+        // The render window mounts the target's turn while this jump is pending.
+        setPendingSearchScroll(searchTarget);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        console.error("[pi-web] conversation navigation failed:", searchTarget.entryId, cause);
+        setNodeNavigationError(cause instanceof Error ? cause.message : String(cause));
+        onSearchTargetHandled?.(searchTarget);
+      } finally {
+        if (ownsHistoryLoad) loadingOlderRef.current = false;
+      }
+    };
+    void locate();
+    return () => controller.abort();
+  }, [searchTarget, loading, activeLeafId, loadContext, onSearchTargetHandled]);
+
+  useLayoutEffect(() => {
+    if (!pendingSearchScroll || pendingSearchScroll !== searchTarget) return;
+    const selector = `[data-entry-id="${CSS.escape(pendingSearchScroll.entryId)}"]`;
+    const element = scrollContainerRef.current?.querySelector<HTMLElement>(searchMessage?.role === "user" ? selector : `${selector} [data-search-target]`);
+    if (element) {
+      scrollToMessage(element);
+      element.animate([
+        { backgroundColor: "var(--bg-selected)" },
+        { backgroundColor: "transparent" },
+      ], { duration: 2500 });
+    }
+    if (!element) {
+      console.error("[pi-web] conversation navigation target not rendered:", pendingSearchScroll.entryId);
+      setNodeNavigationError("消息已加载但未能定位，请重试");
+    }
+    setPendingSearchScroll(null);
+    onSearchTargetHandled?.(pendingSearchScroll);
+  }, [pendingSearchScroll, searchTarget, searchMessage, scrollContainerRef, scrollToMessage, onSearchTargetHandled]);
+
+  // After the newest turns were re-mounted for scrollToBottom, finish that scroll.
+  useLayoutEffect(() => {
+    const behavior = pendingTailScrollRef.current;
+    const container = scrollContainerRef.current;
+    if (!behavior || !container || bottomIndex < turns.length) return;
+    pendingTailScrollRef.current = null;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  });
+
+  // After commits: fill a short history and keep spacers out of reach of the viewport.
+  useEffect(() => {
+    extendWindowRef.current();
+    maybeLoadOlderRef.current();
+  });
+  // Push session stats up to AppShell for the top bar.
+  // Compare scalar fields to avoid loops from new object identity each render.
+  const statsKey = sessionStats
+    ? [
+      sessionStats.sessionId,
+      sessionStats.sessionFile ?? "",
+      sessionStats.sessionName ?? "",
+      sessionStats.userMessages,
+      sessionStats.assistantMessages,
+      sessionStats.toolCalls,
+      sessionStats.toolResults,
+      sessionStats.totalMessages,
+      sessionStats.tokens.input,
+      sessionStats.tokens.output,
+      sessionStats.tokens.cacheRead,
+      sessionStats.tokens.cacheWrite,
+      sessionStats.tokens.total,
+      sessionStats.cost ?? 0,
+      sessionStats.totalActiveMs ?? 0,
+    ].join("|")
+    : null;
+  const sessionStatsRef = useRef(sessionStats);
+  sessionStatsRef.current = sessionStats;
+  useEffect(() => {
+    onSessionStatsChange?.(sessionStatsRef.current);
+  }, [statsKey, onSessionStatsChange]);
+  useEffect(() => () => { onSessionStatsChange?.(null); }, [onSessionStatsChange]);
+
+  // Push context usage up to AppShell as well.
+  const ctxKey = contextUsage
+    ? `${contextUsage.percent ?? "null"}|${contextUsage.contextWindow}|${contextUsage.tokens ?? "null"}`
+    : null;
+  const contextUsageRef = useRef(contextUsage);
+  contextUsageRef.current = contextUsage;
+  useEffect(() => {
+    onContextUsageChange?.(contextUsageRef.current);
+  }, [ctxKey, onContextUsageChange]);
+  useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
+
+  const onDrop = useCallback((files: File[]) => {
+    chatInputRef?.current?.addImages(files);
+  }, [chatInputRef]);
+
+  const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
+
+  const inputHistory = useMemo(() => {
+    const seen = new Set<string>();
+    const history: string[] = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const text = getUserInputText(messages[i]);
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      history.push(text);
+      if (history.length >= 50) break;
+    }
+    return history.reverse();
+  }, [messages]);
+
+  const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
+  useScrollbarVisibility(scrollContainerRef, Boolean(session?.id) || !isEmptyNew);
+  const hasStreamingContent = Boolean(streamState.streamingMessage?.content.length);
+  const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
+
+  // One passive scroll listener for the list: records the scroll anchor, notes upward
+  // scrolling (history paging) and grows the render window toward the viewport.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    let lastTop = container.scrollTop;
+    let frame: number | null = null;
+    let cancelPositionMeasure: (() => void) | null = null;
+    const measurePosition = () => {
+      cancelPositionMeasure = null;
+      savedScrollPositionRef.current = measureScrollPosition();
+      scrollPositionStaleRef.current = false;
+    };
+    const onScroll = () => {
+      const top = container.scrollTop;
+      if (top < lastTop - 1) scrolledUpRef.current = true;
+      lastTop = top;
+      recordScrollAnchor();
+      // The saved position (for switching back to this session) is measured when idle.
+      scrollPositionStaleRef.current = true;
+      if (!cancelPositionMeasure) {
+        if (typeof window.requestIdleCallback === "function") {
+          const handle = window.requestIdleCallback(measurePosition, { timeout: 1_000 });
+          cancelPositionMeasure = () => window.cancelIdleCallback(handle);
+        } else {
+          const handle = window.setTimeout(measurePosition, 200);
+          cancelPositionMeasure = () => window.clearTimeout(handle);
+        }
+      }
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        extendWindowRef.current();
+        maybeLoadOlderRef.current();
+      });
+    };
+    // Already at the very top, scrolling up produces no scroll event: the wheel still asks
+    // for the next page.
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY >= 0 || container.scrollTop > 0) return;
+      scrolledUpRef.current = true;
+      maybeLoadOlderRef.current();
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    container.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      container.removeEventListener("wheel", onWheel);
+      if (frame !== null) cancelAnimationFrame(frame);
+      cancelPositionMeasure?.();
+    };
+  }, [isEmptyNew, measureScrollPosition, recordScrollAnchor, scrollContainerRef]);
+
+  const sessionKey = session?.id ?? sessionIdRef.current ?? undefined;
+  const attachLastUser = useCallback((element: HTMLDivElement | null) => {
+    (lastUserMsgRef as { current: HTMLDivElement | null }).current = element;
+  }, [lastUserMsgRef]);
+  const turnContext = useMemo<TurnRenderContext>(() => ({
+    modelNames,
+    messageCwd,
+    sessionKey,
+    onOpenFile,
+    onOpenSession,
+    sessionBusy,
+    isNew,
+    handleFork,
+    handleNavigate,
+    handleEditContent,
+    forkingEntryId,
+    attachLastUser,
+  }), [modelNames, messageCwd, sessionKey, onOpenFile, onOpenSession, sessionBusy, isNew, handleFork, handleNavigate, handleEditContent, forkingEntryId, attachLastUser]);
+  const streamingReply = streamState.isStreaming && hasStreamingContent && streamState.streamingMessage?.role === "assistant"
+    ? streamState.streamingMessage as AssistantMessage
+    : null;
+  const livePhase = agentRunning ? phaseLabel(agentPhase, t) : null;
+  const searchTurnKey = pendingSearchScroll ? turnModel.turnOfEntry.get(pendingSearchScroll.entryId) : undefined;
+
+  const promptAnchorSpacerRef = useRef<HTMLDivElement | null>(null);
+  const promptAnchorSpacerHeightRef = useRef(0);
+  const promptAnchorMeasureFrameRef = useRef<number | null>(null);
+  const promptAnchorAdjustmentDoneRef = useRef(false);
+  const promptAnchorUpdateRef = useRef<(() => void) | null>(null);
+
+  useLayoutEffect(() => {
+    const spacer = promptAnchorSpacerRef.current;
+    if (!agentRunning || !promptAnchorActive) {
+      promptAnchorUpdateRef.current = null;
+      promptAnchorSpacerHeightRef.current = 0;
+      promptAnchorAdjustmentDoneRef.current = false;
+      if (spacer) spacer.style.height = "";
+      return;
+    }
+
+    const container = scrollContainerRef.current;
+    const messageContent = messageContentRef.current;
+    const userMessage = lastUserMsgRef.current;
+    if (!container || !messageContent || !userMessage || !spacer) return;
+
+    let disposed = false;
+    const updatePromptAnchorSpacer = () => {
+      if (
+        disposed
+        || scrollContainerRef.current !== container
+        || messageContentRef.current !== messageContent
+        || lastUserMsgRef.current !== userMessage
+        || promptAnchorSpacerRef.current !== spacer
+      ) return;
+
+      const containerTop = container.getBoundingClientRect().top;
+      const userMessageTop = userMessage.getBoundingClientRect().top
+        - containerTop
+        + container.scrollTop;
+      const targetTop = Math.max(0, userMessageTop - 16);
+      const contentEnd = spacer.getBoundingClientRect().top
+        - containerTop
+        + container.scrollTop;
+      const nextPromptAnchorSpacerHeight = getPromptAnchorSpacerHeight(
+        targetTop,
+        contentEnd,
+        container.clientHeight,
+      );
+
+      const isInitialMeasurement = !promptAnchorAdjustmentDoneRef.current;
+      const needsInitialAdjustment = isInitialMeasurement
+        && nextPromptAnchorSpacerHeight > 0;
+      if (isInitialMeasurement) promptAnchorAdjustmentDoneRef.current = true;
+      if (nextPromptAnchorSpacerHeight === promptAnchorSpacerHeightRef.current) return;
+
+      promptAnchorSpacerHeightRef.current = nextPromptAnchorSpacerHeight;
+      spacer.style.height = nextPromptAnchorSpacerHeight > 0
+        ? `${nextPromptAnchorSpacerHeight}px`
+        : "";
+      if (needsInitialAdjustment) scrollUserMsgToTop();
+    };
+
+    promptAnchorUpdateRef.current = updatePromptAnchorSpacer;
+    const schedulePromptAnchorMeasure = () => {
+      if (disposed || promptAnchorMeasureFrameRef.current !== null) return;
+      promptAnchorMeasureFrameRef.current = requestAnimationFrame(() => {
+        promptAnchorMeasureFrameRef.current = null;
+        updatePromptAnchorSpacer();
+      });
+    };
+
+    updatePromptAnchorSpacer();
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(schedulePromptAnchorMeasure);
+    observer?.observe(container);
+    observer?.observe(messageContent);
+    observer?.observe(userMessage);
+    return () => {
+      disposed = true;
+      if (promptAnchorUpdateRef.current === updatePromptAnchorSpacer) {
+        promptAnchorUpdateRef.current = null;
+      }
+      observer?.disconnect();
+      if (promptAnchorMeasureFrameRef.current !== null) {
+        cancelAnimationFrame(promptAnchorMeasureFrameRef.current);
+        promptAnchorMeasureFrameRef.current = null;
+      }
+    };
+  }, [
+    agentRunning,
+    lastUserMsgRef,
+    messages.length,
+    promptAnchorActive,
+    scrollContainerRef,
+    scrollUserMsgToTop,
+  ]);
+
+  useLayoutEffect(() => {
+    promptAnchorUpdateRef.current?.();
+  }, [streamState.streamingMessage]);
+
+  // Stream updates commit at most once a frame; follow the tail right after the
+  // spacer update, before paint, when the reader is attached to it.
+  useLayoutEffect(() => {
+    if (streamState.streamingMessage) followStreamingTail();
+  }, [streamState.streamingMessage, followStreamingTail]);
+
+  const availableThinkingLevels = displayModelValue
+    ? (modelThinkingLevels[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? null)
+    : null;
+
+  const currentThinkingLevelMap = displayModelValue
+    ? (modelThinkingLevelMaps[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? null)
+    : null;
+
+  const followupStatus = extensionStatuses.find((item) => item.key === "lop-followup")?.text ?? null;
+  // The same element while its inputs are unchanged: React then skips the composer
+  // on stream frames and other chat-only updates.
+  const chatInputElement = useMemo(() => (
+    <ChatInput
+      ref={chatInputRef}
+      onSend={handleSend}
+      onAbort={handleAbort}
+      onSteer={agentRunning ? handleSteer : undefined}
+      onFollowUp={agentRunning ? handleFollowUp : undefined}
+      onPromptWithStreamingBehavior={agentRunning ? handlePromptWithStreamingBehavior : undefined}
+      isStreaming={sessionBusy}
+      loadingHistory={loading}
+      followupStatus={followupStatus}
+      model={displayModelValue}
+      isAutoModelSelection={isAutoModelSelection}
+      modelNames={modelNames}
+      modelList={modelList}
+      modelError={modelError}
+      modelScopeWarnings={modelScopeWarnings}
+      onModelChange={handleModelChange}
+      modelSwitching={modelSwitching}
+      onCompact={session || isNew ? handleCompact : undefined}
+      onAbortCompaction={handleAbortCompaction}
+      isCompacting={isCompacting}
+      compactError={compactError}
+      compactResult={compactResult}
+      toolPreset={toolPreset}
+      onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
+      thinkingLevel={thinkingLevel}
+      isAutoThinkingSelection={isAutoThinkingSelection}
+      onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
+      availableThinkingLevels={availableThinkingLevels}
+      thinkingLevelMap={currentThinkingLevelMap}
+      retryInfo={retryInfo}
+      queuedMessages={queuedMessages}
+      inputHistory={inputHistory}
+      onRecallQueue={handleRecallQueue}
+      slashCommands={slashCommands}
+      slashCommandsLoading={slashCommandsLoading}
+      onLoadSlashCommands={loadSlashCommands}
+      onBuiltinCommand={handleBuiltinSlashCommand}
+      soundEnabled={soundEnabled}
+      onSoundToggle={onSoundToggle}
+      onAudioUnlock={unlockAudio}
+      draftKey={session?.id ?? newSessionDraftKey ?? undefined}
+      cwd={session?.cwd ?? newSessionCwd}
+    />
+  ), [chatInputRef, handleSend, handleAbort, agentRunning, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, sessionBusy, loading, followupStatus, displayModelValue, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, handleModelChange, modelSwitching, session, isNew, handleCompact, handleAbortCompaction, isCompacting, compactError, compactResult, toolPreset, handleToolPresetChange, thinkingLevel, isAutoThinkingSelection, handleThinkingLevelChange, availableThinkingLevels, currentThinkingLevelMap, retryInfo, queuedMessages, inputHistory, handleRecallQueue, slashCommands, slashCommandsLoading, loadSlashCommands, handleBuiltinSlashCommand, soundEnabled, onSoundToggle, unlockAudio, newSessionDraftKey, newSessionCwd]);
+
+  // Keep the composer and layout mounted while the cold history loads.
+  // Sending stays disabled until the authoritative response arrives.
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center text-red-400">
+        {error}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="chat-content relative flex h-full min-w-0 flex-col overflow-hidden"
+      style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[color-mix(in_srgb,var(--accent)_6%,transparent)] backdrop-blur-[1px]">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            {[0, 0.8, 1.6].map((delay) => (
+              <div
+                key={delay}
+                className="absolute h-[720px] w-[720px] rounded-full border-[1.5px] border-solid border-[color-mix(in_srgb,var(--accent)_50%,transparent)] animate-[drop-ripple_2.4s_ease-out_infinite_backwards]"
+                style={{ transformOrigin: "center", animationDelay: `${delay}s` }}
+              />
+            ))}
+          </div>
+          <svg
+            width="280" height="280" viewBox="0 0 140 140" fill="none" xmlns="http://www.w3.org/2000/svg"
+            className="drop-shadow-[0_6px_18px_color-mix(in_srgb,var(--accent)_18%,transparent)]"
+          >
+            <rect x="28" y="44" width="84" height="60" rx="8" fill="color-mix(in srgb, var(--accent) 8%, transparent)" stroke="color-mix(in srgb, var(--accent) 50%, transparent)" strokeWidth="1.8"/>
+            <path d="M36 100 L54 72 L68 88 L80 74 L104 100Z" fill="color-mix(in srgb, var(--accent) 16%, transparent)" stroke="color-mix(in srgb, var(--accent) 40%, transparent)" strokeWidth="1.4" strokeLinejoin="round"/>
+            <circle cx="96" cy="58" r="8" fill="color-mix(in srgb, var(--accent) 22%, transparent)" stroke="color-mix(in srgb, var(--accent) 55%, transparent)" strokeWidth="1.6"/>
+            <g stroke="color-mix(in srgb, var(--accent) 45%, transparent)" strokeWidth="1.4" strokeLinecap="round">
+              <line x1="96" y1="46" x2="96" y2="43"/>
+              <line x1="96" y1="70" x2="96" y2="73"/>
+              <line x1="84" y1="58" x2="81" y2="58"/>
+              <line x1="108" y1="58" x2="111" y2="58"/>
+              <line x1="87.5" y1="49.5" x2="85.4" y2="47.4"/>
+              <line x1="104.5" y1="66.5" x2="106.6" y2="68.6"/>
+              <line x1="104.5" y1="49.5" x2="106.6" y2="47.4"/>
+              <line x1="87.5" y1="66.5" x2="85.4" y2="68.6"/>
+            </g>
+          </svg>
+        </div>
+      )}
+
+      <div
+        style={{
+          position: "absolute",
+          top: 12,
+          left: 0,
+          right: 0,
+          zIndex: 40,
+          display: "flex",
+          // Toasts live in the top-right corner
+          justifyContent: "flex-end",
+          padding: `0 ${CHAT_COLUMN_PADDING}px`,
+          pointerEvents: "none",
+        }}
+      >
+        <NoticeShelf notices={notices} floating onPauseChange={setNoticePaused} />
+      </div>
+
+      {/* A render failure in the message list (a lazy chunk that did not load, a malformed message) shows a banner here instead of unmounting the page; the composer stays usable. */}
+      <ErrorBoundary scope="对话区" fill resetKey={session?.id ?? newSessionDraftKey ?? null}>
+      <div className="pw-chat-region relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {extensionDialog && (
+          <ExtensionDialog key={extensionDialog.id} request={extensionDialog} onRespond={respondToExtensionUi} />
+        )}
+        {extensionCustomUi && (
+          <ExtensionCustomPanel key={extensionCustomUi.id} request={extensionCustomUi} onInput={sendExtensionCustomInput} />
+        )}
+        {!isEmptyNew && <>
+        <div
+          ref={scrollContainerRef}
+          // The message list is the one place long output has to be dragged through,
+          // so it shows its scrollbar instead of hiding it behind the minimap (#788).
+          // A stable gutter keeps the centred column from shifting when a short
+          // session grows past one screen.
+          className="scrollbar-subtle min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-gutter:stable]"
+          style={{ visibility: pendingScrollRestore ? "hidden" : undefined }}
+        >
+          {/* .pw-chat-col: 16px gutters; on the right it widens to keep the 问答 button off the text when the column runs out of side margin. */}
+          <div className="pw-chat-col">
+            <div ref={messageContentRef} onPointerUp={captureQuotedSelection} style={{ width: "100%", minWidth: 0, maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
+            {hasEarlierMessages && (
+              <div ref={sentinelRef} data-pw-history-sentinel="" className="py-3 text-center text-xs text-text-muted">
+                {t("chat.loadEarlier")}
+              </div>
+            )}
+            {topGap > 0 && <div data-pw-window-gap="top" aria-hidden="true" style={{ height: topGap }} />}
+            {turns.slice(topIndex, bottomIndex).map((turn) => (
+              <TurnView
+                key={turn.key}
+                turn={turn}
+                ctx={turnContext}
+                searchEntryId={turn.key === searchTurnKey ? pendingSearchScroll?.entryId : undefined}
+                searchBlock={turn.key === searchTurnKey ? searchBlock : undefined}
+                streamingReply={turn.live ? streamingReply : undefined}
+                livePhase={turn.live ? livePhase : undefined}
+              />
+            ))}
+            <div data-pw-turns-end="" aria-hidden="true" />
+            {bottomGap > 0 && <div data-pw-window-gap="bottom" aria-hidden="true" style={{ height: bottomGap }} />}
+            {streamingReply && !turnModel.hasLiveTurn && (
+              <MessageView message={streamState.streamingMessage as AgentMessage} toolResults={toolResultsMap} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
+            )}
+            {agentRunning && !hasStreamingContent && agentPhase && !turnModel.hasLiveTurn && livePhase && (
+              <div className="pw-phase-line" role="status">
+                <span className="pw-spinner pw-spinner--sm" aria-hidden="true" />
+                <span>{livePhase}</span>
+              </div>
+            )}
+
+            {bashRunning && !pendingBash && (
+              <div className="pw-phase-line" role="status">
+                <span className="pw-spinner pw-spinner--sm" aria-hidden="true" />
+                <span>{t("chat.runningCommand")}</span>
+              </div>
+            )}
+
+            {pendingBash && (
+              <MessageView
+                message={{
+                  role: "bashExecution",
+                  command: pendingBash.command,
+                  output: "",
+                  excludeFromContext: pendingBash.excludeFromContext,
+                } as BashExecutionMessage}
+                sessionId={session?.id ?? sessionIdRef.current ?? undefined}
+                onOpenSession={onOpenSession}
+              />
+            )}
+
+            <div ref={promptAnchorSpacerRef} aria-hidden="true" />
+            </div>
+          </div>
+        </div>
+        <PortableNodes sessionId={session?.id ?? sessionIdRef.current ?? undefined} leafId={activeLeafId} messages={messages} entryIds={entryIds} navigating={Boolean(nodeTarget)} navigationError={nodeNavigationError} onSelect={entryId => {
+          const sessionId = session?.id ?? sessionIdRef.current;
+          setNodeNavigationError("");
+          if (sessionId) setNodeTarget({ sessionId, entryId });
+          else { console.error("[pi-web] conversation navigation missing session"); setNodeNavigationError("会话尚未就绪，请重试"); }
+        }} />
+        </>}
+      </div>
+      </ErrorBoundary>
+
+      {quoteSelectionEnabled && quotedSelection && createPortal(
+        <div
+          ref={quotePopoverRef}
+          role={quoteInputOpen ? "dialog" : "toolbar"}
+          aria-label={t(quoteInputOpen ? "chat.newQuoteChat" : "chat.askSelection")}
+          style={{
+            position: "fixed",
+            top: quotedSelection.top,
+            left: quotedSelection.left,
+            zIndex: 260,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 3,
+            width: quoteInputOpen ? "min(420px, calc(100vw - 16px))" : undefined,
+            maxWidth: "calc(100vw - 16px)",
+            maxHeight: "calc(var(--app-viewport-height, 100dvh) - 16px)",
+            overflowY: "auto",
+            padding: quoteInputOpen ? 12 : 3,
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            background: "var(--bg)",
+            boxShadow: "var(--shadow-pop)",
+          }}
+        >
+          {quoteInputOpen ? (
+            <fieldset
+              disabled={quoteSubmitting}
+              aria-busy={quoteSubmitting}
+              style={{ width: "100%", minWidth: 0, margin: 0, padding: 0, border: "none", display: "flex", flexDirection: "column", gap: 10 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>{t("chat.askInNewChat")}</span>
+                <button type="button" className="file-viewer-icon-button" title={t("i18n.close")} aria-label={t("i18n.close")} disabled={quoteSubmitting} onClick={closeQuotedSelection} style={{ border: "none" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                </button>
+              </div>
+              <ChatInput
+                ref={quoteChatInputRef}
+                compact
+                onSend={askSelectionInNewChat}
+                onAbort={closeQuotedSelection}
+                isStreaming={false}
+              />
+              {quoteError && <div role="alert" style={{ color: "var(--danger)", fontSize: 12, overflowWrap: "anywhere" }}>{quoteError}</div>}
+            </fieldset>
+          ) : <>
+          <button
+            type="button"
+            className="file-viewer-icon-button"
+            title={t("chat.askInCurrent")}
+            aria-label={t("chat.askInCurrent")}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={askSelectionHere}
+            style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
+          >
+            <span aria-hidden="true" style={{ fontSize: 15 }}>@</span>
+            <span>{t("chat.askInCurrent")}</span>
+          </button>
+          {onAskInNewChat && quotedSelection.sourceEntryId && !sessionBusy && (
+            <button
+              type="button"
+              className="file-viewer-icon-button"
+              title={t("chat.askInNewChat")}
+              aria-label={t("chat.askInNewChat")}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => { setQuoteInputOpen(true); window.getSelection()?.removeAllRanges(); }}
+              style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 3v12M18 9a9 9 0 0 1-9 9" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" />
+              </svg>
+              <span>{t("chat.askInNewChat")}</span>
+            </button>
+          )}
+          </>}
+        </div>,
+        document.body,
+      )}
+
+      <div className="relative shrink-0">
+        {!isEmptyNew && (
+          <div
+            // Same gutter as the composer and the message column, so the button sits on the column centre.
+            className={`pw-composer-gutter${isMobile ? " is-mobile" : ""}`}
+            style={{
+              position: "absolute",
+              bottom: "100%",
+              left: 0,
+              right: 0,
+              display: "flex",
+              justifyContent: "center",
+              paddingBottom: 10,
+              pointerEvents: "none",
+              zIndex: 20,
+            }}
+          >
+            <button
+              type="button"
+              className={`chat-scroll-to-bottom${showScrollToBottom && !pendingScrollRestore ? " is-visible" : ""}`}
+              title={t("chat.scrollToLatest")}
+              aria-label={t("chat.scrollToLatest")}
+              onClick={() => scrollToBottom("smooth")}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12l7 7 7-7" />
+              </svg>
+            </button>
+          </div>
+        )}
+        {isEmptyNew && (
+          <div className={`mb-3 w-full pw-composer-gutter${isMobile ? " is-mobile" : ""}`}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto", fontFamily: "var(--font-mono)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 7 : 10, minWidth: 0, flex: 1, lineHeight: 1.4, overflow: "hidden" }}>
+                <Image src="/icons/apple-touch-icon.png" width={32} height={32} alt="" priority style={{ flexShrink: 0 }} />
+                <span style={{ fontSize: 22, color: "var(--text)", fontWeight: 700, flexShrink: 0, whiteSpace: "nowrap" }}>Pi Web</span>
+                <NewSessionUpdateLink label={(version) => t("appUpdate.releaseNotes", { version })} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  web <span style={{ color: "var(--text)" }}>v{process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}</span>
+                </span>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  pi <span style={{ color: "var(--text)" }}>v{process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0"}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+        {chatInputElement}
+        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />
+      </div>
+      {isEmptyNew && <div className="min-h-0 flex-1" />}
+    </div>
+  );
+}
+
+function sameFieldValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
+}
+
+/** Field-level equality: a session-list refresh rebuilds unchanged rows as new objects. */
+function sameSessionInfo(a: SessionInfo | null, b: SessionInfo | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const left = a as unknown as Record<string, unknown>;
+  const right = b as unknown as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => sameFieldValue(left[key], right[key]));
+}
+
+function sameChatWindowProps(prev: Props, next: Props): boolean {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)] as (keyof Props)[]);
+  for (const key of keys) {
+    if (key === "session") {
+      if (!sameSessionInfo(prev.session, next.session)) return false;
+      continue;
+    }
+    // AppShell passes an inline `() => setPendingQuotePrompt(null)`; any copy of it
+    // does the same thing, so a new identity alone must not re-render the chat.
+    if (key === "onInitialPromptConsumed" && typeof prev[key] === typeof next[key]) continue;
+    if (prev[key] !== next[key]) return false;
+  }
+  return true;
+}
+
+// Background refreshes in AppShell (session list, running poll) re-render it often;
+// the chat only re-renders when one of its own inputs actually changed.
+const MemoChatWindow = memo(ChatWindowView, sameChatWindowProps);
+
+// Outer boundary for failures outside the message region (the hook, the composer): the
+// sidebar and the other tabs keep working and the pane shows a recoverable banner.
+export const ChatWindow = memo(function ChatWindow(props: Props) {
+  return (
+    <ErrorBoundary scope="对话窗口" fill resetKey={props.session?.id ?? props.newSessionDraftKey ?? null}>
+      <MemoChatWindow {...props} />
+    </ErrorBoundary>
+  );
+}, sameChatWindowProps);
+
+// Toast 整体高度上限；文本区高度上限 = 整体上限 - 上下 padding(14*2) - 上下边框(1*2)
+const NOTICE_MAX_HEIGHT_PX = 500;
+const NOTICE_TEXT_MAX_HEIGHT_PX = NOTICE_MAX_HEIGHT_PX - 30;
+
+function NoticeShelf({ notices, floating = false, onPauseChange }: { notices: NoticeItem[]; floating?: boolean; onPauseChange?: (id: string | null) => void }) {
+  if (notices.length === 0) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        // Right-anchored: every toast's right edge aligns here, widths extend leftward
+        alignItems: "flex-end",
+        marginBottom: floating ? 0 : 10,
+      }}
+    >
+      {notices.map((notice, index) => {
+        const color = notice.type === "error"
+          ? "var(--danger)"
+          : notice.type === "warning"
+            ? "var(--warning)"
+            : notice.type === "success"
+              ? "var(--success)"
+              : "var(--accent)";
+        return (
+          <div
+            key={notice.id}
+            className="notice-shelf-item"
+            onMouseEnter={() => onPauseChange?.(notice.id)}
+            onMouseLeave={(event) => {
+              if (!event.currentTarget.contains(document.activeElement)) onPauseChange?.(null);
+            }}
+            onFocus={() => onPauseChange?.(notice.id)}
+            onBlur={(event) => {
+              if (!event.currentTarget.matches(":hover")) onPauseChange?.(null);
+            }}
+            style={{
+              display: "flex",
+              // Top-align children so the type dot sits by the first line on multi-line toasts
+              alignItems: "flex-start",
+              gap: 10,
+              minHeight: 60,
+              height: "auto",
+              // 整体高度上限：超出后由文本区内部滚动承担（见下方 span 的 overflowY），
+              // 容器自身保持 hidden，小圆点固定在顶部不随文本滚动
+              maxHeight: NOTICE_MAX_HEIGHT_PX,
+              // The floating wrapper is pointerEvents:"none" (click-through by design),
+              // so the toast itself must opt back into interactivity or hover events never reach it
+              pointerEvents: "auto",
+              marginBottom: index === notices.length - 1 ? 0 : 6,
+              overflow: "hidden",
+              borderRadius: 8,
+              border: "1px solid var(--border-strong)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              width: "fit-content",
+              maxWidth: "min(100%, 620px)",
+              boxShadow: floating ? "var(--shadow-pop)" : "none",
+              fontSize: 14,
+              lineHeight: 1.5,
+              transformOrigin: "top right",
+              // Use backwards fill for the entrance animation so height styles return to
+              // inline styles once it finishes; otherwise the keyframe's fixed 60px would
+              // stick around in fill mode and permanently clamp the expanded toast
+              animation: notice.exiting
+                ? "notice-shelf-out 0.18s ease-in forwards"
+                : "notice-shelf-in 0.18s ease-out backwards",
+              padding: "0 12px",
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: color,
+                flexShrink: 0,
+                // Align with the optical center of the first text line: 14px vertical
+                // padding + (21px line box - 7px dot) / 2
+                marginTop: 21,
+              }}
+            />
+            {/* Full text by default: pre-line preserves \n (nowrap/normal collapse
+                newlines into spaces) and long lines wrap instead of truncating;
+                content taller than the cap scrolls inside the text area */}
+            <span
+              tabIndex={0}
+              style={{ padding: "14px 0", minWidth: 0, maxWidth: "100%", maxHeight: NOTICE_TEXT_MAX_HEIGHT_PX, overflowY: "auto", scrollbarWidth: "thin", whiteSpace: "pre-line", wordBreak: "break-word" }}
+            >
+              {notice.message}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+type ExtensionDialogRequest = Extract<ExtensionUiRequest, { method: "select" | "confirm" | "input" | "editor" }>;
+
+function getExtensionDialogSummary(request: ExtensionDialogRequest): string | undefined {
+  if (request.method === "select" && request.options.length > 0) return request.options[0];
+  if (request.method === "confirm") {
+    const firstLine = request.message.split("\n").find((line) => line.trim());
+    return firstLine?.trim();
+  }
+  return undefined;
+}
+
+function ExtensionDialog({
+  request,
+  onRespond,
+}: {
+  request: ExtensionDialogRequest;
+  onRespond: (request: ExtensionDialogRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true }) => void;
+}) {
+  const { t } = useI18n();
+  const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");
+  const [collapsed, setCollapsed] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const focusFirstOption = useCallback((element: HTMLDivElement | null) => element?.focus(), []);
+  const summary = getExtensionDialogSummary(request);
+  const remainingSeconds = request.expiresAt === undefined
+    ? null
+    : Math.max(0, Math.ceil((request.expiresAt - now) / 1000));
+
+  useEffect(() => {
+    if (request.expiresAt === undefined) return;
+    // The server closes expired requests via extension_ui_closed.
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [request.expiresAt]);
+
+  const countdown = remainingSeconds !== null && (
+    <span style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap", flexShrink: 0 }}>
+      {t("chat.extensionExpiresIn", { seconds: remainingSeconds })}
+    </span>
+  );
+
+  const submitValue = () => {
+    if (request.method === "confirm") {
+      onRespond(request, { confirmed: true });
+    } else {
+      onRespond(request, { value });
+    }
+  };
+
+  return (
+    <div
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onRespond(request, { cancelled: true });
+      }}
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 90,
+        display: "flex",
+        alignItems: collapsed ? "flex-start" : "center",
+        justifyContent: "center",
+        padding: 20,
+        pointerEvents: "none",
+      }}
+    >
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          aria-expanded={false}
+          style={{
+            pointerEvents: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            maxWidth: "min(560px, 100%)",
+            width: "100%",
+            padding: "10px 12px",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg)",
+            boxShadow: "var(--shadow-pop)",
+            color: "var(--text)",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span style={{ fontSize: 11, fontWeight: 650, color: "var(--accent)", flexShrink: 0 }}>
+            {t("chat.extensionPending")}
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+            {request.title}
+          </span>
+          {summary && (
+            <span style={{ fontSize: 12, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "34%", flexShrink: 1 }}>
+              {summary}
+            </span>
+          )}
+          {countdown}
+          <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
+            {t("chat.extensionExpand")}
+          </span>
+        </button>
+      ) : (
+      <div
+        role="dialog"
+        aria-label={request.title}
+        style={{
+          pointerEvents: "auto",
+          width: "min(560px, 100%)",
+          maxHeight: "min(760px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          background: "var(--bg)",
+          boxShadow: "var(--shadow-dialog)",
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "flex-start", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border)", maxHeight: "50%", overflowY: "auto" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Pi's TUI shows the title verbatim, newlines included; select/input have no
+                separate message field, so extensions put multi-line text here. */}
+            <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 650, lineHeight: 1.45, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{request.title}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 3, color: "var(--text-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+              <span>{t("chat.extensionRequest")}</span>
+              {countdown}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCollapsed(true)}
+            aria-expanded={true}
+            title={t("chat.extensionCollapse")}
+            aria-label={t("chat.extensionCollapse")}
+            style={{
+              display: "grid",
+              placeItems: "center",
+              width: 28,
+              height: 28,
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg-panel)",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="2 3.5 5 6.5 8 3.5" />
+            </svg>
+          </button>
+        </div>
+
+        <div
+          style={{
+            padding: 14,
+            flex: "1 1 auto", minHeight: 0, overflowY: "auto",
+          }}
+        >
+          {request.method === "confirm" && (
+            <MarkdownBody>{request.message}</MarkdownBody>
+          )}
+          {request.method === "select" && (
+            <div
+              onKeyDown={(event) => {
+                if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+                const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-extension-option]"));
+                const index = buttons.indexOf(event.target as HTMLElement);
+                if (index < 0) return;
+                event.preventDefault();
+                const next = event.key === "Home" ? 0
+                  : event.key === "End" ? buttons.length - 1
+                  : (index + (event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+                buttons[next].focus({ preventScroll: true });
+                buttons[next].scrollIntoView({ block: "nearest" });
+              }}
+              style={{ display: "grid", gap: 8 }}
+            >
+              {request.options.map((option, index) => (
+                <div
+                  key={option}
+                  role="button"
+                  tabIndex={0}
+                  data-extension-option
+                  aria-label={option}
+                  ref={index === 0 ? focusFirstOption : undefined}
+                  onClick={() => onRespond(request, { value: option })}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    onRespond(request, { value: option });
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "9px 10px",
+                    borderRadius: 7,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-panel)",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    fontSize: 13,
+                    overflowWrap: "anywhere",
+                    // Match the scroller's padding so keyboard navigation never parks the
+                    // option flush against the edge, where whole-pixel scroll snapping and
+                    // overflow clipping cut off its focus ring.
+                    scrollMargin: 14,
+                  }}
+                >
+                  <div inert>
+                    <MarkdownBody>{option}</MarkdownBody>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {request.method === "input" && (
+            <input
+              autoFocus
+              value={value}
+              placeholder={request.placeholder}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) submitValue();
+              }}
+              style={{
+                width: "100%",
+                padding: "9px 10px",
+                borderRadius: 7,
+                border: "1px solid var(--border)",
+                background: "var(--bg-panel)",
+                color: "var(--text)",
+                outline: "none",
+                fontSize: 13,
+              }}
+            />
+          )}
+          {request.method === "editor" && (
+            <textarea
+              autoFocus
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !e.nativeEvent.isComposing) submitValue();
+              }}
+              style={{
+                width: "100%",
+                minHeight: 220,
+                padding: 10,
+                borderRadius: 7,
+                border: "1px solid var(--border)",
+                background: "var(--bg-panel)",
+                color: "var(--text)",
+                outline: "none",
+                resize: "vertical",
+                fontSize: 13,
+                lineHeight: 1.55,
+                fontFamily: "var(--font-mono)",
+              }}
+            />
+          )}
+        </div>
+
+        <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+          <button
+            autoFocus={request.method === "confirm" || (request.method === "select" && request.options.length === 0)}
+            onClick={() => onRespond(request, { cancelled: true })}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg)",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+            }}
+          >
+             {t("chat.cancel")}
+          </button>
+          {request.method === "confirm" ? (
+            <button
+              onClick={submitValue}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--accent)",
+                background: "var(--accent)",
+                color: "var(--accent-contrast)",
+                cursor: "pointer",
+              }}
+            >
+               {t("chat.confirm")}
+            </button>
+          ) : request.method !== "select" ? (
+            <button
+              onClick={submitValue}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--accent)",
+                background: "var(--accent)",
+                color: "var(--accent-contrast)",
+                cursor: "pointer",
+              }}
+            >
+               {t("chat.submit")}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      )}
+    </div>
+  );
+}
+
+type ExtensionCustomRequest = Extract<ExtensionUiRequest, { method: "custom" }>;
+
+function ExtensionCustomPanel({
+  request,
+  onInput,
+}: {
+  request: ExtensionCustomRequest;
+  onInput: (request: ExtensionCustomRequest, data: string) => void;
+}) {
+  const { t } = useI18n();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const displayLines = normalizeCustomPanelLines(request.lines);
+  const summary = displayLines.find((line) => line.trim())?.trim();
+
+  useEffect(() => {
+    if (!collapsed) inputRef.current?.focus();
+  }, [collapsed]);
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 95,
+        display: "flex",
+        alignItems: collapsed ? "flex-start" : "center",
+        justifyContent: "center",
+        padding: 20,
+        pointerEvents: "none",
+      }}
+    >
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          aria-expanded={false}
+          style={{
+            pointerEvents: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            maxWidth: "min(920px, 100%)",
+            width: "100%",
+            padding: "10px 12px",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg)",
+            boxShadow: "var(--shadow-pop)",
+            color: "var(--text)",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span style={{ fontSize: 11, fontWeight: 650, color: "var(--accent)", flexShrink: 0 }}>
+            {t("chat.extensionPending")}
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+            {t("chat.extensionPanel")}
+          </span>
+          {summary && (
+            <span style={{ fontSize: 12, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "34%", flexShrink: 1 }}>
+              {summary}
+            </span>
+          )}
+          <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
+            {t("chat.extensionExpand")}
+          </span>
+        </button>
+      ) : (
+      <div
+        role="dialog"
+        onClick={(event) => {
+          if (!(event.target as HTMLElement).closest("button")) inputRef.current?.focus();
+        }}
+        style={{
+          pointerEvents: "auto",
+          position: "relative",
+          width: "min(920px, 100%)",
+          maxHeight: "min(760px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          background: "var(--bg)",
+          boxShadow: "var(--shadow-dialog)",
+          overflow: "hidden",
+          outline: "none",
+        }}
+      >
+        <textarea
+          ref={inputRef}
+           aria-label={t("chat.extensionInput")}
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onKeyDown={(event) => {
+            if (composingRef.current || event.nativeEvent.isComposing) return;
+            const data = toTerminalKeyData(event);
+            if (!data) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onInput(request, data);
+          }}
+          onInput={(event) => {
+            if (composingRef.current || event.nativeEvent.isComposing) return;
+            const text = event.currentTarget.value;
+            event.currentTarget.value = "";
+            if (text) onInput(request, text);
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            const input = event.currentTarget;
+            queueMicrotask(() => {
+              const text = input.value;
+              input.value = "";
+              if (text) onInput(request, text);
+            });
+          }}
+          onPaste={(event) => {
+            event.preventDefault();
+            const text = event.clipboardData.getData("text");
+            if (text) onInput(request, asBracketedPaste(text));
+          }}
+          style={{
+            position: "absolute",
+            width: 1,
+            height: 1,
+            padding: 0,
+            border: 0,
+            opacity: 0,
+            pointerEvents: "none",
+          }}
+        />
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
+           <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 650 }}>{t("chat.extensionPanel")}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => setCollapsed(true)}
+              aria-expanded={true}
+              title={t("chat.extensionCollapse")}
+              aria-label={t("chat.extensionCollapse")}
+              style={{
+                display: "grid",
+                placeItems: "center",
+                width: 28,
+                height: 28,
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--bg-panel)",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polyline points="2 3.5 5 6.5 8 3.5" />
+              </svg>
+            </button>
+            <button
+              onClick={() => onInput(request, "\x03")}
+              style={{
+                padding: "5px 9px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--bg-panel)",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+               {t("chat.close")}
+            </button>
+          </div>
+        </div>
+        <pre
+          style={{
+            margin: 0,
+            padding: 14,
+            minHeight: 0,
+            overflow: "auto",
+            background: "var(--bg-panel)",
+            color: "var(--text)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 13,
+            lineHeight: 1.45,
+            whiteSpace: "pre",
+          }}
+        >
+          <AnsiText text={displayLines.join("\n")} />
+        </pre>
+      </div>
+      )}
+    </div>
+  );
+}

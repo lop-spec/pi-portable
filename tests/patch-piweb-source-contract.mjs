@@ -46,12 +46,15 @@ test('unknown upstream anchors abort the entire plan before any file writes', ()
 
 test('native draft preservation, lazy pagination and virtualization are not replaced', () => {
   assert.equal(integrated.has('lib/draft-store.ts'), false);
-  // Only the inline-thinking threshold of the native reader changes (process timeline).
-  const reader = read('lib/session-reader.ts').replaceAll('\r\n', '\n');
-  assert.equal(integrated.get('lib/session-reader.ts'), reader.replace('          block.type === "thinking" && block.thinking.trim() !== ""', '          block.type === "thinking" && block.thinking.trim().length > 2000'));
-  assert.notEqual(integrated.get('lib/session-reader.ts'), reader);
+  // The reader keeps the process timeline's inline-thinking threshold (only long reasoning is deferred), whatever else the rewrite adds to it.
+  const reader = integrated.get('lib/session-reader.ts');
+  assert.match(reader, /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
+  assert.doesNotMatch(reader, /block\.type === "thinking" && block\.thinking\.trim\(\) !== ""/);
   assert.equal(integrated.has('lib/highlight.ts'), false);
-  assert.match(integrated.get('components/SessionSidebar.tsx'), /getSessionListIndices\(/);
+  // The session list is still virtualized (windowed rendering), now in the sidebar's own list component.
+  const list = integrated.get('components/sidebar/SessionList.tsx');
+  assert.match(list, /from "\.\/virtual"/);
+  assert.match(list, /visibleIndices\(/);
   assert.match(integrated.get('components/ChatWindow.tsx'), /tail: 200, signal: controller.signal/);
   assert.match(integrated.get('components/ChatInput.tsx'), /getDraft\(draftKey\)/);
 });
@@ -160,17 +163,27 @@ test('follow-up activation is explicit, checks extension availability and never 
 });
 
 test('archive uses a stable native slot and row IDs, not React fiber introspection on the new version', () => {
-  const sidebar = integrated.get('components/SessionSidebar.tsx');
-  assert.match(sidebar, /data-pi-archive-slot/);
-  assert.match(sidebar, /data-pi-session-id=\{session.id\}/);
-  assert.match(sidebar, /pi-web:refresh-sessions/);
+  // The injected archive script finds one stable slot in the list header and an ID on every row; the row component
+  // only reserves an empty slot and never renders an archive control itself.
+  assert.match(integrated.get('components/sidebar/SessionList.tsx'), /<span data-pi-archive-slot="" \/>/);
+  const row = integrated.get('components/sidebar/SessionRow.tsx');
+  assert.match(row, /data-pi-session-id=\{session\.id\}/);
+  assert.match(row, /data-pi-session-row=""/);
+  assert.match(row, /<span data-pi-row-slot="" \/>/);
+  assert.doesNotMatch(row, /__reactFiber|__reactProps/);
+  assert.match(integrated.get('components/SessionSidebar.tsx'), /pi-web:refresh-sessions/);
 });
 
 test('portable CSS is emitted directly, not an ignored import after Tailwind expansion', () => {
-  const css = integrated.get('app/globals.css');
+  // The rewrite ships its styles as real stylesheets imported by the root layout (not by an @import inside the Tailwind entry file).
+  const layout = integrated.get('app/layout.tsx');
+  const sheets = [...layout.matchAll(/^import "\.\/(redesign-[\w-]+\.css)";/gm)].map(match => match[1]);
+  assert.ok(sheets.length >= 3, 'layout imports the redesign stylesheets directly');
+  const css = sheets.map(name => integrated.get('app/' + name)).join('\n');
   assert.match(css, /\.model-selector\.is-toolbar/);
   assert.match(css, /\.pw-followup-menu/);
-  assert.doesNotMatch(css, /@import ["']\.\/portable\.css/);
+  assert.match(css, /\.pw-proc-head/);
+  assert.doesNotMatch(integrated.get('app/globals.css'), /@import ["']\.\/(?:portable|redesign-[\w-]+)\.css/);
 });
 
 test('clipboard uploads cannot escape their draft or submit before all files settle', () => {
@@ -192,12 +205,13 @@ test('session list transports previews only; hot history reuses a bounded browse
   assert.match(snapshot, /const MAX_SESSIONS = 8/);
   assert.match(snapshot, /const MAX_TOTAL_BYTES = 32 \* 1024 \* 1024/);
   assert.match(snapshot, /const TTL_MS = 10 \* 60_000/);
-  assert.match(hook, /const cached = getSessionViewSnapshot\(session\.id\)/);
+  assert.match(hook, /const cached = (?:readSessionViewSnapshot|getSessionViewSnapshot)\(\w+(?:\.id)?\)/);
   assert.match(hook, /cached\?\.revision === d\.snapshotRevision/);
-  assert.match(hook, /deleteSessionViewSnapshot\(sid\)/);
+  assert.match(hook, /deleteSessionViewSnapshot\(\w+\)/);
   assert.match(integrated.get('components/ChatWindow.tsx'), /loadingHistory=\{loading\}/);
   assert.doesNotMatch(integrated.get('components/ChatWindow.tsx'), /t\("chat\.loadingSession"\)/);
-  assert.match(integrated.get('components/ChatInput.tsx'), /disabled=\{loadingHistory \|\| pasteStatus\.busy/);
+  assert.match(integrated.get('components/ChatInput.tsx'), /const sendDisabled = loadingHistory \|\| pasteStatus\.busy/);
+  assert.match(integrated.get('components/ChatInput.tsx'), /disabled=\{sendDisabled\}/);
   const sidebar = integrated.get('components/SessionSidebar.tsx');
   assert.match(sidebar, /info\.id !== initialSessionId/);
   assert.match(sidebar, /onSessionDeleted\?\.\(id\)/);
@@ -222,29 +236,34 @@ test('turn process renders as a timeline: narration visible, thinking folded, to
   const chat = integrated.get('components/ChatWindow.tsx');
   assert.doesNotMatch(chat, /portableToolViews/);
   assert.doesNotMatch(chat, /<ProcessDetailsGroup /);
-  assert.match(chat, /import \{ PortableProcessTimeline, type PortableTimelineEntry \} from "\.\/PortableProcessTimeline";/);
-  // Finished turns, the live tail and a lazy-load window starting mid-turn share the timeline.
-  assert.match(chat, /portableProcessTimeline\(userIdx, userIdx \+ 1, finalAssistantIdx, \{ finalIdx: finalAssistantIdx, finalBlocks: finalProcessBlocks/);
-  assert.match(chat, /portableProcessTimeline\(userIdx, userIdx \+ 1, endIdx - 1, \{ live: true \}\)/);
-  assert.match(chat, /findFinalAssistantIndex\(messages, idx - 1, segmentEnd\)/);
-  assert.doesNotMatch(chat, /if \(!isMessageGroupAnchor\(msg\)\) \{\n\s+rendered\.push\(renderMessage\(idx\)\);/);
+  assert.match(chat, /import \{ PortableProcessTimeline,[^}]*\} from "\.\/PortableProcessTimeline";/);
+  assert.match(chat, /<PortableProcessTimeline\s/);
+  // Finished turns, the live tail and a lazy-load window starting mid-turn (a partial turn without its own user message) share the timeline.
+  assert.match(chat, /portableProcessTimeline\(\d+, 1, finalAssistantIdx, \{ finalIdx: finalAssistantIdx, finalBlocks: finalProcessBlocks/);
+  assert.match(chat, /portableProcessTimeline\(\d+, 1, count - 1, \{ live: true/);
+  assert.match(chat, /portableProcessTimeline\(\d+, 0, count - 1, \{ live: turn\.live \}\)/);
+  assert.match(chat, /findFinalAssistantIndex\(messages as AgentMessage\[\], (?:-1|0), count\)/);
   // Failed intermediate replies keep the native error view; tool results are not rendered twice.
   assert.match(chat, /const broken = i !== options\.finalIdx && Boolean\(getAssistantErrorMessage\(message\) \|\| isAssistantTruncated\(message\)\)/);
   assert.match(chat, /if \(item\.role === "toolResult"\) continue;/);
   const timeline = integrated.get('components/PortableProcessTimeline.tsx');
   assert.ok(timeline.startsWith('"use client";'));
-  assert.match(timeline, /if \(last\?\.type === "tools"\) last\.calls\.push\(call\)/);
+  assert.match(timeline, /last\?\.type === "tools"\) last\.calls\.push\(call\)/);
   assert.match(timeline, /const \[open, setOpen\] = useState\(false\)/);
   assert.match(timeline, /const expanded = open \|\| Boolean\(target\)/);
   assert.match(timeline, /\{failed\} 条失败/);
   // lop 2026-09-30: tool calls are hidden (a search hit is the one exception), consecutive thinking
   // summaries fold into one row closed by default, and the Chinese narration stays visible.
   assert.match(timeline, /if \(!showTool\(block\)\) return;/);
-  assert.match(timeline, /buildTimelineItems\(entries, block => block === searchBlock\)/);
-  assert.match(timeline, /if \(last\?\.type === "thinking"\) last\.blocks\.push\(item\)/);
-  assert.ok(timeline.includes('已思考 ${blocks.length} 步') && timeline.includes('正在思考'));
-  assert.match(timeline, /live=\{Boolean\(live\) && index === items\.length - 1\}/);
-  assert.match(timeline, /className="pw-reason">\s*<div data-message-text[^>]*><PortableTextBlock /);
+  assert.match(timeline, /buildTimelineItems\(entries, block => block === searchBlock/);
+  assert.match(timeline, /if \(last\?\.type === "thinking"\) \{\s*last\.blocks\.push\(item\)/);
+  // Thinking folds closed by default (only a search hit or a click opens it); it reads "正在思考" while streaming.
+  assert.ok(timeline.includes('思考 ${blocks.length} 处') && timeline.includes('正在思考'));
+  assert.match(timeline, /const ThinkingGroup[\s\S]{0,200}const \[open, setOpen\] = useState\(false\)/);
+  assert.match(timeline, /<ThinkingGroup item=\{item\}[^>]*live=\{Boolean\(live\)\}/);
+  // The narration is full markdown in the rail, never folded or clipped.
+  assert.match(timeline, /className=\{streaming \? "pw-proc-item pw-proc-narr is-streaming" : "pw-proc-item pw-proc-narr"\}/);
+  assert.match(timeline, /<div data-message-text[^>]*>\s*<PortableTextBlock /);
   for (const label of ['运行 ${count.bash} 条命令', '读取 ${count.read.size} 个文件', '搜索 ${count.search} 次', '修改 ${count.change.size} 个文件']) assert.ok(timeline.includes(label), label);
   const view = integrated.get('components/MessageView.tsx');
   assert.match(view, /export \{ ToolCallBlock as PortableToolCallBlock, TextBlock as PortableTextBlock, loadThinkingContent as portableLoadThinkingContent, getToolPreview as portableToolPreview \};/);
@@ -252,25 +271,28 @@ test('turn process renders as a timeline: narration visible, thinking folded, to
   assert.match(view, /const \[expanded, setExpanded\] = useState\(isThinkingExpandedByDefault\);/);
   assert.doesNotMatch(view, /streaming=\{isStreaming\}/);
   assert.match(integrated.get('lib/session-reader.ts'), /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
-  // lop 2026-10-02: reasoning without Chinese text is not shown at all (live or finished).
+  // lop 2026-10-06: reasoning is shown only when Chinese makes up at least 30% of its reading units (CJK characters plus whole
+  // Latin words); English, or English quoting a few Chinese words, is not shown at all (live or finished).
   const display = integrated.get('lib/message-display.ts');
-  const hideSource = display.match(/export function isEmptyThinkingBlock[^\n]*\n[^\n]*\n\}/)?.[0];
-  assert.ok(hideSource, 'isEmptyThinkingBlock source');
-  assert.ok(hideSource.includes('return block.type === "thinking" && !/[\\u3400-\\u9fff]/u.test(block.thinking);'));
-  const isHidden = vm.runInNewContext(`(${hideSource.replace('export function', 'function').replace(/\(block: [^)]*\): block is ThinkingContent/, '(block, _options)')})`, {});
-  for (const thinking of ['', '  ', '**Planning the fix**', 'Inspecting files']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), true, JSON.stringify(thinking));
-  for (const thinking of ['先看一下配置', '**Planning** 然后检查', '分析中']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), false, thinking);
+  const hideSource = display.match(/export const CHINESE_REASONING_MIN_SHARE[\s\S]*?\nexport function isEmptyThinkingBlock[^\n]*\n[^\n]*\n\}/)?.[0];
+  assert.ok(hideSource, 'reasoning visibility source');
+  const isHidden = vm.runInNewContext(`${hideSource
+    .replaceAll('export ', '')
+    .replace('(text: string): number', '(text)')
+    .replace(/\(block: [^)]*\): block is ThinkingContent/, '(block, _options)')};isEmptyThinkingBlock`, {});
+  for (const thinking of ['', '  ', '**Planning the fix**', 'Inspecting files', 'Inspecting the config files and checking 配置 again before the change']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), true, JSON.stringify(thinking));
+  for (const thinking of ['先看一下配置', '**Planning** 然后检查', '分析中', '先改 run-supervisor.mjs 再跑测试']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), false, thinking);
   assert.equal(isHidden({ type: 'thinking', thinking: 'English preview of a long block', deferred: true }), true);
   assert.equal(isHidden({ type: 'text', text: '' }), false);
-  assert.match(integrated.get('app/globals.css'), /\.pw-tool-fold\{/);
-  assert.match(integrated.get('app/globals.css'), /\.pw-think-cards\{/);
+  assert.match(integrated.get('app/redesign-conversation.css'), /\.pw-think-fold/);
+  assert.match(integrated.get('app/redesign-conversation.css'), /\.pw-proc-narr/);
   // Composer: the model selector (and the gauge/⚡ controls anchored on it) sits first in the
   // right control group, as in 0.9.0; attach and follow-up stay left.
   const input = integrated.get('components/ChatInput.tsx');
-  const left = input.indexOf('{/* LEFT:'), spacer = input.indexOf('{/* spacer */}'), right = input.indexOf('{/* RIGHT:');
+  const left = input.indexOf('{/* LEFT:'), right = input.indexOf('{/* RIGHT:');
   const selector = input.indexOf('<ModelSelector');
-  assert.ok(left > 0 && spacer > left && right > spacer && selector > right, 'model selector must be in the right group');
+  assert.ok(left > 0 && right > left && selector > right, 'model selector must be in the right group');
   assert.equal(input.split('<ModelSelector').length - 1, 1);
-  assert.ok(input.indexOf('<PortableFollowup') > left && input.indexOf('<PortableFollowup') < spacer, 'follow-up stays left');
+  assert.ok(input.indexOf('<PortableFollowup') > left && input.indexOf('<PortableFollowup') < right, 'follow-up stays left');
   assert.ok(selector < input.indexOf('{onThinkingLevelChange && ('), 'model selector precedes the thinking level control');
 });

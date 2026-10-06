@@ -131,4 +131,13 @@ test('no per-row archive shortcut; archiving stays in the row menu and the archi
   assert.match(archive, /window\.addEventListener\('pi-web:archive-session'/u);
   assert.doesNotMatch(archive, /\[data-pi-session-archive-control\]\{display:none/u);
 });
+test('the released redesign version keeps whole-path delete confirmation (case-insensitive on Windows) and the explicit session id confirmation', () => {
+  const redesign = new URL('../assets/piweb-overlay/redesign/files/components/PortableContextActions.tsx', import.meta.url);
+  assert.ok(fs.existsSync(redesign), 'redesign template exported');
+  const ui = fs.readFileSync(redesign, 'utf8');
+  assert.match(ui, /输入完整路径确认/u);
+  assert.match(ui, /projectPathConfirmed/u, 'project delete compares the whole path through the shared case-insensitive helper');
+  assert.match(ui, /confirmId: session.id/u, 'the server still gets the explicit id confirmation for session delete');
+  assert.doesNotMatch(ui, /setInterval|\/api\/agent/u);
+});
 console.log('Context-action fixtures:', root);

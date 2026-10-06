@@ -85,7 +85,8 @@ test('ModelSelector renders the primary list with "更多模型" and a server-ke
   assert.match(selector, /\{modelsByProvider\.length === 0 \? \(/, 'the empty/no-match message stays');
   assert.match(selector, /className="pw-model-row"/);
   assert.match(selector, /trailing\?: ReactNode/);
-  assert.match(selector, /aria-label=\{ariaLabel \?\? `当前模型：\$\{currentName\}`\}/, 'earlier overlay edits still apply');
+  assert.match(selector, /const currentLabel = t\("chat\.currentModel", \{ name: currentName \}\)/, 'the trigger label names the current model');
+  assert.match(selector, /aria-label=\{ariaLabel \?\? currentLabel\}/, 'the trigger keeps its accessible name');
   const route = files.get('app/api/model-menu/route.ts');
   assert.match(route, /web-model-menu\.json/);
   assert.match(route, /projectMutationAllowed\(req\)/);
@@ -97,7 +98,10 @@ test('ModelSelector renders the primary list with "更多模型" and a server-ke
   assert.match(list, /placeSidePanel\(moreRect, \{ width: viewportWidth \}\)/);
   assert.doesNotMatch(list, /\+ 4 \+ 240 <= viewportWidth/);
   assert.match(list, /className="pw-model-side"/);
-  assert.match(list, /maxWidth: 150/, 'the current model name must not widen the menu');
+  // The current model name is clipped (ellipsis, full name in the tooltip) instead of stretching the menu. NOTE: the redesign
+  // template no longer caps its width (the old maxWidth: 150); see the hand-off notes.
+  assert.match(selector, /className="pw-model-panel-current" title=\{currentName\}/);
+  assert.match(files.get('app/redesign-chrome.css'), /\.pw-model-panel-current-name \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
   // Hidden models: the eye on a row, a third level at the bottom of 更多模型, and the bulk archive button.
   assert.match(list, /隐藏模型/); assert.match(list, /aria-label="隐藏模型"/);
   assert.match(list, /placeNestedPanel\(panel, \{ width: viewportWidth \}, place\.side\)/, 'the third level is placed from the second-level panel\'s real box');
