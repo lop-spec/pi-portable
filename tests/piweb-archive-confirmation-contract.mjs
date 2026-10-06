@@ -31,13 +31,23 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /nativeFetch\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{action\}`/u);
   assert.match(source, /forwardedActionEvents\.add\(forwarded\)/u, "the guarded native fallback must remain deduplicated");
   assert.doesNotMatch(source, /button\.innerHTML/u, "decorating a React-owned action must not replace its children and break reconciliation");
-  assert.match(source, /\[data-pi-session-archive-action\]>svg\{opacity:0!important\}/u, "the native trash glyph must be hidden without mutating React children");
-  assert.match(source, /data-pi-session-archive-mode='restore'/u, "archive and restore need distinct semantic glyphs");
+  assert.match(source, /slot\.appendChild\(action\)/u, "the row action is our own button, appended into React's empty [data-pi-row-slot]");
+  assert.match(source, /\[data-pi-session-row\] \[data-pi-row-slot\]/u);
+  assert.match(source, /dataset\.piSessionArchiveMode = mode/u, "archive and restore need distinct semantic glyphs");
+  // Visually collapsed (not display:none) until the row is hovered or holds focus: the button stays
+  // in the tab sequence in both directions and expands as soon as it receives focus.
+  assert.match(source, /\.pw-sess-row:not\(:hover,:focus-within,\.is-menu-open\) \[data-pi-row-slot\]:has\(>\[data-pi-session-archive-action\]\)\{position:absolute;[^}]*clip-path:inset\(50%\)/u,
+    "row actions appear on row hover or keyboard focus within the row");
+  assert.doesNotMatch(source, /\[data-pi-session-archive-action\][^{]*\{display:none/u, "a display:none row action would be unreachable by keyboard");
+  assert.match(source, /action\.tabIndex = tabIndex/u, "only the roving row's action joins the tab sequence");
+  assert.doesNotMatch(source, /oldDeleteTitles|style\.height === "54px"/u, "rows are recognised by data-pi-session-row only");
   assert.doesNotMatch(source, /refresh\.parentElement\.insertBefore/u, "the archive-view control must not become a React-managed sibling");
   assert.doesNotMatch(source, /element\.textContent\s*=/u, "archive decoration must not replace React-owned text nodes");
-  assert.match(source, /document\.documentElement\.appendChild\(host\)/u);
-  assert.match(source, /function nativeNewSessionButton\(\)/u);
-  assert.match(source, /betweenGap\s*>=\s*controlWidth/u, "archive control must choose a measured free gap instead of overlaying native controls");
+  assert.doesNotMatch(source, /document\.documentElement\.(appendChild|append)\(/u, "no injected control hangs off <html>: DOM order must match visual order");
+  assert.match(source, /register\(\{ name: "archive", slot: "archive"/u, "the list-head control is appended into [data-pi-archive-slot]");
+  assert.match(source, /className = "pw-btn pw-btn--ghost pw-btn--sm"/u);
+  assert.match(source, /archivedConversations: \(count\) => `\$\{count\} 个对话`/u, "the archived view reads 「N 个对话 · 返回」");
+  assert.match(source, /slot-missing-\$\{name\}/u, "a missing slot falls back to a fixed host and is logged");
   assert.match(source, /function beginOptimisticAction\(button, explicitRow = null\)/u);
   assert.match(source, /const row = explicitRow \|\| sessionRow\(button\)/u, 'context actions and standalone buttons must share the same optimistic implementation');
   assert.match(source, /row\.animate\(/u, "the removed row height and opacity must animate together so following rows do not jump");
@@ -56,7 +66,7 @@ test("archive request failures are visible and logged", () => {
 });
 
 test("the UI proxy refreshes archive source and logs every mutation failure", () => {
-  assert.match(proxySource, /fs\.readFileSync\(PIWEB_ARCHIVE_UI_FILE, "utf8"\)/u);
+  assert.match(proxySource, /fs\.promises\.readFile\(PIWEB_ARCHIVE_UI_FILE, "utf8"\)/u, "edits to the script still apply without a restart (async re-read)");
   assert.match(proxySource, /piweb-archive-ui-reloaded/u);
   assert.match(proxySource, /piweb-archive-ui-reload-failed/u, "reload failures must never be silent");
   assert.match(proxySource, /session-archive-request/u);

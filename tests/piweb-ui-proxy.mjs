@@ -95,8 +95,24 @@ try {
     agentRequests: "byte-stream-pass-through",
   });
 
-  const html = await (await fetch(`http://127.0.0.1:${publicPort}/`, { headers: { accept: "text/html" } })).text();
-  assert.ok(html.includes(PIWEB_ARCHIVE_UI_PATH));
+  const page = await fetch(`http://127.0.0.1:${publicPort}/`, { headers: { accept: "text/html" } });
+  const html = await page.text();
+  // The injected script keeps its synchronous <head> position (its fetch wrappers must precede Next),
+  // but under a content-hashed, immutable URL; the HTML itself revalidates instead of no-store.
+  const scriptPath = /src="(\/__pi_archive_ui\.[0-9a-f]{12}\.js)"/u.exec(html)?.[1];
+  assert.ok(scriptPath, "page must reference the hashed injected script");
+  assert.doesNotMatch(html, /<script[^>]+__pi_archive_ui[^>]+\b(defer|async)\b/u, "the injected script must stay synchronous");
+  assert.equal(page.headers.get("cache-control"), "private, no-cache");
+  const pageEtag = page.headers.get("etag");
+  assert.ok(pageEtag);
+  assert.equal((await fetch(`http://127.0.0.1:${publicPort}/`, { headers: { accept: "text/html", "if-none-match": pageEtag } })).status, 304);
+  const script = await fetch(`http://127.0.0.1:${publicPort}${scriptPath}`);
+  assert.equal(script.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assert.equal(await script.text(), "window.__archiveTest=true;");
+  const legacy = await fetch(`http://127.0.0.1:${publicPort}${PIWEB_ARCHIVE_UI_PATH}`);
+  assert.equal(legacy.headers.get("cache-control"), "no-cache", "the unversioned URL still works, revalidated");
+  assert.equal((await fetch(`http://127.0.0.1:${publicPort}${PIWEB_ARCHIVE_UI_PATH}`, { headers: { "if-none-match": legacy.headers.get("etag") } })).status, 304);
+  await legacy.arrayBuffer();
   assert.ok(html.includes('localStorage.getItem("pi-last-model")'));
   assert.ok(html.includes('openai-codex'));
   assert.ok(html.includes('pi-last-thinking-level'));
@@ -110,6 +126,10 @@ try {
   const archive = new SessionArchiveStore(path.join(temp, "session-archive.json"), { sessionRoot: path.join(temp, "sessions") });
   const archived = archive.archiveMany([{ id, path: sessionFile, cwd: temp, name: "demo" }], id);
   assert.equal(archived.created, true);
+  // The partition index is cached in memory (write-through on save): same object until the file changes.
+  const index = archive.cached();
+  assert.equal(archive.cached(), index, "the hot path must not re-read session-archive.json per request");
+  assert.equal(index.keys.has(id), true);
   assert.equal(archive.partition([{ id, path: sessionFile }]).archived.length, 1);
   assert.equal(archive.restore(id).restored, true);
   assert.equal(archive.partition([{ id, path: sessionFile }]).active.length, 1);

@@ -1,4 +1,369 @@
-// Small native pause/resume button beside the goal status. Its body portal never
+// Pi Web 注入脚本（pi-portable UI 代理在 <head> 同步注入，必须早于 Next 执行：下面两层 fetch 包装
+// 负责归档视图与速度 TIER）。只做四件事：目标暂停/恢复按钮、归档视图（列表头「归档 858」与行内归档）、
+// 账号池额度、速度 TIER。DOM 契约见 pi-web-redesign/impl/dom-contract.md：控件只 append 进 React 预留的
+// 空插槽（[data-pi-archive-slot] [data-pi-row-slot] [data-pi-composer-slot]），从不改 React 管理的子节点；
+// 插槽缺失（旧版 pi-web）时降级为 fixed 浮层，console.warn 并上报代理日志。
+
+// Shared slot watcher: one rAF-coalesced pass, scoped to the sidebar subtree and the composer
+// area (plus childList-only watches on their ancestors to notice remounts). Never the whole
+// document, never characterData outside the extension status shelf, never layout reads in
+// slot mode. Also owns the single injected stylesheet and the proxy event log beacon.
+(() => {
+  "use strict";
+  if (window.__piUiSlots) return;
+  const SIDEBAR = 1, COMPOSER = 2, ALL = 3;
+  const STARTUP_DISCOVERY_MS = 15_000;
+  const HYDRATION_WAIT_MS = 10_000;
+  const nativeFetch = window.fetch.bind(window);
+  // Observable cost of the watcher (P23): passes, mutation records per scope, time spent, layout reads.
+  const stats = { runs: 0, ms: 0, sidebarRecords: 0, composerRecords: 0, chainRecords: 0, mounts: 0, fallbacks: 0, hydrationWaits: 0, layoutReads: 0 };
+  const clients = [];
+  const sidebarListeners = new Set(), composerListeners = new Set(), reported = new Set();
+  const chain = new Set();
+  const slots = {
+    archive: { selector: "[data-pi-archive-slot]", className: "pw-archive-slot", anchor: archiveAnchor, waitSince: 0, virtual: null, mode: "" },
+    composer: { selector: "[data-pi-composer-slot]", className: "pw-composer-slot", anchor: composerAnchor, waitSince: 0, virtual: null, mode: "" },
+  };
+  let started = false, frame = 0, pending = 0, retry = 0, retryDelay = 50, startedAt = 0;
+  let sidebar = null, composerRoot = null, shelf = null, fallbackListeners = false, anchorResize = null, observedAnchor = null;
+  let sidebarObserver = null, composerObserver = null, shelfObserver = null, chainObserver = null;
+
+  const CSS = `
+[data-pi-slot-item]{display:contents}
+[data-pi-slot-item] [hidden],[data-pi-fallback-slot][hidden]{display:none!important}
+.pw-archive-ctl{display:inline-flex;align-items:center;gap:6px;min-width:0;margin-right:-4px}
+.pw-archive-ctl .pw-btn{gap:5px}
+.pw-archive-meta{color:var(--text-dim);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pw-archive-meta::after{content:"·";margin-left:6px}
+.pw-sess-row:not(:hover,:focus-within,.is-menu-open) [data-pi-row-slot]:has(>[data-pi-session-archive-action]){position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+[data-pi-session-archive-pending]{pointer-events:none!important;overflow:hidden!important}
+[data-pi-session-archive-hidden]{display:none!important}
+[data-pi-session-archive-handoff='true']{background:var(--bg-selected)!important}
+[data-pi-session-archive-toast]{position:fixed;left:50%;bottom:24px;z-index:2147483647;transform:translateX(-50%);max-width:min(520px,calc(100vw - 32px));padding:8px 12px;border:1px solid var(--danger-border,var(--border));border-radius:var(--r-lg,8px);background:var(--bg-elevated,var(--bg));color:var(--danger,var(--text));box-shadow:var(--shadow-pop);font-size:var(--fs-meta,12px);line-height:var(--lh-ui,1.45)}
+#pi-followup-toggle{position:fixed;z-index:800;display:inline-grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid var(--border);border-radius:var(--r-sm,4px);background:var(--bg);color:var(--text-muted);font-size:var(--fs-meta,12px);cursor:pointer}
+#pi-followup-toggle[hidden]{display:none}
+#pi-followup-toggle:hover{border-color:var(--accent);color:var(--accent)}
+#pi-followup-toggle:disabled{cursor:wait;opacity:.6}
+#pi-followup-resume-notice{position:fixed;bottom:48px;left:50%;z-index:1000;max-width:90vw;transform:translateX(-50%);padding:8px 12px;border:1px solid var(--border-strong,var(--border));border-radius:var(--r-lg,8px);background:var(--bg-elevated,var(--bg));color:var(--text);box-shadow:var(--shadow-pop);font-size:var(--fs-ui,13px)}
+.pw-quota-value{min-width:3ch;text-align:right}
+.pw-quota-panel{padding:0;color:var(--text);font-size:var(--fs-ui)}
+.pw-quota-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--bg-elevated)}
+.pw-quota-title{flex:none;font-weight:var(--fw-strong)}
+.pw-quota-fresh{min-width:0;overflow:hidden;color:var(--text-dim);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
+.pw-quota-fresh[data-stale='true']{color:var(--warning)}
+.pi-account-usage-row{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-top:1px solid var(--border)}
+.pi-account-usage-row:first-child{border-top:0}
+.pi-account-usage-row{position:relative}
+.pi-account-usage-top{display:flex;align-items:center;gap:8px;min-height:24px}
+.pi-account-usage-identity{display:flex;flex:1;align-items:center;gap:6px;min-width:0}
+.pi-account-usage-email{min-width:0;overflow:hidden;color:var(--text);text-overflow:ellipsis;white-space:nowrap}
+.pi-account-usage-row[data-active='true'] .pi-account-usage-email{font-weight:var(--fw-medium)}
+.pi-account-usage-identity .pw-badge{flex:none}
+.pi-account-usage-value{display:inline-flex;flex:none;align-items:center;gap:6px;color:var(--text-secondary);font-size:var(--fs-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pi-account-usage-meter.pw-quota-bar{width:48px}
+.pi-account-row-controls{display:inline-flex;flex:none;align-items:center;gap:2px}
+.pi-account-usage-row:not(:hover,:focus-within) .pi-account-row-controls{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.pi-account-usage-row:is(:hover,:focus-within) .pi-account-usage-value{display:none}
+@media (hover:none){.pi-account-usage-row .pi-account-row-controls{position:static;width:auto;height:auto;overflow:visible;clip-path:none}.pi-account-usage-row .pi-account-usage-value{display:none}}
+.pi-account-usage-meta{display:flex;flex-wrap:wrap;color:var(--text-dim);font-size:var(--fs-meta);font-variant-numeric:tabular-nums}
+.pi-account-usage-meta>span+span::before{margin:0 5px;content:'·'}
+.pi-account-usage-warning{display:flex;align-items:flex-start;gap:5px;color:var(--warning);font-size:var(--fs-meta);overflow-wrap:anywhere}
+.pi-account-usage-warning>svg{flex:none;width:13px;height:13px;margin-top:2px}
+.pi-account-remove-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding-top:6px}
+.pi-account-remove-confirm>span{flex-basis:100%;color:var(--text-secondary);font-size:var(--fs-meta)}
+.pi-account-usage-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:64px;padding:12px;color:var(--text-muted);text-align:center}
+.pi-account-usage-empty-title{font-weight:var(--fw-medium)}
+.pi-account-usage-empty-note{color:var(--text-dim);font-size:var(--fs-meta)}
+#pi-account-login-box{display:flex;flex-direction:column;gap:6px;padding:0 12px;font-size:var(--fs-meta);overflow-wrap:anywhere}
+#pi-account-login-box:not(:empty){padding:8px 12px;border-top:1px solid var(--border)}
+#pi-account-login-box a{color:var(--accent);text-decoration:underline}
+#pi-account-login-box form{display:flex;flex-direction:column;gap:6px}
+.pi-account-login-hint{color:var(--text-muted)}
+.pi-account-login-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 6px;border-top:1px solid var(--border)}
+.pw-quota-note{padding:0 12px 8px;color:var(--warning);font-size:var(--fs-meta)}
+.pw-quota-note:empty{display:none}
+.pw-tier-menu{width:auto;min-width:168px}
+.pw-tier-note{margin:4px 8px;color:var(--warning);font-size:var(--fs-meta);line-height:var(--lh-ui)}
+.pw-tier-note:empty{display:none}
+[data-pi-fallback-slot]{position:fixed;z-index:210;display:inline-flex;align-items:center;gap:2px}
+[data-pi-fallback-slot] .pw-slot-popover{position:absolute;right:0;bottom:calc(100% + 8px);width:320px;max-width:calc(100vw - 16px);max-height:min(420px,70vh);overflow:auto;padding:4px;border:1px solid var(--border-strong,var(--border));border-radius:var(--r-lg,8px);background:var(--bg-elevated,var(--bg));box-shadow:var(--shadow-pop,0 8px 24px color-mix(in srgb,var(--text) 16%,transparent))}
+[data-pi-fallback-slot] .pw-tier-menu{width:auto;min-width:168px}
+[data-pi-fallback-slot] button{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:0 6px;border:0;border-radius:var(--r-md,6px);background:transparent;color:var(--text-muted);font:inherit;font-size:var(--fs-meta,12px);cursor:pointer}
+[data-pi-fallback-slot] button:hover{background:var(--bg-hover);color:var(--text)}
+[data-pi-fallback-slot] .pw-menu-item{width:100%;justify-content:flex-start}
+[data-pi-fallback-slot] .pw-quota-bar{display:inline-block;width:26px;height:4px;overflow:hidden;border-radius:2px;background:var(--border-strong,var(--border))}
+[data-pi-fallback-slot] .pw-quota-bar>i{display:block;height:100%;background:var(--text-muted)}
+`;
+
+  function ensureStyle() {
+    if (!document.head || document.querySelector("style[data-pi-ui-style]")) return;
+    const style = document.createElement("style");
+    style.dataset.piUiStyle = "v1";
+    style.textContent = CSS;
+    document.head.appendChild(style);
+  }
+
+  const reactOwned = node => Object.keys(node).some(key => key.startsWith("__reactFiber$"));
+
+  // Same order as the app's useI18n: an explicit pi-locale wins; otherwise Chinese, which is what
+  // every redesigned surface renders (the injected copy has zh-CN/zh-TW/en tables).
+  function locale() {
+    try {
+      const stored = localStorage.getItem("pi-locale");
+      if (stored === "en" || stored === "zh-CN" || stored === "zh-TW") return stored;
+    } catch { /* storage is optional */ }
+    const lang = String(document.documentElement?.lang || "").toLowerCase();
+    if (lang.includes("zh-tw") || lang.includes("zh-hant")) return "zh-TW";
+    const nav = String(globalThis.navigator?.language || "").toLowerCase();
+    if (nav.includes("zh-tw") || nav.includes("zh-hant")) return "zh-TW";
+    return "zh-CN";
+  }
+
+  // Fail-open paths must leave a trace in the existing proxy log (piweb-ui-proxy.log), once per page.
+  function report(event, detail = {}) {
+    const key = `${event}:${JSON.stringify(detail)}`;
+    if (reported.has(key)) return;
+    reported.add(key);
+    nativeFetch("/__pi_ui_event", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event, detail }), keepalive: true,
+    }).catch(error => console.warn("[pi-web ui] event log unavailable:", event, String(error?.message || error)));
+  }
+
+  function warnOnce(event, message, detail) {
+    if (reported.has(`warn:${event}`)) return;
+    reported.add(`warn:${event}`);
+    console.warn(message, detail);
+    report(event, detail);
+  }
+
+  function schedule(flags = ALL) {
+    pending |= flags;
+    if (!frame && started) frame = requestAnimationFrame(run);
+  }
+
+  function retryLater() {
+    if (retry) return;
+    retry = setTimeout(() => { retry = 0; schedule(ALL); }, retryDelay);
+    retryDelay = Math.min(1000, retryDelay * 2);
+  }
+
+  function visibleRect(element) {
+    if (!element?.isConnected) return null;
+    stats.layoutReads++;
+    const rect = element.getBoundingClientRect();
+    return rect.width && rect.height ? rect : null;
+  }
+
+  // Fallback anchors exist only on older pi-web builds without the redesign slots.
+  function archiveAnchor() {
+    const buttons = document.querySelector(".sidebar-container")?.querySelectorAll("button[title]") || [];
+    for (const button of buttons) {
+      if (/new session|新建会话|新增工作階段/iu.test(button.getAttribute("title") || "")) return visibleRect(button);
+    }
+    return null;
+  }
+
+  function composerAnchor() {
+    const models = document.querySelectorAll(".model-selector.is-toolbar");
+    for (let index = models.length - 1; index >= 0; index -= 1) {
+      const rect = visibleRect(models[index]);
+      if (rect) return rect;
+    }
+    return null;
+  }
+
+  function insertOrdered(target, host, order) {
+    const before = [...target.children].find(node => node !== host && Number(node.dataset?.piSlotOrder) > order);
+    if (before) target.insertBefore(host, before); else target.appendChild(host);
+  }
+
+  // Returns the element the slot's clients belong in, or null; `waiting` asks for a retry.
+  function resolve(name) {
+    const def = slots[name];
+    const slot = document.querySelector(def.selector);
+    if (slot) {
+      if (!reactOwned(slot)) {
+        // React has not hydrated this node yet: children appended now would be a hydration mismatch.
+        def.waitSince ||= performance.now();
+        if (performance.now() - def.waitSince < HYDRATION_WAIT_MS) { stats.hydrationWaits++; return { target: null, waiting: true }; }
+        warnOnce(`slot-unhydrated-${name}`, `[pi-web ui] ${def.selector} was never claimed by React; mounting anyway`, { slot: name });
+      }
+      def.waitSince = 0;
+      if (def.mode === "fallback") console.info(`[pi-web ui] ${def.selector} appeared; leaving the fixed fallback`);
+      def.mode = "slot";
+      if (def.virtual) def.virtual.hidden = true;
+      return { target: slot, waiting: false };
+    }
+    const rect = def.anchor();
+    if (!rect) {
+      if (def.virtual) def.virtual.hidden = true;
+      return { target: null, waiting: performance.now() - startedAt < STARTUP_DISCOVERY_MS };
+    }
+    if (!def.virtual) {
+      def.virtual = document.createElement("span");
+      def.virtual.className = def.className;
+      def.virtual.dataset.piFallbackSlot = name;
+      document.body.appendChild(def.virtual);
+    }
+    if (def.mode !== "fallback") {
+      def.mode = "fallback";
+      stats.fallbacks++;
+      warnOnce(`slot-missing-${name}`, `[pi-web ui] ${def.selector} missing; injected controls use the fixed fallback`, { slot: name });
+      if (!fallbackListeners) {
+        fallbackListeners = true;
+        window.addEventListener("resize", () => schedule(ALL), { passive: true });
+        anchorResize = new ResizeObserver(() => schedule(ALL));
+      }
+    }
+    def.virtual.hidden = false;
+    def.virtual.style.top = `${Math.round(rect.top)}px`;
+    def.virtual.style.height = `${Math.round(rect.height)}px`;
+    def.virtual.style.right = `${Math.max(4, Math.round(innerWidth - rect.left + 6))}px`;
+    return { target: def.virtual, waiting: false };
+  }
+
+  function rebindChain() {
+    chainObserver.disconnect();
+    chain.clear();
+    for (const root of [sidebar, composerRoot]) {
+      for (let node = root?.parentElement; node && node !== document.documentElement; node = node.parentElement) {
+        if (!chain.has(node)) { chain.add(node); chainObserver.observe(node, { childList: true }); }
+      }
+    }
+  }
+
+  function bindSidebar() {
+    const next = document.querySelector(".sidebar-container");
+    if (next === sidebar) return false;
+    sidebarObserver.disconnect();
+    sidebar = next;
+    if (sidebar) sidebarObserver.observe(sidebar, { childList: true, subtree: true, attributes: true, attributeFilter: ["tabindex", "aria-current"] });
+    rebindChain();
+    return true;
+  }
+
+  function bindComposer() {
+    const anchor = document.querySelector("[data-pi-composer-slot]") || document.querySelector(".model-selector.is-toolbar");
+    const root = anchor ? (anchor.closest(".pw-composer-wrap, fieldset, form")?.parentElement || anchor.parentElement) : null;
+    let changed = false;
+    if (root !== composerRoot) {
+      composerObserver.disconnect();
+      composerRoot = root;
+      if (root) composerObserver.observe(root, { childList: true });
+      rebindChain();
+      changed = true;
+    }
+    const nextShelf = document.querySelector(".extension-status-shelf");
+    if (nextShelf !== shelf) {
+      shelfObserver.disconnect();
+      shelf = nextShelf;
+      // The goal status text changes in place (text node value), so only this small subtree
+      // is watched with characterData.
+      if (shelf) shelfObserver.observe(shelf, { childList: true, subtree: true, characterData: true });
+      changed = true;
+    }
+    return changed;
+  }
+
+  function call(listener) {
+    try { listener(); } catch (error) { console.error("[pi-web ui] slot listener failed:", error); }
+  }
+
+  function run() {
+    const began = performance.now();
+    try { pass(); } finally { stats.ms += performance.now() - began; }
+  }
+
+  function pass() {
+    frame = 0;
+    stats.runs++;
+    let flags = pending;
+    pending = 0;
+    if (bindSidebar()) flags |= SIDEBAR;
+    if (bindComposer()) flags |= COMPOSER;
+    let waiting = (!sidebar || !composerRoot) && performance.now() - startedAt < STARTUP_DISCOVERY_MS;
+    let fallbackAnchor = null;
+    for (const name of Object.keys(slots)) {
+      const members = clients.filter(client => client.slot === name);
+      if (!members.length) continue;
+      const { target, waiting: wait } = resolve(name);
+      waiting ||= wait;
+      if (!target) continue;
+      for (const client of members) {
+        if (client.host.parentNode !== target) {
+          insertOrdered(target, client.host, client.order);
+          stats.mounts++;
+          call(() => client.onMount?.(slots[name].mode));
+        }
+      }
+      if (name === "composer" && slots[name].mode === "fallback") fallbackAnchor = document.querySelector(".model-selector.is-toolbar");
+    }
+    // The fallback follows the model selector's width; observe a node only when it changes,
+    // since a fresh observation always reports once (re-observing every pass would loop).
+    if (anchorResize && fallbackAnchor !== observedAnchor) {
+      anchorResize.disconnect();
+      observedAnchor = fallbackAnchor;
+      if (observedAnchor) anchorResize.observe(observedAnchor);
+    }
+    if (flags & SIDEBAR) for (const listener of sidebarListeners) call(listener);
+    if (flags & COMPOSER) for (const listener of composerListeners) call(listener);
+    if (waiting) retryLater();
+    else retryDelay = 50;
+  }
+
+  function ownMutation(record) {
+    const target = record.target;
+    if (target.nodeType !== 1) return false;
+    if (record.type === "attributes") return Boolean(target.closest("[data-pi-slot-item],[data-pi-session-archive-action]"));
+    return Boolean(target.closest("[data-pi-slot-item],[data-pi-row-slot],[data-pi-archive-slot]"));
+  }
+
+  sidebarObserver = new MutationObserver(records => {
+    stats.sidebarRecords += records.length;
+    if (records.some(record => !ownMutation(record))) schedule(SIDEBAR);
+  });
+  composerObserver = new MutationObserver(records => { stats.composerRecords += records.length; schedule(COMPOSER); });
+  shelfObserver = new MutationObserver(records => { stats.composerRecords += records.length; schedule(COMPOSER); });
+  chainObserver = new MutationObserver(records => {
+    stats.chainRecords += records.length;
+    for (const record of records) {
+      for (const node of record.removedNodes) {
+        if (node.nodeType === 1 && ((sidebar && node.contains(sidebar)) || (composerRoot && node.contains(composerRoot)))) { schedule(ALL); return; }
+      }
+      if (sidebar && composerRoot) continue;
+      for (const node of record.addedNodes) {
+        if (node.nodeType === 1 && (node.matches(".sidebar-container,.pw-composer-wrap") || node.querySelector(".sidebar-container,[data-pi-composer-slot],.model-selector"))) { schedule(ALL); return; }
+      }
+    }
+  });
+
+  function start() {
+    if (started) return;
+    started = true;
+    startedAt = performance.now();
+    ensureStyle();
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") schedule(ALL); });
+    window.addEventListener("popstate", () => schedule(ALL));
+    document.addEventListener("focusin", () => { if (!sidebar?.isConnected || !composerRoot?.isConnected) schedule(ALL); }, true);
+    schedule(ALL);
+  }
+
+  window.__piUiSlots = {
+    stats,
+    locale,
+    report,
+    warnOnce,
+    reactOwned,
+    register(client) { clients.push(client); schedule(ALL); },
+    onSidebarChange(listener) { sidebarListeners.add(listener); schedule(SIDEBAR); },
+    onComposerChange(listener) { composerListeners.add(listener); schedule(COMPOSER); },
+    schedule,
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
+})();
+
+// Goal pause/resume: a small fixed button beside the goal status. Its body portal never
 // changes React-owned status text or children; commands own the actual mode.
 (() => {
   "use strict";
@@ -15,7 +380,6 @@
     if (!note) {
       note = document.createElement("div");
       note.id = "pi-followup-resume-notice";
-      note.style.cssText = "position:fixed;bottom:48px;left:50%;transform:translateX(-50%);z-index:1000;max-width:90vw;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px";
       note.tabIndex = 0;
       note.title = "点击关闭";
       note.addEventListener("click", () => { note.hidden = true; });
@@ -105,121 +469,22 @@
     if (!frame) frame = requestAnimationFrame(() => { frame = 0; refresh(); });
   }
   function start() {
-    const style = document.createElement("style");
-    style.textContent = '#pi-followup-toggle{position:fixed;z-index:800;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font-size:12px;cursor:pointer}#pi-followup-toggle[hidden]{display:none}#pi-followup-toggle:hover,#pi-followup-toggle:focus-visible{color:var(--accent);border-color:var(--accent)}#pi-followup-toggle:disabled{cursor:wait;opacity:.6}';
-    document.head.appendChild(style);
     resize = new ResizeObserver(schedule);
-    new MutationObserver(records => {
-      if (records.some(record => (record.target.nodeType === 3 ? record.target.parentElement : record.target)?.closest?.(".extension-status-shelf") || [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 && (node.matches?.(".extension-status-shelf") || node.querySelector?.(".extension-status-shelf"))))) schedule();
-    }).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+    // The shared slot watcher reports status shelf insertion/removal and its text changes;
+    // no document-wide observer and no scroll hook (the shelf sits below the transcript).
+    window.__piUiSlots?.onComposerChange(schedule);
     window.addEventListener("popstate", schedule);
     window.addEventListener("resize", schedule);
     window.visualViewport?.addEventListener("resize", schedule);
     window.visualViewport?.addEventListener("scroll", schedule);
     document.fonts?.addEventListener("loadingdone", schedule);
-    document.addEventListener("scroll", schedule, { capture: true, passive: true });
     refresh();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
 })();
 
-// Shared, event-driven geometry for the three portal controls. Never poll the
-// transcript or mutate React-owned children. A single frame serves all clients.
-(() => {
-  "use strict";
-  if (window.__piUiLayout) return;
-  const clients = new Set();
-  const anchors = new Set();
-  // A sibling footer can move the composer without resizing the model anchor
-  // or its ancestors. Observe its insertion/removal and widget/status height.
-  const selector = '.sidebar-container,[data-pi-archive-slot],.model-selector.is-toolbar,.extension-status-shelf,[role="dialog"],[aria-modal="true"]';
-  const owned = '#pi-session-archive-control-host,#pi-account-usage-host,#pi-account-usage-panel,#pi-service-tier-button,#pi-service-tier-panel,[data-pi-session-archive-toast]';
-  let frame = 0, rebind = true, modal = false;
-  const resize = new ResizeObserver(() => schedule());
-  function visibleRect(element) {
-    if (!element?.isConnected) return null;
-    const rect = element.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    for (let parent = element; parent; parent = parent.parentElement) {
-      if (parent.hidden || parent.classList.contains('sidebar-closed')) return null;
-      const style = getComputedStyle(parent);
-      if (style.visibility === 'hidden' || style.display === 'none') return null;
-    }
-    const view = viewport();
-    if (rect.bottom <= view.top || rect.top >= view.bottom || rect.right <= view.left || rect.left >= view.right) return null;
-    return rect;
-  }
-  function viewport() {
-    const view = window.visualViewport;
-    const left = view?.offsetLeft || 0, top = view?.offsetTop || 0;
-    const width = view?.width || innerWidth, height = view?.height || innerHeight;
-    return { left, top, width, height, right: left + width, bottom: top + height };
-  }
-  function placePanel(panel, anchor, preferredHeight = 360) {
-    const view = viewport(), gap = 8;
-    const above = Math.max(0, anchor.top - view.top - gap * 2);
-    const below = Math.max(0, view.bottom - anchor.bottom - gap * 2);
-    const up = above >= Math.min(preferredHeight, 180) || above >= below;
-    const height = Math.min(preferredHeight, up ? above : below);
-    const width = Math.min(parseFloat(getComputedStyle(panel).width) || 280, view.width - gap * 2);
-    panel.style.maxWidth = `${Math.max(0, view.width - gap * 2)}px`;
-    panel.style.maxHeight = `${height}px`;
-    panel.style.left = `${Math.max(view.left + gap, Math.min(anchor.right - width, view.right - width - gap))}px`;
-    panel.style.right = 'auto';
-    panel.style.bottom = up ? `${innerHeight - anchor.top + gap}px` : 'auto';
-    panel.style.top = up ? 'auto' : `${anchor.bottom + gap}px`;
-  }
-  function schedule(discover = false) {
-    rebind ||= discover;
-    if (frame || document.visibilityState === 'hidden') return;
-    frame = requestAnimationFrame(() => {
-      frame = 0;
-      if (rebind) {
-        rebind = false;
-        resize.disconnect(); anchors.clear(); modal = false;
-        for (const element of document.querySelectorAll(selector)) {
-          if (element.closest(owned)) continue;
-          if (element.matches('[role="dialog"],[aria-modal="true"]') && visibleRect(element)) modal = true;
-          for (let node = element, depth = 0; node && depth < 5; node = node.parentElement, depth++) {
-            if (!anchors.has(node)) { anchors.add(node); resize.observe(node); }
-          }
-        }
-        if (document.body) resize.observe(document.body);
-      }
-      for (const client of clients) client();
-    });
-  }
-  const observer = new MutationObserver(records => {
-    for (const record of records) {
-      const target = record.target;
-      if (!(target instanceof Element) || target.closest(owned)) continue;
-      if (record.type === 'attributes') {
-        if (target === document.documentElement || anchors.has(target)) { schedule(true); return; }
-      } else if ([...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element && !node.matches(owned) && (node.matches(selector) || node.querySelector(selector)))) {
-        schedule(true); return;
-      }
-    }
-  });
-  window.__piUiLayout = {
-    subscribe(client) { clients.add(client); schedule(true); },
-    schedule, visibleRect, viewport, placePanel,
-    get blocked() { return modal; },
-    open(id) { document.dispatchEvent(new CustomEvent('pi-ui:popover-open', { detail: id })); },
-  };
-  function start() {
-    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open', 'aria-modal', 'lang'] });
-    window.addEventListener('resize', () => schedule(), { passive: true });
-    window.visualViewport?.addEventListener('resize', () => schedule(), { passive: true });
-    window.visualViewport?.addEventListener('scroll', () => schedule(), { passive: true });
-    document.addEventListener('scroll', event => {
-      if (event.target === document || anchors.has(event.target)) schedule();
-    }, { capture: true, passive: true });
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') schedule(true); });
-    schedule(true);
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
-})();
-
+// Session archive view: list-head control in [data-pi-archive-slot], per-row action in
+// [data-pi-row-slot], and the fetch rewrite that must run before Next's first /api/sessions.
 (() => {
   "use strict";
 
@@ -249,9 +514,13 @@
       restore: "Restore",
       actionArchive: "Archive",
       actionRestore: "Restore",
+      archiveTitle: "Archive this conversation",
+      restoreTitle: "Restore this conversation",
       showArchived: (count) => `View archived sessions (${count})`,
       showActive: "Back to active sessions",
       archivedView: "Archive",
+      back: "Back",
+      archivedConversations: (count) => `${count} conversations`,
       emptyArchive: "No archived sessions",
       requestFailed: "Session archive request failed",
     },
@@ -260,9 +529,13 @@
       restore: "恢复",
       actionArchive: "归档",
       actionRestore: "恢复",
+      archiveTitle: "归档这个会话",
+      restoreTitle: "恢复这个会话",
       showArchived: (count) => `查看归档会话（${count}）`,
       showActive: "返回当前会话",
       archivedView: "归档",
+      back: "返回",
+      archivedConversations: (count) => `${count} 个对话`,
       emptyArchive: "暂无归档会话",
       requestFailed: "会话归档请求失败",
     },
@@ -271,39 +544,31 @@
       restore: "還原",
       actionArchive: "歸檔",
       actionRestore: "還原",
+      archiveTitle: "歸檔這個工作階段",
+      restoreTitle: "還原這個工作階段",
       showArchived: (count) => `檢視歸檔工作階段（${count}）`,
       showActive: "返回目前工作階段",
       archivedView: "歸檔",
+      back: "返回",
+      archivedConversations: (count) => `${count} 個對話`,
       emptyArchive: "沒有歸檔工作階段",
       requestFailed: "工作階段歸檔請求失敗",
     },
   };
 
-  const oldDeleteTitles = new Set([
-    "Delete (Shift+click to delete without confirmation)",
-    "删除（按住 Shift 点击可跳过确认）",
-    "刪除（按住 Shift 點選可跳過確認）",
-  ]);
   const refreshTitles = new Set(["Refresh", "刷新", "重新整理"]);
   const forwardedActionEvents = new WeakSet();
 
-  function language() {
-    const html = String(document.documentElement?.lang || "").toLowerCase();
-    if (html.includes("zh-tw") || html.includes("zh-hant")) return "zh-TW";
-    if (html.includes("zh")) return "zh-CN";
-    const refresh = [...document.querySelectorAll("button[title]")]
-      .map((button) => button.getAttribute("title"))
-      .find((title) => refreshTitles.has(title || ""));
-    if (refresh === "刷新") return "zh-CN";
-    if (refresh === "重新整理") return "zh-TW";
-    return "en";
-  }
+  function language() { return window.__piUiSlots?.locale() || "zh-CN"; }
 
-  function words() { return copy[language()] || copy.en; }
+  function words() { return copy[language()] || copy["zh-CN"]; }
 
   function icon(kind) {
     if (kind === "restore") {
       return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg>';
+    }
+    if (kind === "back") {
+      return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>';
     }
     return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h18v13H3z"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>';
   }
@@ -330,10 +595,13 @@
   // .claude/worktrees) remain usable by their sessions, but never clutter the
   // category switcher. This is derived from paths, so there is no registry to
   // maintain and existing user-created worktrees are discovered automatically.
+  // Returns null when nothing needs hiding, so the native response is kept as is.
   function filterProjectCategoryWorktrees(body) {
     if (!body || typeof body !== "object" || typeof body.projectRoot !== "string" || !Array.isArray(body.worktrees)) {
       throw new Error("unexpected /api/worktrees response shape");
     }
+    // Non-git projects (isGit:false) list no worktrees: there is nothing to filter.
+    if (body.worktrees.length === 0) return null;
     const projectRoot = normalizeWorktreePath(body.projectRoot);
     if (!projectRoot) throw new Error("project root is empty");
     const categoryRoot = `${projectRoot}-worktrees/`;
@@ -346,11 +614,13 @@
     const currentWorktreePath = visiblePaths.has(normalizeWorktreePath(body.currentWorktreePath))
       ? body.currentWorktreePath
       : mainWorktree.path;
+    if (worktrees.length === body.worktrees.length && currentWorktreePath === body.currentWorktreePath) return null;
     return { ...body, currentWorktreePath, worktrees };
   }
 
   async function projectCategoryWorktreeResponse(response) {
     const body = filterProjectCategoryWorktrees(await response.clone().json());
+    if (!body) return response;
     const headers = new Headers(response.headers);
     headers.delete("content-length");
     headers.delete("content-encoding");
@@ -369,9 +639,24 @@
     toast.dataset.piSessionArchiveToast = "true";
     toast.setAttribute("role", "alert");
     toast.textContent = message;
-    toast.style.cssText = "position:fixed;left:50%;bottom:24px;z-index:2147483647;transform:translateX(-50%);max-width:min(520px,calc(100vw - 32px));padding:9px 13px;border:1px solid rgba(220,38,38,.35);border-radius:8px;background:var(--bg,#fff);color:#dc2626;box-shadow:0 8px 28px rgba(0,0,0,.16);font:12px/1.45 system-ui,sans-serif";
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 5000);
+  }
+
+  function acceptArchivedCount(response) {
+    // The UI proxy puts the group count in a header so the 44-886 KB list is parsed only once (by Next).
+    const header = response.headers.get("x-pi-archived-count");
+    const count = header === null ? Number.NaN : Number(header);
+    if (Number.isFinite(count) && count >= 0) {
+      if (count !== state.archivedCount) { state.archivedCount = count; scheduleDecorate(); }
+      return;
+    }
+    window.__piUiSlots?.warnOnce?.("archived-count-header-missing", "[pi-web archive] x-pi-archived-count missing; reading the list body", {});
+    void response.clone().json().then((body) => {
+      const value = Number(body?.archive?.archivedCount);
+      if (Number.isFinite(value) && value >= 0) state.archivedCount = value;
+      scheduleDecorate();
+    }).catch(() => {});
   }
 
   window.fetch = async function piSessionArchiveFetch(input, init) {
@@ -447,13 +732,7 @@
       nextInput = rewrittenInput(nextInput, url);
       response = await nativeFetch(nextInput, nextInit);
     }
-    if (url && url.origin === window.location.origin && url.pathname === "/api/sessions" && method === "GET") {
-      void response.clone().json().then((body) => {
-        const count = Number(body?.archive?.archivedCount);
-        if (Number.isFinite(count) && count >= 0) state.archivedCount = count;
-        scheduleDecorate();
-      }).catch(() => {});
-    }
+    if (requestedListView && response.ok) acceptArchivedCount(response);
     if (action && !response.ok) {
       let detail = "";
       try { detail = String((await response.clone().json())?.error || ""); } catch {}
@@ -473,41 +752,14 @@
   }
 
   function requestNativeRefresh() {
+    // The redesigned sidebar listens for this event; older builds exposed a 刷新 button.
+    if (document.querySelector("[data-pi-archive-slot]")) {
+      document.dispatchEvent(new Event("pi-web:refresh-sessions"));
+      return;
+    }
     const button = nativeRefreshButton();
     if (button) button.click();
-    else if (document.querySelector('[data-pi-archive-slot]')) document.dispatchEvent(new Event('pi-web:refresh-sessions'));
-    else console.error('[pi-web archive] session refresh control unavailable');
-  }
-
-  function nativeNewSessionButton() {
-    return [...document.querySelectorAll("button")].find((button) => {
-      if (button.dataset.piSessionArchiveControl) return false;
-      const title = String(button.getAttribute("title") || "");
-      const label = String(button.textContent || "").trim();
-      return /new session/iu.test(title) || /新建会话|新增工作階段/u.test(title) || ["New", "新建", "新增"].includes(label);
-    }) || null;
-  }
-
-  function ensureStyle() {
-    if (document.querySelector("style[data-pi-session-archive-style]")) return;
-    const style = document.createElement("style");
-    style.dataset.piSessionArchiveStyle = "true";
-    style.textContent = [
-      // Row actions live in the context menu; hide the shortcut AND its reserved slot.
-      ".sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}",
-      // Row actions live in the context menu; hide the shortcut AND its reserved slot.
-      ".sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}",
-      "[data-pi-session-archive-action]{color:var(--text-muted)!important;position:relative!important}",
-      "[data-pi-session-archive-action]>svg{opacity:0!important}",
-      "[data-pi-session-archive-action]::before{content:'';position:absolute;width:14px;height:14px;background:currentColor;-webkit-mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E');mask:center/14px 14px no-repeat url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 8h18v13H3z%22/%3E%3Cpath d=%22M1 3h22v5H1z%22/%3E%3Cpath d=%22M10 12h4%22/%3E%3C/svg%3E')}",
-      "[data-pi-session-archive-action][data-pi-session-archive-mode='restore']::before{-webkit-mask-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 12a9 9 0 1 0 3-6.7%22/%3E%3Cpath d=%22M3 4v6h6%22/%3E%3C/svg%3E');mask-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22black%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M3 12a9 9 0 1 0 3-6.7%22/%3E%3Cpath d=%22M3 4v6h6%22/%3E%3C/svg%3E')}",
-      "[data-pi-session-archive-action]:hover{color:var(--accent)!important;border-color:rgba(37,99,235,.35)!important;background:var(--bg-selected)!important}",
-      "[data-pi-session-archive-handoff='true']{background:var(--bg-selected)!important;border-left-color:var(--accent)!important}",
-      "[data-pi-session-archive-pending]{pointer-events:none!important;overflow:hidden!important}",
-      "[data-pi-session-archive-hidden]{display:none!important}",
-      "[data-pi-session-archive-control]:focus-visible,[data-pi-session-archive-action]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}",
-    ].join("");
-    document.head.appendChild(style);
+    else console.error("[pi-web archive] session refresh control unavailable");
   }
 
   function requestListRefresh(baselineSerial, expectedView, attempt = 0) {
@@ -523,109 +775,95 @@
     }, delays[attempt]);
   }
 
-  function ensureControl() {
-    const refresh = nativeRefreshButton();
-    const slot = document.querySelector('[data-pi-archive-slot]');
-    if (!refresh && !slot) {
-      const previous = document.getElementById('pi-session-archive-control-host');
-      if (previous) previous.hidden = true;
-      return;
-    }
-    let host = document.getElementById("pi-session-archive-control-host");
-    if (!host) {
-      host = document.createElement("div");
-      host.id = "pi-session-archive-control-host";
-      host.style.cssText = "position:fixed;z-index:210;width:max-content;height:32px;pointer-events:auto";
-      document.documentElement.appendChild(host);
-    }
-    let control = host.querySelector("button[data-pi-session-archive-control]");
-    if (!control) {
-      control = document.createElement("button");
-      control.type = "button";
-      control.dataset.piSessionArchiveControl = "true";
-      control.addEventListener("click", () => {
-        for (const pending of [...state.optimisticActions]) restoreOptimisticAction(pending);
-        const baselineSerial = state.listRequestSerial;
-        state.view = state.view === "active" ? "archived" : "active";
-        try { sessionStorage.setItem(VIEW_KEY, state.view); } catch {}
-        decorate();
-        requestListRefresh(baselineSerial, state.view);
-      });
-      host.appendChild(control);
-    }
+  // List-head control: 「归档 858」 in the active view; 「858 个对话 · 返回」 in the archived view.
+  // One button keeps keyboard focus across the toggle; React renders the label on its left.
+  let host = null, control = null, meta = null;
+  function archiveHost() {
+    if (host) return host;
+    host = document.createElement("span");
+    host.className = "pw-archive-ctl";
+    host.dataset.piSlotItem = "archive";
+    host.dataset.piSlotOrder = "0";
+    meta = document.createElement("span");
+    meta.className = "pw-archive-meta";
+    meta.hidden = true;
+    control = document.createElement("button");
+    control.type = "button";
+    control.className = "pw-btn pw-btn--ghost pw-btn--sm";
+    control.dataset.piSessionArchiveControl = "true";
+    control.addEventListener("click", () => {
+      for (const pending of [...state.optimisticActions]) restoreOptimisticAction(pending);
+      const baselineSerial = state.listRequestSerial;
+      state.view = state.view === "active" ? "archived" : "active";
+      try { sessionStorage.setItem(VIEW_KEY, state.view); } catch {}
+      decorate();
+      requestListRefresh(baselineSerial, state.view);
+    });
+    host.append(meta, control);
+    return host;
+  }
+
+  function renderControl() {
+    if (!control) return;
     const text = words();
     const archivedView = state.view === "archived";
     const label = archivedView ? text.showActive : text.showArchived(state.archivedCount);
     if (control.title !== label) control.title = label;
     if (control.getAttribute("aria-label") !== label) control.setAttribute("aria-label", label);
-    control.setAttribute("aria-pressed", String(archivedView));
-    control.style.cssText = [
-      "display:flex", "align-items:center", "justify-content:center", "gap:5px", "height:32px",
-      `width:${archivedView ? "auto" : state.archivedCount > 0 ? "auto" : "32px"}`,
-      `padding:${archivedView || state.archivedCount > 0 ? "0 8px" : "0"}`,
-      "border:1px solid var(--border)", "border-radius:7px", "cursor:pointer",
-      `background:${archivedView ? "var(--bg-selected)" : "var(--bg-hover)"}`,
-      `color:${archivedView ? "var(--accent)" : "var(--text-muted)"}`,
-      "font:600 11px/1 system-ui,sans-serif", "white-space:nowrap",
-    ].join(";");
-    const suffix = archivedView
-      ? `<span>${text.archivedView}</span>`
-      : state.archivedCount > 0 ? `<span>${state.archivedCount}</span>` : "";
-    const markup = icon("archive") + suffix;
+    const markup = archivedView
+      ? `${icon("back")}<span>${text.back}</span>`
+      : `${icon("archive")}<span>${text.archivedView}</span>${state.archivedCount > 0 ? `<span class="pw-num">${state.archivedCount}</span>` : ""}`;
     if (control.innerHTML !== markup) control.innerHTML = markup;
-    const refreshRect = window.__piUiLayout.visibleRect(slot || refresh);
-    host.hidden = !refreshRect || window.__piUiLayout.blocked;
-    if (host.hidden) return;
-    if (slot) {
-      host.style.top = `${refreshRect.top}px`;
-      host.style.left = `${refreshRect.left}px`;
-      control.style.width = `${refreshRect.width}px`;
-      control.style.padding = '0 4px';
-      return;
-    }
-    const createRect = nativeNewSessionButton()?.getBoundingClientRect();
-    const controlWidth = control.getBoundingClientRect().width || 32;
-    const betweenGap = createRect ? refreshRect.left - createRect.right - 16 : 0;
-    const left = createRect && betweenGap >= controlWidth
-      ? createRect.right + 8
-      : createRect ? createRect.left - controlWidth - 8 : refreshRect.left - controlWidth - 8;
-    host.style.top = `${Math.max(0, refreshRect.top)}px`;
-    host.style.left = `${Math.max(4, left)}px`;
+    const metaText = archivedView ? text.archivedConversations(state.archivedCount) : "";
+    if (meta.textContent !== metaText) meta.textContent = metaText;
+    meta.hidden = !archivedView;
   }
 
-  function decorateActions() {
+  // Row action: one 24px icon button per rendered row, shown on row hover/focus-within (CSS).
+  // Keyboard: only the row whose main button is in the roving tab sequence gets tabIndex 0.
+  function decorateRows() {
+    const root = document.querySelector(".sidebar-container");
+    if (!root) return;
     const text = words();
     const restoring = state.view === "archived";
-    const buttons = document.querySelector('.sidebar-container')?.querySelectorAll('button') || [];
-    for (const button of buttons) {
-      const title = button.getAttribute("title") || "";
-      if (!button.dataset.piSessionArchiveAction && !oldDeleteTitles.has(title)) continue;
-      button.dataset.piSessionArchiveAction = "true";
-      const label = restoring ? text.actionRestore : text.actionArchive;
-      if (button.title !== label) button.title = label;
-      if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
-      const mode = restoring ? "restore" : "archive";
-      if (button.dataset.piSessionArchiveMode !== mode) button.dataset.piSessionArchiveMode = mode;
+    const mode = restoring ? "restore" : "archive";
+    const label = restoring ? text.actionRestore : text.actionArchive;
+    const title = restoring ? text.restoreTitle : text.archiveTitle;
+    for (const slot of root.querySelectorAll("[data-pi-session-row] [data-pi-row-slot]")) {
+      let action = slot.firstElementChild;
+      if (!action) {
+        if (!window.__piUiSlots?.reactOwned(slot)) continue;
+        action = document.createElement("button");
+        action.type = "button";
+        action.className = "pw-icon-btn pw-icon-btn--sm";
+        action.dataset.piSessionArchiveAction = "true";
+        slot.appendChild(action);
+      }
+      if (action.dataset.piSessionArchiveMode !== mode) {
+        action.dataset.piSessionArchiveMode = mode;
+        action.innerHTML = icon(mode);
+      }
+      if (action.title !== title) action.title = title;
+      if (action.getAttribute("aria-label") !== label) action.setAttribute("aria-label", label);
+      const main = slot.closest("[data-pi-session-row]")?.querySelector(".pw-sess-main");
+      const tabIndex = main?.tabIndex === 0 ? 0 : -1;
+      if (action.tabIndex !== tabIndex) action.tabIndex = tabIndex;
     }
   }
 
   function sessionRow(button) {
-    let row = button?.parentElement;
-    while (row && row !== document.body) {
-      if (row.style.height === "54px" && row.style.display === "flex") return row;
-      row = row.parentElement;
-    }
-    return null;
+    return button?.closest?.("[data-pi-session-row]") || null;
   }
 
-  // Native 0.9 rows are inside absolutely positioned virtual-list wrappers.
-  // Shrinking the child alone cannot move its neighbours. Animate wrappers,
+  // Rows and date-group headers are absolutely positioned virtual-list children.
+  // Shrinking the row alone cannot move its neighbours. Animate wrappers,
   // leaving React's top/height coordinates untouched, until it reconciles.
   function syncOptimisticLayout(animate = false) {
+    if (!state.optimisticActions.size && !state.optimisticLayouts.size) return;
     const removed = [...state.optimisticActions].filter(item => item.row?.isConnected);
     const offsets = new Map();
-    for (const row of document.querySelectorAll('.sidebar-container [data-pi-session-id]')) {
-      const wrapper = row.parentElement;
+    for (const node of document.querySelectorAll('.sidebar-container [data-pi-session-id], .sidebar-container .pw-sess-group')) {
+      const wrapper = node.dataset?.piSessionId ? node.parentElement : node;
       if (wrapper?.style.position !== 'absolute') continue;
       const top = Number.parseFloat(wrapper.style.top);
       if (!Number.isFinite(top)) continue;
@@ -678,6 +916,10 @@
     pending.row.removeAttribute("aria-busy");
   }
 
+  function isSelectedRow(row) {
+    return row?.getAttribute?.("aria-current") === "page" || Boolean(row?.classList?.contains("is-selected"));
+  }
+
   function beginOptimisticAction(button, explicitRow = null) {
     const row = explicitRow || sessionRow(button);
     if (!row) return null;
@@ -694,7 +936,7 @@
       timeout: 0,
       cleanupTimer: 0,
       animation: null,
-      wasSelected: row.style.background.includes("--bg-selected") || row.style.borderLeftColor.includes("--accent"),
+      wasSelected: isSelectedRow(row),
       nextRow: adjacentSessionRow(row),
       handedOff: false,
     };
@@ -703,7 +945,7 @@
     row.setAttribute("aria-busy", "true");
     row.style.pointerEvents = "none";
     const computed = getComputedStyle(row);
-    const rowHeight = row.getBoundingClientRect().height || 54;
+    const rowHeight = row.getBoundingClientRect().height || 30;
     pending.rowHeight = rowHeight;
     syncOptimisticLayout(true);
     pending.animation = row.animate([
@@ -770,7 +1012,7 @@
     const startedAt = performance.now();
     const settle = () => {
       if (!nextRow.isConnected) return;
-      if (nextRow.style.background.includes("--bg-selected") || performance.now() - startedAt >= 5000) {
+      if (nextRow.getAttribute?.("aria-current") === "page" || performance.now() - startedAt >= 5000) {
         delete nextRow.dataset.piSessionArchiveHandoff;
         return;
       }
@@ -889,10 +1131,9 @@
   function decorate() {
     state.scheduled = false;
     if (!document.body) return;
-    ensureStyle();
-    ensureControl();
-    decorateActions();
-    document.documentElement.dataset.piSessionArchiveView = state.view;
+    renderControl();
+    decorateRows();
+    if (document.documentElement.dataset.piSessionArchiveView !== state.view) document.documentElement.dataset.piSessionArchiveView = state.view;
   }
 
   function scheduleDecorate() {
@@ -901,33 +1142,22 @@
     requestAnimationFrame(decorate);
   }
 
-  let sidebar = null;
-  const observer = new MutationObserver(records => {
-    // Our own title changes settle after one frame; transcript tokens never
-    // reach this observer. New native rows and translated titles still do.
-    if (records.some(record => record.type === 'childList')) syncOptimisticLayout();
-    if (records.some(record => record.type === 'childList' || oldDeleteTitles.has(record.target.title))) scheduleDecorate();
-  });
   const start = () => {
     enableImmediateActions();
-    window.__piUiLayout.subscribe(() => {
-      const next = document.querySelector('.sidebar-container');
-      if (next !== sidebar) {
-        observer.disconnect(); sidebar = next;
-        if (sidebar) observer.observe(sidebar, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] });
-      }
-      scheduleDecorate();
-    });
+    window.__piUiSlots.register({ name: "archive", slot: "archive", order: 0, host: archiveHost(), onMount: scheduleDecorate });
+    // New rows, roving tabindex and selection changes arrive through the sidebar-scoped watcher.
+    window.__piUiSlots.onSidebarChange(() => { syncOptimisticLayout(); decorateRows(); });
     scheduleDecorate();
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
   else start();
 })();
 
+// Account pool usage: gauge in [data-pi-composer-slot] and a panel that pops up from it.
 (() => {
   "use strict";
 
-  const VERSION = "piweb-account-usage-v2";
+  const VERSION = "piweb-account-usage-v3";
   const ENDPOINT = "/__pi_account_usage";
   const SELECT_ENDPOINT = "/__pi_account_select";
   const LOGIN_ENDPOINT = "/__pi_account_login";
@@ -935,6 +1165,12 @@
   // snapshot every 45 seconds keeps the rendered value safely below five
   // minutes old even with timer jitter; this never calls a model endpoint.
   const BROWSER_REFRESH_MS = 45_000;
+  // A failed read retries sooner (5 s, 15 s, then the normal 45 s), with ±20 % jitter so tabs spread out.
+  const RETRY_MS = [5_000, 15_000, 45_000];
+  // The proxy waits up to 2.5 s for a busy bridge before answering from its snapshot.
+  const REQUEST_TIMEOUT_MS = 4_000;
+  // Bar turns amber at 85 % used and red at 95 % used (design spec §3.4).
+  const LOW_USED = 85, CRITICAL_USED = 95;
   if (window.__piAccountUsageUiVersion === VERSION) return;
   window.__piAccountUsageUiVersion = VERSION;
 
@@ -960,10 +1196,15 @@
     switchFailedId: "",
     switchError: "",
     lastFetchAt: 0,
+    failures: 0,
+    refreshTimer: 0,
     suppressClick: false,
     renderedLocale: "",
     host: null,
     button: null,
+    bar: null,
+    value: null,
+    badge: null,
     panel: null,
     list: null,
     title: null,
@@ -976,6 +1217,8 @@
     en: {
       title: "Account pool usage",
       button: "View account pool usage",
+      buttonUsed: (percent) => `Account usage: current account ${percent}% used`,
+      accountsAbnormal: (count) => `${count} account${count === 1 ? "" : "s"} unavailable`,
       remaining: "left",
       used: "Used",
       resets: "Reset card balance (not current redemption eligibility)",
@@ -1021,6 +1264,8 @@
     "zh-CN": {
       title: "账号池额度",
       button: "查看轮转账号池额度",
+      buttonUsed: (percent) => `账号额度：当前账号已用 ${percent}%`,
+      accountsAbnormal: (count) => `${count} 个账号异常`,
       remaining: "剩余",
       used: "已用",
       resets: "重置卡余额（不是当前可立即使用的次数）",
@@ -1066,6 +1311,8 @@
     "zh-TW": {
       title: "帳號池額度",
       button: "檢視輪轉帳號池額度",
+      buttonUsed: (percent) => `帳號額度：目前帳號已用 ${percent}%`,
+      accountsAbnormal: (count) => `${count} 個帳號異常`,
       remaining: "剩餘",
       used: "已用",
       resets: "重置卡餘額（不是目前可立即使用的次數）",
@@ -1110,89 +1357,43 @@
     },
   };
 
-  function locale() {
-    try {
-      const stored = localStorage.getItem("pi-locale");
-      if (stored === "en" || stored === "zh-CN" || stored === "zh-TW") return stored;
-    } catch { /* storage is optional */ }
-    const value = String(document.documentElement.lang || navigator.language || "en").toLowerCase();
-    if (value.includes("zh-tw") || value.includes("zh-hant")) return "zh-TW";
-    if (value.includes("zh")) return "zh-CN";
-    const titles = [...document.querySelectorAll("button[title]")].map((button) => button.title);
-    if (titles.some((title) => title === "關閉完成提示音" || title === "開啟完成提示音")) return "zh-TW";
-    if (titles.some((title) => title === "关闭完成提示音" || title === "开启完成提示音")) return "zh-CN";
-    return "en";
-  }
+  function locale() { return window.__piUiSlots?.locale() || "zh-CN"; }
 
-  function words() { return labels[locale()] || labels.en; }
+  function words() { return labels[locale()] || labels["zh-CN"]; }
 
-  function staticSvg(markup) {
-    const holder = document.createElement("span");
-    holder.style.display = "contents";
-    holder.insertAdjacentHTML("afterbegin", markup);
-    return holder.firstElementChild;
-  }
-
-  function gaugeIcon() {
-    return staticSvg('<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15a8 8 0 1 1 16 0"/><path d="m12 15 4-4"/><path d="M5.5 18h13"/></svg>');
-  }
-
-  function isVisible(element) {
-    if (!(element instanceof HTMLElement)) return false;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-  }
-
-  function findAnchor() {
-    // The model selector is a stable composer anchor; sound controls are optional.
-    const model = [...document.querySelectorAll(".model-selector.is-toolbar")]
-      .filter(isVisible)
-      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
-    if (model) {
-      const rect = model.getBoundingClientRect();
-      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function svgIcon(paths, size = 14) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", width: String(size), height: String(size), fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(key, value);
+    for (const d of paths) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
     }
-    const soundNames = new Set([
-      "Disable completion sound", "Enable completion sound",
-      "关闭完成提示音", "开启完成提示音",
-      "關閉完成提示音", "開啟完成提示音",
-    ]);
-    const sound = [...document.querySelectorAll("button[title]")]
-      .filter((button) => soundNames.has(button.title) && isVisible(button))
-      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
-    if (sound?.parentElement) {
-      const rect = sound.parentElement.getBoundingClientRect();
-      if (rect.top > 40) return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
-    }
-    const moreNames = new Set(["More controls", "更多控件", "更多控制項"]);
-    const more = [...document.querySelectorAll("button[aria-label]")]
-      .filter((button) => moreNames.has(button.getAttribute("aria-label")) && isVisible(button))
-      .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
-    if (!more) return null;
-    const rect = more.getBoundingClientRect();
-    return rect.top > 40 ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom } : null;
+    return svg;
   }
 
-  function positionUi() {
-    if (!state.host || !state.panel) return;
-    if (state.renderedLocale && state.renderedLocale !== locale()) {
-      render();
-      return;
-    }
-    const anchor = findAnchor();
-    if (!anchor || window.__piUiLayout.blocked) {
-      state.host.style.visibility = "hidden";
-      state.panel.style.visibility = "hidden";
-      if (state.open) setOpen(false);
-      return;
-    }
-    const left = Math.max(8, anchor.left - (document.getElementById("pi-service-tier-button") ? 74 : 38));
-    state.host.style.left = `${left}px`;
-    state.host.style.top = `${anchor.top}px`;
-    state.host.style.visibility = "visible";
-    if (state.open) window.__piUiLayout.placePanel(state.panel, anchor);
-    state.panel.style.visibility = state.open ? "visible" : "hidden";
+  function gaugeIcon() { return svgIcon(["M4 15a8 8 0 1 1 16 0", "m12 15 4-4", "M5.5 18h13"]); }
+
+  function accountActionIcon(action) {
+    return svgIcon([action === "reauth"
+      ? "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 7l5 5-5 5M15 12H3"
+      : "M3 6h18M9 6V4h6v2M5 6l1 15h12l1-15M10 10v7M14 10v7"]);
+  }
+
+  function warningIcon() { return svgIcon(["M12 9v4", "M12 17h.01", "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"], 13); }
+
+  function clampPercent(value) { return Math.max(0, Math.min(100, Math.round(Number(value) || 0))); }
+
+  function usedPercent(account) {
+    if (!account || account.stale || account.error) return null;
+    if (account.usedPercent != null) return clampPercent(account.usedPercent);
+    if (account.remainingPercent != null) return 100 - clampPercent(account.remainingPercent);
+    return null;
+  }
+
+  function usageLevel(used) {
+    return used == null ? "" : used >= CRITICAL_USED ? "critical" : used >= LOW_USED ? "low" : "";
   }
 
   function relativeReset(resetAt) {
@@ -1237,22 +1438,18 @@
     state.list.appendChild(row);
   }
 
-  function accountActionIcon(action) {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "14"); svg.setAttribute("height", "14");
-    svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "1.7"); svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round"); svg.setAttribute("aria-hidden", "true");
-    const shape = document.createElementNS(ns, "path");
-    shape.setAttribute("d", action === "reauth"
-      ? "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 7l5 5-5 5M15 12H3"
-      : "M3 6h18M9 6V4h6v2M5 6l1 15h12l1-15M10 10v7M14 10v7");
-    svg.appendChild(shape);
-    return svg;
+  function warningLine(parent, text, title = "") {
+    const line = document.createElement("div");
+    line.className = "pi-account-usage-warning";
+    if (title) line.title = title;
+    line.appendChild(warningIcon());
+    appendText(line, "", text);
+    parent.appendChild(line);
+    return line;
   }
 
+  // Row: line 1 = email + 当前 badge + 「剩余 81%」 and a 48 px bar (swapped for 切换/重新登录/删除 on
+  // hover or keyboard focus); line 2 = 已用 · 重置卡 · 重置时间; abnormal accounts add one status line.
   function accountRow(account) {
     const text = words();
     const row = document.createElement("div");
@@ -1265,54 +1462,73 @@
     top.className = "pi-account-usage-top";
     const identity = document.createElement("div");
     identity.className = "pi-account-usage-identity";
-    const dot = document.createElement("span");
-    dot.className = "pi-account-usage-dot";
-    dot.dataset.state = account.error || account.stale ? "error" : account.active ? "active" : "idle";
-    identity.appendChild(dot);
     const email = String(account.email || account.id || "—");
     appendText(identity, "pi-account-usage-email", email, account.error ? `${email} · ${account.error}` : email);
+    if (account.active) appendText(identity, "pw-badge pw-badge--accent", text.current);
     top.appendChild(identity);
+
+    const value = document.createElement("span");
+    value.className = "pi-account-usage-value";
+    const fresh = account.remainingPercent != null && !account.stale && !account.error;
+    appendText(value, "", `${account.stale || account.error ? `${text.cached} · ` : ""}${text.remaining} ${account.remainingPercent == null ? "—" : `${account.remainingPercent}%`}`);
+    if (fresh) {
+      const meter = document.createElement("span");
+      meter.className = "pw-quota-bar pi-account-usage-meter";
+      meter.setAttribute("role", "progressbar");
+      meter.setAttribute("aria-label", `${email} ${text.remaining}`);
+      meter.setAttribute("aria-valuemin", "0");
+      meter.setAttribute("aria-valuemax", "100");
+      meter.setAttribute("aria-valuenow", String(account.remainingPercent));
+      const level = usageLevel(100 - clampPercent(account.remainingPercent));
+      if (level) meter.dataset.level = level;
+      const fill = document.createElement("i");
+      fill.style.width = `${clampPercent(account.remainingPercent)}%`;
+      meter.appendChild(fill);
+      value.appendChild(meter);
+    }
+    top.appendChild(value);
 
     const action = document.createElement("button");
     action.type = "button";
-    action.className = "pi-account-usage-switch";
+    action.className = "pw-btn pw-btn--sm";
     const isSwitching = state.switchingId === account.id;
     const didFail = state.switchFailedId === account.id;
     action.dataset.state = account.active ? "current" : didFail ? "failed" : "idle";
-    action.textContent = account.active ? text.current : isSwitching ? text.switchingAccount : didFail ? text.retrySwitch : text.switchAccount;
-    action.title = account.active ? `${email} · ${text.current}` : `${text.switchAccount} ${email}`;
+    action.textContent = isSwitching ? text.switchingAccount : didFail ? text.retrySwitch : text.switchAccount;
+    action.title = `${text.switchAccount} ${email}`;
     action.setAttribute("aria-label", action.title);
+    action.hidden = Boolean(account.active);
     action.disabled = Boolean(account.active || state.switchingId || state.removingId);
     action.addEventListener("click", () => { void switchAccount(String(account.id || "")); });
-    row.appendChild(top);
     const reauth = document.createElement("button");
     reauth.type = "button";
-    reauth.className = "pi-account-usage-switch pi-account-icon-action pi-account-reauth";
+    reauth.className = "pw-icon-btn pw-icon-btn--sm pi-account-reauth";
     reauth.dataset.action = "reauth";
     reauth.appendChild(accountActionIcon("reauth"));
     reauth.title = `${text.reauth} ${email}`;
     reauth.setAttribute("aria-label", reauth.title);
     reauth.disabled = loginBusy();
     reauth.addEventListener("click", () => { void loginAction({ action: "start", mode: "reauth", id: account.id }); });
-
-    if (account.remainingPercent != null && !account.stale && !account.error) {
-      const meter = document.createElement("div");
-      meter.className = "pi-account-usage-meter";
-      meter.setAttribute("role", "progressbar");
-      meter.setAttribute("aria-label", `${email} ${text.remaining}`);
-      meter.setAttribute("aria-valuemin", "0");
-      meter.setAttribute("aria-valuemax", "100");
-      meter.setAttribute("aria-valuenow", String(account.remainingPercent));
-      const fill = document.createElement("span");
-      fill.style.width = `${Math.max(0, Math.min(100, Number(account.remainingPercent) || 0))}%`;
-      fill.dataset.level = account.remainingPercent <= 5 ? "critical" : account.remainingPercent <= 20 ? "low" : "normal";
-      meter.appendChild(fill);
-      row.appendChild(meter);
-    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "pw-icon-btn pw-icon-btn--sm pw-icon-btn--danger pi-account-remove";
+    remove.appendChild(accountActionIcon("remove")); remove.dataset.action = "remove";
+    remove.setAttribute("aria-label", `${text.removeAccount} ${email}`);
+    remove.title = account.active ? text.removeActive : `${text.removeAccount} ${email}`;
+    remove.disabled = loginBusy() || Boolean(state.switchingId);
+    remove.addEventListener("click", () => {
+      state.removeConfirmId = String(account.id); render();
+      state.list?.querySelector(".pi-account-remove-confirm button")?.focus();
+    });
+    const controls = document.createElement("div");
+    controls.className = "pi-account-row-controls";
+    // Management actions share line 1 with the value they replace on hover; never an extra row.
+    controls.append(reauth, remove, action);
+    top.appendChild(controls);
+    row.appendChild(top);
 
     const meta = document.createElement("div");
     meta.className = "pi-account-usage-meta";
-    appendText(meta, "pi-account-usage-remaining-compact", `${account.stale || account.error ? `${text.cached} · ` : ""}${text.remaining} ${account.remainingPercent == null ? "—" : `${account.remainingPercent}%`}`);
     appendText(meta, "", account.usedPercent == null ? text.unavailable : `${text.used} ${account.usedPercent}%`);
     const resetCards = appendText(meta, "", `${text.resetCountShort} ${account.resetCredits ?? "—"}`);
     resetCards.title = text.resets;
@@ -1323,39 +1539,23 @@
     }
     row.appendChild(meta);
     const resetStatus = state.data?.autoReset?.accounts?.[account.id];
-    if (resetStatus) appendText(row, "pi-account-usage-warning", text.autoResetStates[resetStatus.status] || text.autoResetStates.failed,
+    if (resetStatus) warningLine(row, text.autoResetStates[resetStatus.status] || text.autoResetStates.failed,
       `${resetStatus.reason || ""} · ${exactReset(resetStatus.at, true)}`);
     if (account.stale || account.error) {
       const reason = account.error === "HTTP 401" ? text.authFailed
         : account.error ? `${text.refreshFailed} · ${account.error}` : text.staleQuota;
       const lastSuccess = account.fetchedAt ? `${text.lastSuccess} ${exactReset(account.fetchedAt, true)}` : "";
-      appendText(row, "pi-account-usage-warning", reason, lastSuccess);
-      if (lastSuccess) appendText(row, "pi-account-usage-warning", lastSuccess);
+      warningLine(row, reason, lastSuccess);
     }
-    const controls = document.createElement("div");
-    controls.className = "pi-account-row-controls";
-    const remove = document.createElement("button");
-    remove.type = "button"; remove.className = "pi-account-usage-switch pi-account-icon-action pi-account-remove";
-    remove.appendChild(accountActionIcon("remove")); remove.dataset.action = "remove";
-    remove.setAttribute("aria-label", `${text.removeAccount} ${email}`);
-    remove.title = account.active ? text.removeActive : `${text.removeAccount} ${email}`;
-    remove.disabled = loginBusy() || Boolean(state.switchingId);
-    remove.addEventListener("click", () => {
-      state.removeConfirmId = String(account.id); render();
-      state.list?.querySelector(".pi-account-remove-confirm button")?.focus();
-    });
-    // Use the existing gap beside the email; never add an always-visible action row.
-    controls.append(reauth, remove, action);
-    top.appendChild(controls);
     if (state.removeConfirmId === account.id) {
       const confirmation = document.createElement("div"); confirmation.className = "pi-account-remove-confirm";
       appendText(confirmation, "pi-account-login-hint", account.active ? text.removeActive : `${email} · ${text.removeHint}`);
       if (!account.active) {
-        const yes = document.createElement("button"); yes.type = "button"; yes.className = "pi-account-usage-switch pi-account-remove";
+        const yes = document.createElement("button"); yes.type = "button"; yes.className = "pw-btn pw-btn--sm pw-btn--danger-solid pi-account-remove";
         yes.textContent = state.removingId ? text.loginWorking : text.confirmRemove; yes.disabled = loginBusy();
         yes.addEventListener("click", () => { void removeAccount(account); }); confirmation.appendChild(yes);
       }
-      const no = document.createElement("button"); no.type = "button"; no.className = "pi-account-usage-switch";
+      const no = document.createElement("button"); no.type = "button"; no.className = "pw-btn pw-btn--sm pw-btn--ghost";
       no.textContent = text.cancelRemove; no.disabled = Boolean(state.removingId);
       no.addEventListener("click", () => { state.removeConfirmId = ""; render(); }); confirmation.appendChild(no);
       row.appendChild(confirmation);
@@ -1468,7 +1668,7 @@
     const title = state.loginPending || login?.status === "exchanging" ? text.loginWorking
       : ({ waiting: text.loginWaiting, success: text.loginSuccess, cancelled: text.loginCancelled, expired: text.loginExpired, failed: text.loginFailed })[login?.status] || "";
     appendText(state.loginBox, "pi-account-login-status", `${title}${login?.email ? ` · ${login.email}` : ""}`);
-    if (state.loginError || login?.error) appendText(state.loginBox, "pi-account-usage-warning", state.loginError || login.error);
+    if (state.loginError || login?.error) warningLine(state.loginBox, state.loginError || login.error);
     if (login?.status === "waiting") {
       const link = document.createElement("a");
       link.textContent = text.loginOpen;
@@ -1478,20 +1678,20 @@
         if (url.origin !== "https://auth.openai.com" || url.pathname !== "/oauth/authorize") throw new Error("Unexpected authorization URL");
         link.href = url.href; link.target = "_blank"; link.rel = "noopener noreferrer";
         state.loginBox.appendChild(link);
-      } catch { appendText(state.loginBox, "pi-account-usage-warning", text.loginFailed); console.error("[pi-web account login] invalid authorization URL"); }
+      } catch { warningLine(state.loginBox, text.loginFailed); console.error("[pi-web account login] invalid authorization URL"); }
       appendText(state.loginBox, "pi-account-login-hint", login.manual ? text.loginManual : text.loginHint);
       const form = document.createElement("form"), input = document.createElement("input");
-      input.type = "text"; input.autocomplete = "off"; input.spellcheck = false;
+      input.type = "text"; input.autocomplete = "off"; input.spellcheck = false; input.className = "pw-input pw-input--sm";
       input.placeholder = text.callback; input.setAttribute("aria-label", text.callback); input.value = draft;
       const complete = document.createElement("button");
-      complete.type = "submit"; complete.className = "pi-account-usage-switch"; complete.textContent = text.completeLogin; complete.disabled = state.loginPending;
+      complete.type = "submit"; complete.className = "pw-btn pw-btn--sm pw-btn--primary"; complete.textContent = text.completeLogin; complete.disabled = state.loginPending;
       form.append(input, complete);
       form.addEventListener("submit", event => { event.preventDefault(); if (input.value.trim()) void loginAction({ action: "complete", callback: input.value.trim() }); });
       state.loginBox.appendChild(form);
     }
     if (["waiting", "exchanging"].includes(login?.status)) {
       const cancel = document.createElement("button");
-      cancel.type = "button"; cancel.className = "pi-account-usage-switch"; cancel.textContent = text.cancelLogin; cancel.disabled = state.loginPending;
+      cancel.type = "button"; cancel.className = "pw-btn pw-btn--sm pw-btn--ghost"; cancel.textContent = text.cancelLogin; cancel.disabled = state.loginPending;
       cancel.addEventListener("click", () => { void loginAction({ action: "cancel" }); });
       state.loginBox.appendChild(cancel);
     }
@@ -1514,13 +1714,31 @@
     } finally { state.autoResetPending = false; render(); }
   }
 
+  function renderButton(accounts) {
+    const text = words();
+    const active = accounts.find(account => account.active) || null;
+    const used = usedPercent(active);
+    const abnormal = accounts.filter(account => account.stale || account.error).length;
+    state.bar.firstChild.style.width = `${used ?? 0}%`;
+    const level = usageLevel(used);
+    if (level) state.bar.dataset.level = level; else delete state.bar.dataset.level;
+    const valueText = used == null ? "—" : `${used}%`;
+    if (state.value.textContent !== valueText) state.value.textContent = valueText;
+    state.badge.hidden = abnormal === 0;
+    state.badge.textContent = String(abnormal);
+    const lines = [used != null ? text.buttonUsed(used)
+      : !state.data && state.error ? `${text.unavailable} · ${text.retrying}` : text.button];
+    if (abnormal) lines.push(text.accountsAbnormal(abnormal));
+    state.button.title = lines.join("\n");
+    state.button.setAttribute("aria-label", lines.join("，"));
+    state.button.dataset.state = !state.data && state.error ? "error" : level || "ready";
+  }
+
   function render() {
     if (!state.list || !state.title || !state.freshness || !state.panel || !state.button) return;
     const text = words();
     state.renderedLocale = locale();
     state.title.textContent = text.title;
-    state.button.title = text.button;
-    state.button.setAttribute("aria-label", text.button);
     state.panel.setAttribute("aria-label", text.title);
     state.panel.setAttribute("aria-busy", String(state.loading));
     renderLogin();
@@ -1557,8 +1775,8 @@
         }
         if (focusedId) {
           const row = [...state.list.children].find(item => item.dataset.accountId === focusedId);
-          const action = row?.querySelector('button:not(:disabled)');
-          (action || state.panel).focus({ preventScroll: true });
+          const action = row?.querySelector('button:not(:disabled):not([hidden])');
+          (action || state.addButton || state.panel).focus({ preventScroll: true });
         }
       }
     }
@@ -1570,14 +1788,21 @@
     state.freshness.textContent = state.switchingId
       ? text.switchingAccount
       : state.switchError ? text.switchFailed
-        : state.loading ? text.updating
-          : state.error ? text.unavailable
+        : state.loading && !state.data ? text.updating
+          : !state.data && state.error ? text.unavailable
             : !state.data || accounts.length === 0 ? '—'
               : `${state.data?.refreshing ? text.updating : checkStatus}${abnormal ? ` · ${text.abnormal(abnormal)}` : ''}`;
     state.freshness.title = state.switchError || state.error || "";
-    state.freshness.dataset.stale = String(Boolean(state.switchError || state.error || accounts.some((account) => account.stale || account.error)));
-    state.button.dataset.state = state.error && !state.data ? "error" : accounts.some((account) => account.remainingPercent != null && account.remainingPercent <= 20) ? "low" : "ready";
-    positionUi();
+    state.freshness.dataset.stale = String(Boolean(state.switchError || (!state.data && state.error) || abnormal));
+    renderButton(accounts);
+  }
+
+  function scheduleRefresh(delay) {
+    clearTimeout(state.refreshTimer);
+    state.refreshTimer = setTimeout(() => {
+      if (document.visibilityState !== "visible") { scheduleRefresh(BROWSER_REFRESH_MS); return; }
+      void refresh(false);
+    }, delay);
   }
 
   async function refresh(force = false) {
@@ -1586,7 +1811,7 @@
     state.lastFetchAt = Date.now();
     render();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1200);
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(`${ENDPOINT}${force ? "?refresh=1" : ""}`, {
         cache: "no-store",
@@ -1597,124 +1822,70 @@
       state.data = data;
       state.receivedAt = Date.now();
       state.error = "";
+      state.failures = 0;
     } catch (error) {
       state.error = String(error?.message || error || "request failed").slice(0, 120);
+      state.failures += 1;
       console.error("[pi-web account usage] refresh failed:", state.error);
     } finally {
       clearTimeout(timeout);
       state.loading = false;
       render();
+      const base = state.error ? RETRY_MS[Math.min(state.failures, RETRY_MS.length) - 1] : BROWSER_REFRESH_MS;
+      scheduleRefresh(state.error ? Math.round(base * (0.8 + Math.random() * 0.4)) : base);
     }
   }
 
-  function setOpen(open, startedAt = performance.now()) {
+  // Mouse opens never focus the panel itself (no ring on the whole popover); a keyboard
+  // open (click with detail 0) moves focus to the first actionable item.
+  function setOpen(open, startedAt = performance.now(), focusFirst = false) {
     state.open = Boolean(open);
     state.button.setAttribute("aria-expanded", String(state.open));
     state.panel.dataset.open = String(state.open);
-    if (state.open) {
-      window.__piUiLayout.open('account');
-      render();
-      state.panel.focus({ preventScroll: true });
-    } else {
-      state.panel.style.visibility = 'hidden';
-    }
-    positionUi();
+    state.panel.hidden = !state.open;
     if (!state.open) return;
+    document.dispatchEvent(new CustomEvent("pi-ui:popover-open", { detail: "account" }));
+    render();
+    if (focusFirst) state.panel.querySelector("button:not(:disabled):not([hidden]),a[href],input")?.focus({ preventScroll: true });
     document.documentElement.dataset.piAccountUsageOpenLatencyMs = (performance.now() - startedAt).toFixed(2);
-    if (!state.lastFetchAt || Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
-  }
-
-  function ensureStyle() {
-    if (document.querySelector("style[data-pi-account-usage-style]")) return;
-    const style = document.createElement("style");
-    style.dataset.piAccountUsageStyle = "true";
-    style.textContent = `
-      #pi-account-usage-host{position:fixed;z-index:210;width:32px;height:32px;pointer-events:none}
-      #pi-account-usage-button{position:relative;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer;pointer-events:auto;transition:background 140ms ease-out,color 140ms ease-out,transform 140ms ease-out}
-      #pi-account-usage-button:hover,#pi-account-usage-button[aria-expanded='true']{background:var(--bg-hover);color:var(--text)}
-      #pi-account-usage-button:active{transform:scale(.96)}
-      #pi-account-usage-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-      #pi-account-usage-button::after{position:absolute;top:5px;right:5px;width:4px;height:4px;border-radius:50%;background:transparent;content:''}
-      #pi-account-usage-button[data-state='low']::after{background:#d97706}
-      #pi-account-usage-button[data-state='error']::after{background:#dc2626}
-      #pi-account-usage-panel{position:fixed;z-index:220;width:280px;max-width:calc(100vw - 16px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px rgba(0,0,0,.12);opacity:0;transform:translateY(4px) scale(.99);transform-origin:bottom right;pointer-events:none;visibility:hidden;transition:opacity 150ms ease-out,transform 150ms ease-out,visibility 0s linear 150ms;font:13px/1.35 'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',system-ui,sans-serif}
-      #pi-account-usage-panel[data-open='true']{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;visibility:visible;transition-delay:0s}
-      .pi-account-usage-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;height:29px;padding:0 7px;border-bottom:1px solid var(--border);background:var(--bg)}
-      .pi-account-usage-title{font-size:13px;font-weight:650;color:var(--text)}
-      .pi-account-usage-freshness{overflow:hidden;color:var(--text-dim);font-size:11px;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
-      .pi-account-usage-freshness[data-stale='true']{color:#b45309}
-      .pi-account-usage-row{display:flow-root;padding:3px 7px;border-top:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
-      .pi-account-usage-row:first-child{border-top:0}
-      .pi-account-usage-row[data-active='true']{background:color-mix(in srgb,var(--accent) 3%,var(--bg))}
-      .pi-account-usage-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0;min-height:24px}
-      .pi-account-usage-identity{display:flex;align-items:center;gap:5px;min-width:0}
-      .pi-account-usage-dot{width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:var(--text-dim)}
-      .pi-account-usage-dot[data-state='active']{background:var(--accent)}
-      .pi-account-usage-dot[data-state='error']{background:#dc2626}
-      .pi-account-usage-email{min-width:0;overflow:hidden;color:var(--text);font-size:13px;font-weight:600;line-height:18px;text-overflow:ellipsis;white-space:nowrap}
-      .pi-account-usage-switch{min-width:36px;height:24px;padding:0 6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text-muted);font:inherit;font-size:11px;font-weight:600;line-height:18px;cursor:pointer;transition:background 100ms ease-out,border-color 100ms ease-out,color 100ms ease-out}
-      .pi-account-usage-switch:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent) 6%,var(--bg));color:var(--accent)}
-      .pi-account-usage-switch:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-      .pi-account-usage-switch:disabled{cursor:default;opacity:.72}
-      .pi-account-usage-switch[data-state='current']{border-color:color-mix(in srgb,var(--accent) 28%,var(--border));background:color-mix(in srgb,var(--accent) 7%,var(--bg));color:var(--accent)}
-      .pi-account-usage-switch[data-state='failed']{border-color:color-mix(in srgb,#dc2626 35%,var(--border));color:#b91c1c}
-      .pi-account-usage-meter{height:2px;margin:2px 0 1px;overflow:hidden;border-radius:2px;background:var(--bg-hover)}
-      .pi-account-usage-meter>span{display:block;height:100%;border-radius:inherit;background:var(--accent);transition:width 180ms ease-out}
-      .pi-account-usage-meter>span[data-level='low']{background:#d97706}
-      .pi-account-usage-meter>span[data-level='critical']{background:#dc2626}
-      .pi-account-usage-meta{display:flex;flex-wrap:wrap;align-items:center;gap:2px 0;min-width:0;color:var(--text-muted);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}
-      .pi-account-usage-meta>span{min-width:0;white-space:normal;overflow-wrap:anywhere}
-      .pi-account-usage-meta>.pi-account-usage-remaining-compact{flex:0 0 auto;color:var(--text);font-weight:650}
-      .pi-account-usage-meta>span+span::before{margin:0 4px;color:var(--text-dim);content:'·'}
-      .pi-account-usage-warning{display:block;color:#b45309;font-size:11px;line-height:16px;overflow-wrap:anywhere}
-      .pi-account-row-controls{display:flex;align-items:center;gap:2px}
-      .pi-account-icon-action{display:inline-flex;align-items:center;justify-content:center;min-width:18px;width:18px;padding:0;border-color:transparent;background:transparent}
-      .pi-account-icon-action svg{flex:none;pointer-events:none}
-      .pi-account-remove{color:#b91c1c}
-      .pi-account-remove-confirm{display:flex;flex-wrap:wrap;gap:5px;padding:6px 0}
-      .pi-account-remove-confirm>span{flex-basis:100%}
-      .pi-account-login-footer{padding:3px 7px;border-top:1px solid var(--border);background:var(--bg)}
-      #pi-account-add{width:100%;color:var(--accent)}
-      #pi-account-login-box{display:flex;flex-direction:column;gap:6px;padding:0 7px;font-size:12px;overflow-wrap:anywhere}
-      #pi-account-login-box:not(:empty){padding:8px 7px;border-top:1px solid var(--border)}
-      #pi-account-login-box a{color:var(--accent);text-decoration:underline}
-      #pi-account-login-box form{display:flex;flex-direction:column;gap:5px}
-      #pi-account-login-box input{box-sizing:border-box;width:100%;padding:6px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font:inherit}
-      .pi-account-login-hint{color:var(--text-muted)}
-      .pi-account-usage-empty{display:flex;min-height:58px;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px;color:var(--text-muted);text-align:center}
-      .pi-account-usage-empty-title{font-size:13px;font-weight:600;color:var(--text-muted)}
-      .pi-account-usage-empty-note{font-size:11px;color:var(--text-dim)}
-      #pi-account-usage-panel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-      @media(pointer:coarse){.pi-account-usage-switch{min-height:44px;min-width:44px}.pi-account-usage-top{min-height:44px}}
-      @media(max-width:480px){#pi-account-usage-panel{width:min(280px,calc(100vw - 16px))}}
-      @media(prefers-reduced-motion:reduce){#pi-account-usage-button,#pi-account-usage-panel,.pi-account-usage-meter>span{transition:none!important}}
-    `;
-    document.head.appendChild(style);
+    if (state.error || !state.lastFetchAt || Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
   }
 
   function createUi() {
     if (state.host) return;
-    ensureStyle();
-    const host = document.createElement("div");
-    host.id = "pi-account-usage-host";
+    const host = document.createElement("span");
+    host.dataset.piSlotItem = "quota";
+    host.dataset.piSlotOrder = "1";
     const button = document.createElement("button");
     button.id = "pi-account-usage-button";
     button.type = "button";
+    button.className = "pw-quota";
     button.setAttribute("aria-haspopup", "dialog");
     button.setAttribute("aria-expanded", "false");
     button.setAttribute("aria-controls", "pi-account-usage-panel");
-    button.appendChild(gaugeIcon());
-    host.appendChild(button);
+    const bar = document.createElement("span");
+    bar.className = "pw-quota-bar";
+    bar.appendChild(document.createElement("i"));
+    const value = document.createElement("span");
+    value.className = "pw-quota-value";
+    value.textContent = "—";
+    const badge = document.createElement("span");
+    badge.className = "pw-quota-badge";
+    badge.hidden = true;
+    badge.setAttribute("aria-hidden", "true");
+    button.append(gaugeIcon(), bar, value, badge);
 
     const panel = document.createElement("section");
     panel.id = "pi-account-usage-panel";
+    panel.className = "pw-menu pw-menu--up pw-slot-popover pw-quota-panel";
     panel.dataset.open = "false";
+    panel.hidden = true;
     panel.setAttribute("role", "dialog");
     panel.tabIndex = -1;
     const header = document.createElement("header");
-    header.className = "pi-account-usage-header";
-    const title = appendText(header, "pi-account-usage-title", words().title);
-    const freshness = appendText(header, "pi-account-usage-freshness", words().updating);
+    header.className = "pw-quota-head";
+    const title = appendText(header, "pw-quota-title", words().title);
+    const freshness = appendText(header, "pw-quota-fresh", words().updating);
     freshness.setAttribute("aria-live", "polite");
     const list = document.createElement("div");
     list.className = "pi-account-usage-list";
@@ -1725,31 +1896,20 @@
     const addButton = document.createElement("button");
     addButton.id = "pi-account-add";
     addButton.type = "button";
-    addButton.className = "pi-account-usage-switch";
+    addButton.className = "pw-btn pw-btn--ghost pw-btn--sm";
     addButton.addEventListener("click", () => { void loginAction({ action: "start", mode: "add" }); });
     const autoResetButton = document.createElement("button");
     autoResetButton.id = "pi-account-auto-reset"; autoResetButton.type = "button";
-    autoResetButton.className = "pi-account-usage-switch";
+    autoResetButton.className = "pw-btn pw-btn--ghost pw-btn--sm";
     autoResetButton.setAttribute("role", "switch");
     autoResetButton.addEventListener("click", () => { void toggleAutoReset(); });
     const autoResetNote = document.createElement("div");
-    autoResetNote.className = "pi-account-usage-warning";
+    autoResetNote.className = "pw-quota-note";
     autoResetNote.setAttribute("role", "status");
     footer.append(addButton, autoResetButton);
     panel.append(header, list, loginBox, footer, autoResetNote);
-    state.autoResetButton = autoResetButton;
-    state.autoResetNote = autoResetNote;
-    document.documentElement.append(host, panel);
-    state.loginBox = loginBox;
-    state.addButton = addButton;
-
-    state.host = host;
-    state.button = button;
-    state.panel = panel;
-    state.list = list;
-    state.title = title;
-    state.freshness = freshness;
-    title.textContent = words().title;
+    host.append(button, panel);
+    Object.assign(state, { host, button, bar, value, badge, panel, list, title, freshness, loginBox, addButton, autoResetButton, autoResetNote });
 
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
@@ -1759,12 +1919,12 @@
       setTimeout(() => { state.suppressClick = false; }, 500);
       setOpen(!state.open, startedAt);
     });
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
       if (state.suppressClick) {
         state.suppressClick = false;
         return;
       }
-      setOpen(!state.open, performance.now());
+      setOpen(!state.open, performance.now(), event.detail === 0);
     });
     document.addEventListener("pointerdown", (event) => {
       if (!state.open || event.composedPath().includes(button) || event.composedPath().includes(panel)) return;
@@ -1780,7 +1940,7 @@
       setOpen(false);
       button.focus({ preventScroll: true });
     }, true);
-    window.__piUiLayout.subscribe(positionUi);
+    window.__piUiSlots.register({ name: "quota", slot: "composer", order: 1, host });
     render();
     void refresh(false);
     try {
@@ -1791,12 +1951,6 @@
 
   const start = () => {
     createUi();
-    positionUi();
-    setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      if (Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
-      else if (state.open) render();
-    }, BROWSER_REFRESH_MS);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
     });
@@ -1805,11 +1959,14 @@
   else start();
 })();
 
+// Speed / service TIER: ⚡ menu in [data-pi-composer-slot] and the submission guard that makes
+// the displayed tier the one the session actually runs.
 (() => {
   "use strict";
   if (window.__piServiceTierUi) return;
   window.__piServiceTierUi = true;
   const KEY = "pi-service-tier";
+  const APPLIED_KEY = "pi-service-tier-applied";
   // lop 2026-09-29: the menu offers 默认 and Fast only, with no explanatory text; switching
   // the model puts the choice back on 默认 at once.
   const choices = [
@@ -1819,8 +1976,11 @@
   // Keep in step with GPT6_CODEX_IDS (live-model-catalog.mjs): 2026-09-30 GPT-6.1 Sol was added to the
   // picker without this list, so its Fast switch stayed greyed out and it ran on the default tier.
   const supportedCodexModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
-  let selected = "native", explicitSelection = false, button, panel, note, currentModel = null;
+  const SUBMISSIONS = new Set(["prompt", "steer", "follow_up"]);
+  let selected = "native", explicitSelection = false, button, panel, note, host, currentModel = null;
   let migrationWarning = "";
+  // Session runtimes created by ensure_session in this page start on the native tier.
+  const freshRuntimes = new Set();
   const supportsTier = model => model?.provider === "openai-codex" && supportedCodexModels.has(model.id);
   // The panel shows text only when something went wrong (a choice that could not be applied).
   const noteText = () => migrationWarning;
@@ -1828,10 +1988,28 @@
   catch (error) { console.error("[pi-web service tier] preference read failed:", error); }
   if (!choices.some(([value]) => value === selected)) {
     // A saved tier this menu no longer offers (Standard): back to 默认, logged, not announced.
-    console.warn("[pi-web service tier] unsupported saved tier; using native:", selected);
+    console.error("[pi-web service tier] unsupported saved tier; using native:", selected);
     selected = "native";
     try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] migration write failed:", error); }
   }
+
+  // Which tier this browser last applied to each session runtime (shared by its tabs). A recreated
+  // runtime starts native, so a recorded "native" stays true until some tab applies Fast.
+  function appliedTiers() {
+    try { return JSON.parse(localStorage.getItem(APPLIED_KEY) || "{}") || {}; } catch { return {}; }
+  }
+  function recordApplied(sessionId, tier) {
+    try {
+      const map = appliedTiers();
+      if (map[sessionId] === tier) return;
+      delete map[sessionId];
+      map[sessionId] = tier;
+      const ids = Object.keys(map);
+      for (const id of ids.slice(0, Math.max(0, ids.length - 200))) delete map[id];
+      localStorage.setItem(APPLIED_KEY, JSON.stringify(map));
+    } catch (error) { console.error("[pi-web service tier] applied-tier record failed:", error); }
+  }
+
   const fetchNative = window.fetch.bind(window);
   async function readModel(url, signal) {
     const response = await fetchNative(url, {
@@ -1844,44 +2022,67 @@
     if (button) render();
     return currentModel;
   }
+  async function applyTier(url, tier, signal) {
+    const response = await fetchNative(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "set_service_tier", serviceTier: tier === "native" ? null : tier }),
+      signal,
+    });
+    const result = await response.json();
+    if (!response.ok || result.error || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+  }
+
+  // App commands are JSON.stringify({ type, ... }): read the type from the prefix instead of parsing
+  // a body that may carry megabytes of base64 images. Unknown layouts fall back to a full parse.
+  function commandType(body) {
+    const match = /^\s*\{\s*"type"\s*:\s*"([a-z_]+)"/u.exec(body.slice(0, 64));
+    if (match) return match[1];
+    try { return String(JSON.parse(body)?.type || ""); } catch { return ""; }
+  }
+
   window.fetch = async function piServiceTierFetch(input, init) {
-    let url, command, created = null, submissionInput = input, submissionInit = init;
+    let url, type = "", rawBody = null, created = null, submissionInput = input, submissionInit = init;
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     try {
       url = new URL(input instanceof Request ? input.url : String(input), location.href);
       const method = init?.method || (input instanceof Request ? input.method : "GET");
       if (url.origin === location.origin && method.toUpperCase() === "POST" && /^\/api\/agent\/[^/]+$/.test(url.pathname)) {
-        const body = init?.body ?? (input instanceof Request ? await input.clone().text() : null);
-        if (typeof body === "string") command = JSON.parse(body);
+        rawBody = init?.body ?? (input instanceof Request ? await input.clone().text() : null);
+        if (typeof rawBody === "string") type = commandType(rawBody);
       }
     } catch (error) { console.error("[pi-web service tier] request inspection failed:", error); }
-    if (explicitSelection && command && ["prompt", "steer", "follow_up"].includes(command.type)) {
-      // Reapply the explicit preference on every submission so resumed/recreated
-      // sessions cannot display Fast while silently running at native speed.
+    if (explicitSelection && SUBMISSIONS.has(type)) {
+      // Reapply an explicit Fast choice on every submission so resumed/recreated sessions
+      // cannot display Fast while silently running at native speed.
       try {
-        // Check the actual session, not a possibly stale toolbar or global preference.
-        // Native clears an older explicit tier and remains valid for every provider.
         const tier = selected;
         // A fresh session's first prompt must not bypass the speed selection.
         // Native ensure_session creates the runtime without invoking a model.
         if (url.pathname === "/api/agent/new") {
+          const command = JSON.parse(rawBody);
           const response = await fetchNative(input, { ...init, method: "POST", body: JSON.stringify({ ...command, type: "ensure_session" }), signal });
           created = await response.json();
           if (!response.ok || created.error || !created.sessionId) throw new Error(created.error || "创建会话失败");
+          freshRuntimes.add(created.sessionId);
           url = new URL(`/api/agent/${encodeURIComponent(created.sessionId)}`, location.origin);
           submissionInput = url.href;
-          submissionInit = { ...init, method: "POST", headers: init?.headers ?? (input instanceof Request ? input.headers : { "Content-Type": "application/json" }), body: JSON.stringify(command), signal };
+          submissionInit = { ...init, method: "POST", headers: init?.headers ?? (input instanceof Request ? input.headers : { "Content-Type": "application/json" }), body: rawBody, signal };
         }
-        if (tier !== "native" && !supportsTier(await readModel(url.href, signal))) {
-          throw new Error("当前模型/渠道未确认支持此速度；请先选择默认");
+        const sessionId = decodeURIComponent(url.pathname.slice("/api/agent/".length));
+        const known = freshRuntimes.has(sessionId) ? "native" : appliedTiers()[sessionId];
+        if (tier === "native") {
+          // Native is the default of every new runtime; only clear a tier this browser may have set.
+          if (known !== "native") await applyTier(url.href, tier, signal);
+          recordApplied(sessionId, "native");
+        } else {
+          // Recorded first: even a failed or rejected attempt may have left Fast on the runtime,
+          // so a later 默认 submission must clear it rather than skip.
+          recordApplied(sessionId, tier);
+          // Model check and tier write are independent: run them together, send only if both pass.
+          const [model] = await Promise.all([readModel(url.href, signal), applyTier(url.href, tier, signal)]);
+          if (!supportsTier(model)) throw new Error("当前模型/渠道未确认支持此速度；请先选择默认");
         }
-        const response = await fetchNative(url.href, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "set_service_tier", serviceTier: tier === "native" ? null : tier }),
-          signal,
-        });
-        const result = await response.json();
-        if (!response.ok || result.error || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+        freshRuntimes.delete(sessionId);
       } catch (error) {
         console.error("[pi-web service tier] selection not applied:", error);
         if (note) note.textContent = `TIER 未生效：${error.message}。本次消息未发送。`;
@@ -1893,12 +2094,16 @@
       const result = await response.json();
       return new Response(JSON.stringify({ ...created, ...result, success: response.ok && result.success !== false, sessionId: created.sessionId }), { status: response.status, headers: { "Content-Type": "application/json" } });
     }
-    // Observe only model metadata, never consume or change the caller's response.
-    if (url?.origin === location.origin && (url.pathname === "/api/models" || command?.type === "set_model")) {
+    // Observe only metadata, never consume or change the caller's response.
+    if (url?.origin === location.origin && (url.pathname === "/api/models" || type === "set_model" || type === "ensure_session")) {
       try {
         const result = await response.clone().json();
         if (response.ok && !result.error && result.success !== false) {
-          if (command?.type === "set_model") { currentModel = { provider: command.provider, id: command.modelId }; resetTierAfterModelSwitch(url.href); }
+          if (type === "set_model") {
+            const command = JSON.parse(rawBody);
+            currentModel = { provider: command.provider, id: command.modelId };
+            resetTierAfterModelSwitch(url.href);
+          } else if (type === "ensure_session" && url.pathname === "/api/agent/new" && result.sessionId) freshRuntimes.add(String(result.sessionId));
           else if (!currentModel && result.defaultModel) currentModel = { provider: result.defaultModel.provider, id: result.defaultModel.modelId };
           if (button) render();
         }
@@ -1909,86 +2114,76 @@
 
   // A model switch puts the speed back on 默认 at once: the toolbar and menu show it, the
   // stored preference follows, and the session's own tier is cleared now rather than at the
-  // next submission (which would also clear it, since an explicit choice is re-sent each time).
+  // next submission.
   function resetTierAfterModelSwitch(sessionUrl) {
     if (!explicitSelection) return;
     selected = "native"; migrationWarning = "";
     try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); }
     if (button) { note.textContent = noteText(); render(); }
-    fetchNative(sessionUrl, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "set_service_tier", serviceTier: null }),
-    }).then(async response => {
-      const result = await response.json();
-      if (!response.ok || result.error || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
-    }).catch(error => {
+    const sessionId = decodeURIComponent(new URL(sessionUrl).pathname.slice("/api/agent/".length));
+    applyTier(sessionUrl, "native").then(() => recordApplied(sessionId, "native")).catch(error => {
       console.error("[pi-web service tier] reset after model switch failed:", error);
       if (note) note.textContent = `切换模型后未能恢复默认速度：${error.message}`;
     });
   }
   function closePanel(focus = false) {
+    if (!panel || panel.hidden) return;
     panel.hidden = true;
-    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute("aria-expanded", "false");
     if (focus) button.focus({ preventScroll: true });
   }
-  function position() {
-    const anchor = [...document.querySelectorAll(".model-selector.is-toolbar")].find(e => window.__piUiLayout.visibleRect(e));
-    if (!button) return;
-    button.hidden = !anchor || window.__piUiLayout.blocked;
-    if (button.hidden) { closePanel(); return; }
-    const rect = anchor.getBoundingClientRect();
-    button.style.left = `${Math.max(8, rect.left - 36)}px`;
-    button.style.top = `${rect.top}px`;
-    if (!panel.hidden) window.__piUiLayout.placePanel(panel, rect, 330);
-  }
+  const checkIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
   function render() {
     const choice = choices.find(([value]) => value === selected);
     button.title = `速度 / TIER：${choice[1]}`;
-    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-label", `速度：${choice[1]}`);
     button.dataset.tier = selected;
+    button.classList.toggle("is-on", selected === "priority");
     for (const item of panel.querySelectorAll("button[data-tier]")) {
-      item.setAttribute("aria-checked", String(item.dataset.tier === selected));
+      const checked = item.dataset.tier === selected;
+      item.setAttribute("aria-checked", String(checked));
+      const mark = item.querySelector(".pw-menu-check");
+      if (mark.innerHTML !== (checked ? checkIcon : "")) mark.innerHTML = checked ? checkIcon : "";
       item.disabled = item.dataset.tier !== "native" && !supportsTier(currentModel);
     }
   }
   function start() {
-    const style = document.createElement("style");
-    style.textContent = `
-      #pi-service-tier-button{position:fixed;z-index:210;width:32px;height:32px;padding:7px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}
-      #pi-service-tier-button:hover,#pi-service-tier-button[aria-expanded=true]{background:var(--bg-hover);color:var(--text)}
-      #pi-service-tier-button[data-tier=priority]{color:var(--accent)}
-      #pi-service-tier-button:focus-visible,#pi-service-tier-panel button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-      #pi-service-tier-panel{position:fixed;z-index:220;overflow:auto;overscroll-behavior:contain;width:250px;max-width:calc(100vw - 16px);padding:6px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);box-shadow:0 7px 18px #0002;font:12px/1.5 system-ui}
-      #pi-service-tier-panel button{display:block;width:100%;padding:8px;border:0;border-radius:6px;text-align:left;background:transparent;color:inherit;cursor:pointer;font:inherit}
-      #pi-service-tier-panel button:hover,#pi-service-tier-panel button[aria-checked=true]{background:var(--bg-hover)}
-      #pi-service-tier-panel button[aria-checked=true]{color:var(--accent)}
-      #pi-service-tier-panel button:disabled{opacity:.45;cursor:not-allowed}
-      #pi-service-tier-panel p{margin:6px;padding:4px;color:var(--text-muted)}
-      #pi-service-tier-panel p:empty{display:none}
-    `;
-    document.head.appendChild(style);
+    host = document.createElement("span");
+    host.dataset.piSlotItem = "tier";
+    host.dataset.piSlotOrder = "2";
     button = document.createElement("button");
     button.id = "pi-service-tier-button";
     button.type = "button";
+    button.className = "pw-icon-btn";
     button.setAttribute("aria-haspopup", "menu");
     button.setAttribute("aria-controls", "pi-service-tier-panel");
     button.setAttribute("aria-expanded", "false");
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor", "stroke-width": "1.7", "aria-hidden": "true" })) svg.setAttribute(key, value);
+    for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", width: "16", height: "16", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(key, value);
     const bolt = document.createElementNS(svg.namespaceURI, "path");
     bolt.setAttribute("d", "M13 2 4 14h7l-1 8 10-13h-7l1-7Z");
     svg.appendChild(bolt); button.appendChild(svg);
-    panel = document.createElement("section"); panel.id = "pi-service-tier-panel"; panel.hidden = true; panel.setAttribute("role", "menu"); panel.setAttribute("aria-label", "速度 / TIER");
+    panel = document.createElement("div");
+    panel.id = "pi-service-tier-panel";
+    panel.className = "pw-menu pw-menu--up pw-slot-popover pw-tier-menu";
+    panel.hidden = true;
+    panel.setAttribute("role", "menu");
+    panel.setAttribute("aria-label", "速度 / TIER");
     for (const [value, label] of choices) {
-      const item = document.createElement("button"); item.type = "button"; item.dataset.tier = value; item.setAttribute("role", "menuitemradio"); item.textContent = label;
-      item.onclick = () => { selected = value; explicitSelection = true; migrationWarning = ""; note.textContent = noteText(); try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); } render(); panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); };
+      const item = document.createElement("button"); item.type = "button"; item.className = "pw-menu-item"; item.dataset.tier = value; item.setAttribute("role", "menuitemradio");
+      const mark = document.createElement("span"); mark.className = "pw-menu-check";
+      const text = document.createElement("span"); text.className = "pw-menu-label"; text.textContent = label;
+      item.append(mark, text);
+      item.onclick = () => { selected = value; explicitSelection = true; migrationWarning = ""; note.textContent = noteText(); try { localStorage.setItem(KEY, selected); } catch (error) { console.error("[pi-web service tier] preference write failed:", error); } render(); closePanel(true); };
       panel.appendChild(item);
     }
-    note = document.createElement("p"); note.textContent = noteText(); panel.appendChild(note);
-    button.onclick = async () => {
-      panel.hidden = !panel.hidden; button.setAttribute("aria-expanded", String(!panel.hidden));
-      if (panel.hidden) return;
-      window.__piUiLayout.open('tier'); position();
+    note = document.createElement("p"); note.className = "pw-tier-note"; note.textContent = noteText(); panel.appendChild(note);
+    host.append(button, panel);
+    button.onclick = async (event) => {
+      if (!panel.hidden) { closePanel(); return; }
+      const keyboard = event.detail === 0;
+      panel.hidden = false; button.setAttribute("aria-expanded", "true");
+      document.dispatchEvent(new CustomEvent("pi-ui:popover-open", { detail: "tier" }));
       note.textContent = noteText();
       const sessionId = new URL(location.href).searchParams.get("session");
       if (sessionId) {
@@ -1996,80 +2191,15 @@
         try { await readModel(`/api/agent/${encodeURIComponent(sessionId)}`, AbortSignal.timeout(10000)); }
         catch (error) { console.error("[pi-web service tier] model check failed:", error); note.textContent = `仅默认速度可用：${error.message}`; }
       }
-      if (!panel.hidden) panel.querySelector('[aria-checked="true"]:not(:disabled)')?.focus();
+      // Keyboard opens move focus into the menu; mouse opens leave focus where it was.
+      if (keyboard && !panel.hidden) panel.querySelector('[aria-checked="true"]:not(:disabled)')?.focus();
     };
     document.addEventListener('pi-ui:popover-open', event => { if (event.detail !== 'tier') closePanel(); });
     document.addEventListener('focusin', event => { if (!panel.hidden && !panel.contains(event.target) && event.target !== button) closePanel(); });
-    document.addEventListener("pointerdown", event => { if (!panel.contains(event.target) && !button.contains(event.target)) { panel.hidden = true; button.setAttribute("aria-expanded", "false"); } });
-    document.addEventListener("keydown", event => { if (panel.hidden) return; if (event.key === "Escape") { panel.hidden = true; button.setAttribute("aria-expanded", "false"); button.focus(); } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = [...panel.querySelectorAll("button[data-tier]:not(:disabled)")]; const at = items.indexOf(document.activeElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length].focus(); } });
-    document.documentElement.append(button, panel); render(); position();
-    window.__piUiLayout.subscribe(position);
+    document.addEventListener("pointerdown", event => { if (!panel.hidden && !panel.contains(event.target) && !button.contains(event.target)) closePanel(); });
+    document.addEventListener("keydown", event => { if (panel.hidden) return; if (event.key === "Escape") { closePanel(true); } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) { event.preventDefault(); const items = [...panel.querySelectorAll("button[data-tier]:not(:disabled)")]; const at = items.indexOf(document.activeElement); items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (at + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length]?.focus(); } });
+    render();
+    window.__piUiSlots.register({ name: "tier", slot: "composer", order: 2, host });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
-})();
-
-// Conversation visibility: native progress stays readable after a turn ends.
-// Presentation only: no model calls, translation, transcript edits or polling.
-(() => {
-  "use strict";
-  if (window.__piConversationVisibility) return;
-  const processTitles = new Set([
-    "Expand process details", "Collapse process details",
-    "展开处理详情", "收起处理详情", "展開處理詳細資料", "收起處理詳細資料",
-  ]);
-  const selector = 'button[aria-expanded][title],.markdown-compaction-message';
-  const seen = new WeakSet();
-  const state = { version: 1, expanded: 0, hiddenCompactions: 0 };
-  window.__piConversationVisibility = state;
-
-  function decorate(element) {
-    if (seen.has(element)) return;
-    if (element.matches('button[aria-expanded][title]')) {
-      if (!processTitles.has(element.getAttribute('title'))) return;
-      seen.add(element);
-      // Only open the outer group once. Native thinking/tool toggles and an
-      // explicit subsequent user collapse retain their own state.
-      if (element.getAttribute('aria-expanded') === 'false') {
-        element.click();
-        state.expanded++;
-        setTimeout(() => {
-          if (element.isConnected && element.getAttribute('aria-expanded') !== 'true') {
-            console.warn('[pi-web conversation visibility] native process expansion did not apply; leaving native control available');
-          }
-        }, 0);
-      }
-      return;
-    }
-    if (!element.matches('.markdown-compaction-message')) return;
-    seen.add(element);
-    const wrapper = element.parentElement?.parentElement?.parentElement;
-    const card = wrapper?.firstElementChild;
-    const header = card?.firstElementChild;
-    // Validate the pinned native card, never hide an arbitrary ancestor of
-    // user/model Markdown just because its contents mention compaction.
-    if (header?.firstElementChild?.textContent.trim() !== 'compaction' || !header.nextElementSibling?.contains(element)) {
-      console.warn('[pi-web conversation visibility] compaction markup not recognized; summary left visible');
-      return;
-    }
-    wrapper.setAttribute('data-pi-compaction-hidden', 'true');
-    state.hiddenCompactions++;
-  }
-  function scan(root) {
-    if (!(root instanceof Element)) return;
-    if (root.matches(selector)) decorate(root);
-    for (const element of root.querySelectorAll(selector)) decorate(element);
-  }
-  function start() {
-    const style = document.createElement('style');
-    style.textContent = '[data-pi-compaction-hidden="true"]{display:none!important}';
-    document.head.append(style);
-    scan(document.documentElement);
-    new MutationObserver(records => {
-      // Newly mounted history and completed turns only; do not rescan the
-      // document for every streaming token or observe our own attributes.
-      for (const record of records) for (const node of record.addedNodes) scan(node);
-    }).observe(document.documentElement, { childList: true, subtree: true });
-    console.info('[pi-web conversation visibility] enabled: process groups default open; compaction summaries hidden; original data unchanged');
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 })();

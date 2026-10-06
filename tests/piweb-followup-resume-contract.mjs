@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8').split('// Shared, event-driven geometry')[0];
+const all = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
+const source = all.slice(all.indexOf('// Goal pause/resume'), all.indexOf('// Session archive view'));
+assert.ok(source.includes('__piFollowupResumeUi'), 'goal pause/resume section must be located');
 function harness({ label = '目标 · 达标', active = false, legacy = false, missing = false, fail = false, switched = false, stale = false, unchanged = false } = {}) {
   const calls = [], logs = [], nodes = [];
   const location = { href: 'http://localhost:30141/?session=fixture' };
@@ -124,80 +126,15 @@ for (const active of [false, true]) test(`unchanged ${active ? 'active' : 'pause
   assert.match(h.notice().textContent, /目标状态未切换/);
 });
 
-function layoutHarness() {
-  const full = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
-  const begin = full.indexOf('// Shared, event-driven geometry');
-  const end = full.indexOf('  const VERSION = "piweb-session-archive', begin);
-  const shared = full.slice(begin, full.lastIndexOf('(() => {', end));
-  const frames = [], mutations = [], resizes = [], starts = [], listeners = new Map();
-  class Element {
-    constructor(selectors = [], rect = {}) {
-      this.selectors = selectors; this.rect = { width: 32, height: 32, left: 1950, right: 1982, top: 1344, bottom: 1376, ...rect };
-      this.isConnected = true; this.style = {}; this.classList = { contains: () => false };
-    }
-    matches(selector) { return selector.split(',').some(item => this.selectors.includes(item)); }
-    closest() { return null; }
-    querySelector() { return null; }
-    getBoundingClientRect() { return this.rect; }
-    setAttribute() {}
-  }
-  const model = new Element(['.model-selector.is-toolbar']);
-  const shelf = new Element(['.extension-status-shelf'], { width: 1800, height: 56 });
-  shelf.isConnected = false;
-  const body = new Element(), root = new Element();
-  model.parentElement = body; shelf.parentElement = body; body.parentElement = root;
-  const document = {
-    body, documentElement: root, readyState: 'loading', visibilityState: 'visible',
-    querySelectorAll: selector => [model, shelf].filter(node => node.isConnected && node.matches(selector)),
-    getElementById: () => ({}),
-    addEventListener: (name, callback) => name === 'DOMContentLoaded' ? starts.push(callback) : listeners.set(name, callback),
-  };
-  const state = { host: { style: {} }, panel: { style: {} }, open: false };
-  const button = new Element(), panel = { hidden: true };
-  const scope = { document, state, button, panel, Element, HTMLElement: Element, innerWidth: 2560, innerHeight: 1400,
-    getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
-    window: { addEventListener: (name, callback) => listeners.set(name, callback) },
-    requestAnimationFrame: callback => (frames.push(callback), frames.length),
-    ResizeObserver: class { constructor(callback) { this.callback = callback; this.nodes = new Set(); resizes.push(this); } observe(node) { this.nodes.add(node); } disconnect() { this.nodes.clear(); } },
-    MutationObserver: class { constructor(callback) { mutations.push(callback); } observe() {} },
-  };
-  const quota = full.slice(full.indexOf('  function isVisible(element)'), full.indexOf('  function relativeReset('));
-  const tierBegin = full.indexOf('  function closePanel(focus = false)');
-  const tier = full.slice(tierBegin, full.indexOf('  function render()', tierBegin));
-  vm.runInNewContext(shared + quota + tier + '\nwindow.__piUiLayout.subscribe(positionUi); window.__piUiLayout.subscribe(position);', scope);
-  starts.forEach(start => start());
-  const flush = () => { let n = 0; while (frames.length) { assert.ok(n++ < 10, 'geometry must settle, not poll'); frames.shift()(); } };
-  flush();
-  return { model, shelf, body, state, button, resizes, frames, flush,
-    mutate: record => mutations.forEach(callback => callback([record])) };
-}
-
-test('adding/removing the native status shelf keeps quota and tier on the model row', () => {
-  const h = layoutHarness();
-  assert.equal(h.button.style.top, '1344px');
-  assert.equal(h.state.host.style.top, '1344px');
-  h.shelf.isConnected = true; h.model.rect.top = 1288;
-  h.mutate({ type: 'childList', target: h.body, addedNodes: [h.shelf], removedNodes: [] }); h.flush();
-  assert.equal(h.button.style.top, '1288px', 'tier must move up with composer, not stay in footer');
-  assert.equal(h.state.host.style.top, '1288px', 'quota must move up with composer');
-  assert.ok(h.resizes.some(observer => observer.nodes.has(h.shelf)), 'status shelf must be a resize dependency');
-  h.model.rect.top = 1240;
-  h.resizes.forEach(observer => observer.callback([{ target: h.shelf }])); h.flush();
-  assert.equal(h.button.style.top, '1240px', 'widget expansion must reposition controls');
-  h.shelf.isConnected = false; h.model.rect.top = 1344;
-  h.mutate({ type: 'childList', target: h.body, addedNodes: [], removedNodes: [h.shelf] }); h.flush();
-  assert.equal(h.button.style.top, '1344px');
-  assert.equal(h.state.host.style.top, '1344px');
-});
-
-test('status geometry remains event-driven: unrelated transcript changes do not schedule work', () => {
-  const h = layoutHarness();
-  h.mutate({ type: 'childList', target: h.body, addedNodes: [], removedNodes: [] });
-  assert.equal(h.frames.length, 0);
+test('the button follows composer-area changes from the shared watcher, not a document-wide observer', () => {
+  assert.match(source, /window\.__piUiSlots\?\.onComposerChange\(schedule\)/u);
+  assert.doesNotMatch(source, /new MutationObserver/u, 'the shelf is watched once by the slot watcher (characterData on the shelf only)');
+  // visualViewport scroll (mobile keyboard, pinch zoom) still moves a fixed button; transcript scrolling cannot.
+  assert.doesNotMatch(source, /(?<!visualViewport\?\.)addEventListener\("scroll"/u, 'the shelf sits below the transcript; transcript scrolling cannot move it');
 });
 
 test('UI delegates to the saved native mode, never waits for another message or interrupts work', () => {
   assert.doesNotMatch(source, /setInterval|下一条消息|type: ["']abort|message: ["']继续/);
   assert.match(source, /AbortSignal.timeout\(15000\)/);
-  assert.match(source, /width:24px;height:24px/);
+  assert.match(all, /#pi-followup-toggle\{[^}]*width:24px;height:24px/);
 });

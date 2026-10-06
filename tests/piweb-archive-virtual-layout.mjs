@@ -5,23 +5,26 @@ import test from 'node:test';
 
 const source = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
 const actions = source.slice(source.indexOf('  function sessionRow('), source.indexOf('  function immediateActionClick('));
-function fixture({ selected = false, fail = false, reducedMotion = false } = {}) {
+function fixture({ selected = false, fail = false, reducedMotion = false, headers = [] } = {}) {
   const timers = [], microtasks = [], errors = [];
   const parent = {};
   const rows = Array.from({ length: 4 }, (_, i) => {
+    const isSelected = selected && i === 0;
     const wrapper = { style: { position: 'absolute', top: `${i * 54}px` }, parentElement: parent, isConnected: true, animations: [] };
     wrapper.animate = (frames, options) => {
       const animation = { frames, options, cancelled: false, cancel() { this.cancelled = true; } };
       wrapper.animations.push(animation); return animation;
     };
-    const row = { dataset: { piSessionId: `s${i}` }, style: { height: '54px', display: 'flex', background: selected && i === 0 ? 'var(--bg-selected)' : '', borderLeftColor: '', opacity: '', transform: '', pointerEvents: '', transition: '' }, isConnected: true, parentElement: wrapper, clicks: 0,
+    // Redesigned rows: div[data-pi-session-id][data-pi-session-row], selection in aria-current (30px; 54 keeps the old offsets readable).
+    const row = { dataset: { piSessionId: `s${i}`, piSessionRow: '' }, style: { display: '', opacity: '', transform: '', pointerEvents: '', transition: '' }, isConnected: true, parentElement: wrapper, clicks: 0,
+      attributes: { 'aria-current': isSelected ? 'page' : null }, getAttribute(name) { return this.attributes[name] ?? null; },
       setAttribute() {}, removeAttribute() {}, getBoundingClientRect: () => ({ height: 54 }), animate: wrapper.animate, click() { this.clicks++; } };
-    row.button = { parentElement: row, dataset: {}, isConnected: true };
+    row.button = { parentElement: row, dataset: {}, isConnected: true, closest: selector => selector === '[data-pi-session-row]' ? row : null };
     return row;
   });
   let refreshes = 0;
   const state = { optimisticActions: new Set(), optimisticLayouts: new Map(), pendingActions: [], view: 'active', archivedCount: 0 };
-  const context = vm.createContext({ state, document: { body: {}, documentElement: { dataset: {} }, querySelectorAll: () => rows.filter(r => r.isConnected) },
+  const context = vm.createContext({ state, document: { body: {}, documentElement: { dataset: {} }, querySelectorAll: selector => [...rows.filter(r => r.isConnected), ...(selector.includes('.pw-sess-group') ? headers : [])] },
     getComputedStyle: () => ({ opacity: '1', transform: 'none' }), matchMedia: () => ({ matches: reducedMotion }),
     setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; }, clearTimeout: t => { if (t) t.cancelled = true; },
     queueMicrotask: fn => microtasks.push(fn), requestAnimationFrame() {}, performance, location: { href: 'http://localhost/?session=s0' }, URL,
@@ -112,9 +115,34 @@ test('server rejection restores the row and virtual offsets with a visible error
   const f = fixture({ fail: true });
   const pending = f.context.beginOptimisticAction(f.rows[0].button);
   await f.context.performDirectAction(pending, 's0');
-  assert.equal(f.rows[0].style.display, 'flex');
+  assert.equal(f.rows[0].style.display, '');
   assert.equal(f.rows[0].dataset.piSessionArchivePending, undefined);
   assert.equal(offset(f.rows[1]), 'none');
   assert.equal(f.state.optimisticActions.size, 0);
   assert.equal(f.errors.length, 1);
+});
+
+test('date-group headers below a removed row move up with the rows', () => {
+  const animations = [];
+  const header = { dataset: {}, style: { position: 'absolute', top: '120px' }, animate(frames, options) { const a = { frames, options, cancel() { this.cancelled = true; } }; animations.push(a); return a; } };
+  const f = fixture({ headers: [header] });
+  header.parentElement = f.rows[0].parentElement.parentElement;
+  f.context.beginOptimisticAction(f.rows[1].button);
+  assert.equal(animations.at(-1)?.frames.at(-1).transform, 'translateY(-54px)', 'a header left in place would overlap the shifted rows');
+});
+
+test('rows are recognised by data-pi-session-row, not by an inline 54px height', () => {
+  const f = fixture();
+  const stray = { parentElement: { style: { height: '54px', display: 'flex' }, parentElement: null }, dataset: {}, closest: () => null };
+  assert.equal(f.context.beginOptimisticAction(stray), null);
+  assert.ok(f.context.beginOptimisticAction(f.rows[2].button));
+});
+
+test('no optimistic action means the sidebar watcher does no layout work', () => {
+  const f = fixture();
+  let reads = 0;
+  f.context.getComputedStyle = () => { reads++; return { transform: 'none' }; };
+  f.context.syncOptimisticLayout();
+  assert.equal(reads, 0);
+  assert.equal(f.rows[1].parentElement.animations.length, 0);
 });

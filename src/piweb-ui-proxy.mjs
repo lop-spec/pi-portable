@@ -5,13 +5,18 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { promisify } from "node:util";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { appendLineRotating } from "./log-rotate.mjs";
 import { AccountLogin } from "./account-login.mjs";
 
-export const PIWEB_UI_PROXY_VERSION = "piweb-ui-proxy-v1";
+export const PIWEB_UI_PROXY_VERSION = "piweb-ui-proxy-v2";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v9";
+// Legacy, unversioned script URL. Pages get /__pi_archive_ui.<sha>.js (immutable) instead.
 export const PIWEB_ARCHIVE_UI_PATH = "/__pi_archive_ui.js";
+export const PIWEB_ARCHIVE_UI_PATH_RE = /^\/__pi_archive_ui(?:\.([0-9a-f]{6,40}))?\.js$/u;
+export const PIWEB_UI_EVENT_PATH = "/__pi_ui_event";
 export const PIWEB_ACCOUNT_USAGE_PATH = "/__pi_account_usage";
 export const PIWEB_ACCOUNT_SELECT_PATH = "/__pi_account_select";
 export const PIWEB_ACCOUNT_LOGIN_PATH = "/__pi_account_login";
@@ -21,14 +26,52 @@ const ARCHIVE_OLDER_MAX_DAYS = 3650;
 const DAY_MS = 86_400_000;
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
+// Loopback JSON/HTML below this size is sent as is (compressing costs more than it saves);
+// remote clients (phone bridge, tunnels) and anything larger get gzip/br.
+const COMPRESS_MIN_BYTES = 32 * 1024;
+// A page waits at most this long for the bridge; a slower read keeps running in the background
+// (hard limit below) and lands in the snapshot for the next poll instead of being thrown away.
+const ACCOUNT_USAGE_TIMEOUT_MS = 2_500;
+const ACCOUNT_USAGE_COLD_WAIT_MS = 3_500; // nothing to fall back to yet: wait a little longer (page gives up at 4 s)
+const ACCOUNT_USAGE_HARD_TIMEOUT_MS = 15_000;
+const ACCOUNT_USAGE_REUSE_MS = 10_000;
+const SESSION_LIST_PERSIST_DELAY_MS = 5_000;
+const gzipAsync = promisify(zlib.gzip);
+const brotliAsync = promisify(zlib.brotliCompress);
 
 const iso = (value = Date.now()) => new Date(value).toISOString();
 const normalizeError = (value) => String(value || "unknown").replace(/\s+/gu, " ").slice(0, 500);
 const timeoutSignal = (ms) => AbortSignal.timeout(Math.max(1, ms));
+const sha1 = (buffer) => crypto.createHash("sha1").update(buffer).digest("hex");
 
 function pathKey(value) {
   const resolved = path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function isLoopback(address) {
+  const value = String(address || "");
+  return value === "127.0.0.1" || value === "::1" || value === "::ffff:127.0.0.1" || value.startsWith("127.");
+}
+
+function appendVary(current, value) {
+  const items = String(current || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (!items.some((item) => item.toLowerCase() === value.toLowerCase())) items.push(value);
+  return items.join(", ");
+}
+
+// Encoded variants are cached next to the bytes they encode (one compression per content).
+function encodeCached(body, encoding, cache) {
+  const cached = cache?.get(encoding);
+  if (cached) return cached;
+  const work = encoding === "br"
+    ? brotliAsync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: body.length } })
+    : gzipAsync(body, { level: 6 });
+  if (cache) {
+    cache.set(encoding, work);
+    work.catch(() => cache.delete(encoding));
+  }
+  return work;
 }
 
 function isPathInside(root, candidate) {
@@ -55,12 +98,17 @@ export class SessionArchiveStore {
     this.filePath = path.resolve(filePath);
     this.sessionRoot = path.resolve(options.sessionRoot || path.join(path.dirname(this.filePath), "sessions"));
     this.now = options.now || Date.now;
+    // The proxy is the only writer (write-through below); an outside edit is noticed within this window.
+    this.recheckMs = Number.isFinite(options.recheckMs) ? options.recheckMs : 2_000;
+    this.cache = null;
+    this.sessionPathKeys = new Map();
   }
 
   fresh() {
     return { version: 1, archiveVersion: PIWEB_ARCHIVE_VERSION, updatedAt: iso(this.now()), sessions: {} };
   }
 
+  // Full read for mutations: callers modify the returned object before save(), so never share the cache.
   load() {
     if (!fs.existsSync(this.filePath)) return this.fresh();
     let value;
@@ -72,6 +120,38 @@ export class SessionArchiveStore {
     return value;
   }
 
+  stamp() {
+    try {
+      const stat = fs.statSync(this.filePath);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch (error) {
+      if (error?.code === "ENOENT") return "missing";
+      throw error;
+    }
+  }
+
+  index(value, stamp) {
+    const keys = new Map();
+    for (const [id, record] of Object.entries(value.sessions)) {
+      if (record?.relativePath) keys.set(id, this.recordKey(record));
+    }
+    return { stamp, value, keys, checkedAt: Date.now() };
+  }
+
+  // Parsed index plus Map<id, normalized absolute path>; the returned object stays identical
+  // until the file changes, so callers can use it as a cache key.
+  cached() {
+    const now = Date.now();
+    if (this.cache && now - this.cache.checkedAt < this.recheckMs) return this.cache;
+    const stamp = this.stamp();
+    if (this.cache?.stamp === stamp) {
+      this.cache.checkedAt = now;
+      return this.cache;
+    }
+    this.cache = this.index(this.load(), stamp);
+    return this.cache;
+  }
+
   save(state) {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const value = { ...state, version: 1, archiveVersion: PIWEB_ARCHIVE_VERSION, updatedAt: iso(this.now()) };
@@ -79,6 +159,21 @@ export class SessionArchiveStore {
     fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
     try { fs.renameSync(temporary, this.filePath); }
     finally { try { if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true }); } catch {} }
+    this.cache = this.index(value, this.stamp());
+  }
+
+  recordKey(record) {
+    return pathKey(path.resolve(this.sessionRoot, ...String(record.relativePath).split("/")));
+  }
+
+  sessionKey(filePath) {
+    let key = this.sessionPathKeys.get(filePath);
+    if (key === undefined) {
+      if (this.sessionPathKeys.size > 50_000) this.sessionPathKeys.clear();
+      key = pathKey(filePath);
+      this.sessionPathKeys.set(filePath, key);
+    }
+    return key;
   }
 
   validateSession(info) {
@@ -108,8 +203,7 @@ export class SessionArchiveStore {
 
   recordMatches(record, filePath) {
     if (!record?.relativePath || !filePath) return false;
-    const recorded = path.resolve(this.sessionRoot, ...String(record.relativePath).split("/"));
-    return pathKey(recorded) === pathKey(filePath);
+    return this.recordKey(record) === pathKey(filePath);
   }
 
   archiveMany(infos, groupId = "") {
@@ -160,13 +254,17 @@ export class SessionArchiveStore {
     return { restored: true, groupId, sessionIds };
   }
 
+  // Hot path (every session list): id lookup in the cached index, then one string comparison
+  // against the session path's memoized key. No file read, no per-request path.resolve.
   partition(sessions) {
-    const state = this.load();
+    const { value, keys } = this.cached();
     const active = [];
     const archived = [];
     for (const session of Array.isArray(sessions) ? sessions : []) {
-      const record = state.sessions[String(session?.id || "")];
-      if (record && this.recordMatches(record, session?.path)) {
+      const id = String(session?.id || "");
+      const key = keys.get(id);
+      const record = key === undefined ? null : value.sessions[id];
+      if (record && session?.path && key === this.sessionKey(String(session.path))) {
         archived.push({
           ...session,
           archived: true,
@@ -219,7 +317,20 @@ export class PiWebUiProxy {
       options.archiveFile || path.join(path.dirname(this.sessionRoot), "session-archive.json"),
       { sessionRoot: this.sessionRoot, now: this.now },
     );
-    this.archiveUiSource = options.archiveUiSource || fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
+    // Injected script: one in-memory copy per content hash, served under /__pi_archive_ui.<sha>.js with
+    // immutable caching and pre-compressed variants. The file is re-checked (async stat) at most once a
+    // second on page loads, so editing it still takes effect without a restart.
+    this.archiveUiFixed = typeof options.archiveUiSource === "string";
+    this.archiveUiVersions = new Map();
+    this.archiveUiCheckedAt = 0;
+    this.archiveUiRefreshing = null;
+    this.archiveUiFailure = "";
+    this.archiveUiStamp = "";
+    if (!this.archiveUiFixed) {
+      try { const stat = fs.statSync(PIWEB_ARCHIVE_UI_FILE); this.archiveUiStamp = `${stat.mtimeMs}:${stat.size}`; } catch {}
+    }
+    this.archiveUiSource = this.archiveUiFixed ? options.archiveUiSource : fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
+    this.setArchiveUi(this.archiveUiSource);
     this.sessionCatalogue = [];
     this.sessionCatalogueAt = 0;
     this.runningIds = new Set();
@@ -228,6 +339,18 @@ export class PiWebUiProxy {
     this.bootstrapSessionListChecked = false;
     this.bootstrapSessionListServed = false;
     this.sessionListRefreshPromise = null;
+    // Last parsed upstream list per request kind; identical bytes + unchanged archive index reuse it.
+    this.sessionListMemo = { full: null, summary: null };
+    this.sessionListPersistDelayMs = Number.isFinite(options.sessionListPersistDelayMs) ? options.sessionListPersistDelayMs : SESSION_LIST_PERSIST_DELAY_MS;
+    this.sessionListPersistTimer = null;
+    this.sessionListPersistPending = null;
+    this.sessionListPersistRunning = null;
+    this.sessionListPersistedRaw = null;
+    this.accountUsageTimeoutMs = Number.isFinite(options.accountUsageTimeoutMs) ? options.accountUsageTimeoutMs : ACCOUNT_USAGE_TIMEOUT_MS;
+    this.accountUsageReuseMs = Number.isFinite(options.accountUsageReuseMs) ? options.accountUsageReuseMs : ACCOUNT_USAGE_REUSE_MS;
+    this.accountUsage = { data: null, fetchedAt: 0, state: "", failures: 0, failingSince: 0, lastFailureLogAt: 0, lastSlowLogAt: 0, slowAnswers: 0, inflight: { force: null, normal: null } };
+    this.preferenceCache = null;
+    this.uiEvents = new Map();
     this.logFile = path.resolve(options.logFile || path.join(dataRoot, "piweb-ui-proxy.log"));
     const portableHome = String(process.env.PI_PORTABLE_HOME || "").trim();
     const configuredRoot = options.piWebPackageRoot || (portableHome ? path.join(portableHome, "app", "node_modules", "@agegr", "pi-web") : "");
@@ -235,6 +358,9 @@ export class PiWebUiProxy {
     this.pageChunkAsset = null;
     this.pageChunkManifestStamp = "";
     this.pageChunkFailure = "";
+    this.pageChunkCheckedAt = 0;
+    this.pageChunkResult = null;
+    this.pageChunkBody = null;
     this.pageChunkRewriteKeys = new Set();
     this.pageChunkServedNames = new Set();
     this.server = null;
@@ -289,11 +415,16 @@ export class PiWebUiProxy {
     request.pipe(upstream);
   }
 
+  // Loopback upstream is read as identity (Next would gzip only for us to inflate it again);
+  // the browser-facing response is compressed by sendBuffer. Conditional headers are dropped
+  // because the body is rewritten (our own ETag answers revalidation).
   async fetchBufferedUpstream(request, rawBody = Buffer.alloc(0)) {
     const headers = this.proxyHeaders(request.headers, {
       "accept-encoding": "identity",
       "content-length": String(rawBody.length),
     });
+    delete headers["if-none-match"];
+    delete headers["if-modified-since"];
     return new Promise((resolve, reject) => {
       const upstream = http.request({
         hostname: "127.0.0.1",
@@ -339,6 +470,39 @@ export class PiWebUiProxy {
     response.end(body);
   }
 
+  pickEncoding(request, size, minBytes = COMPRESS_MIN_BYTES) {
+    if (size < 1024) return "";
+    const remote = !isLoopback(request.socket?.remoteAddress) || Boolean(request.headers["x-forwarded-for"]);
+    if (!remote && size < minBytes) return "";
+    const accept = String(request.headers["accept-encoding"] || "").toLowerCase();
+    if (/(^|[\s,])br(\s*(;|,|$))/u.test(accept) && !/br\s*;\s*q=0(\.0*)?(\s*(,|$))/u.test(accept)) return "br";
+    if (/(^|[\s,])gzip(\s*(;|,|$))/u.test(accept) && !/gzip\s*;\s*q=0(\.0*)?(\s*(,|$))/u.test(accept)) return "gzip";
+    return "";
+  }
+
+  // Buffered responses go out compressed when it pays (see COMPRESS_MIN_BYTES); `encoded` caches
+  // the compressed variants of a body that is served repeatedly.
+  async sendBuffer(request, response, status, headers, body, { encoded = null, minBytes = COMPRESS_MIN_BYTES } = {}) {
+    const encoding = this.pickEncoding(request, body.length, minBytes);
+    const out = { ...headers, vary: appendVary(headers.vary, "Accept-Encoding") };
+    delete out["content-encoding"];
+    delete out["transfer-encoding"];
+    let payload = body;
+    if (encoding) {
+      try {
+        payload = await encodeCached(body, encoding, encoded);
+        out["content-encoding"] = encoding;
+      } catch (error) {
+        this.log("response-compression-failed", { encoding, bytes: body.length, reason: normalizeError(error?.message || error) });
+        payload = body;
+      }
+    }
+    out["content-length"] = String(payload.length);
+    if (response.destroyed) return;
+    response.writeHead(status, out);
+    response.end(payload);
+  }
+
   mutationOriginAllowed(request) {
     const origin = String(request.headers.origin || "");
     if (!origin) return true;
@@ -349,28 +513,112 @@ export class PiWebUiProxy {
     } catch { return false; }
   }
 
+  // One bridge read at a time (shared by every tab). A busy bridge answers late, not never: the
+  // read is not aborted at the page's 2.5 s budget, only at the 15 s hard limit.
+  refreshAccountUsage(force = false) {
+    const usage = this.accountUsage;
+    const kind = force ? "force" : "normal";
+    if (usage.inflight[kind]) return usage.inflight[kind];
+    const work = (async () => {
+      const startedAt = Date.now();
+      try {
+        const upstream = await this.fetch(`http://127.0.0.1:${this.bridgePort}/account-usage${force ? "?refresh=1" : ""}`, {
+          cache: "no-store",
+          signal: timeoutSignal(ACCOUNT_USAGE_HARD_TIMEOUT_MS),
+        });
+        const body = await upstream.json();
+        if (!upstream.ok || !body || !Array.isArray(body.accounts)) throw new Error(`bridge account usage HTTP ${upstream.status}`);
+        usage.data = body;
+        usage.fetchedAt = Date.now();
+        if (usage.state === "error") {
+          this.log("account-usage-proxy-recovered", { bridgePort: this.bridgePort, failures: usage.failures, downMs: Date.now() - usage.failingSince, elapsedMs: Date.now() - startedAt });
+        }
+        usage.state = "ok";
+        usage.failures = 0;
+        return true;
+      } catch (error) {
+        const reason = normalizeError(error?.message || error);
+        usage.failures += 1;
+        const now = Date.now();
+        // Log the transition, then at most every 10 minutes while it lasts (with the running count).
+        if (usage.state !== "error") {
+          usage.state = "error";
+          usage.failingSince = now;
+          usage.lastFailureLogAt = now;
+          this.log("account-usage-proxy-error", { bridgePort: this.bridgePort, reason, elapsedMs: now - startedAt, snapshotAgeMs: usage.data ? now - usage.fetchedAt : null });
+        } else if (now - usage.lastFailureLogAt >= 600_000) {
+          usage.lastFailureLogAt = now;
+          this.log("account-usage-proxy-still-failing", { bridgePort: this.bridgePort, reason, failures: usage.failures, downMs: now - usage.failingSince, snapshotAgeMs: usage.data ? now - usage.fetchedAt : null });
+        }
+        return false;
+      } finally {
+        usage.inflight[kind] = null;
+      }
+    })();
+    usage.inflight[kind] = work;
+    return work;
+  }
+
   async handleAccountUsageProxy(response, parsedUrl) {
-    try {
-      const refresh = parsedUrl.searchParams.get("refresh") === "1" ? "?refresh=1" : "";
-      const upstream = await this.fetch(`http://127.0.0.1:${this.bridgePort}/account-usage${refresh}`, {
-        cache: "no-store",
-        signal: timeoutSignal(500),
-      });
-      const body = await upstream.json();
-      if (!upstream.ok || !body || !Array.isArray(body.accounts)) throw new Error(`bridge account usage HTTP ${upstream.status}`);
-      this.jsonResponse(response, 200, body);
-    } catch (error) {
-      const reason = normalizeError(error?.message || error);
-      this.log("account-usage-proxy-error", { bridgePort: this.bridgePort, reason });
-      this.jsonResponse(response, 503, {
-        ok: false,
-        enabled: false,
-        refreshing: false,
-        modelTokensConsumed: 0,
-        accounts: [],
-        error: "账号额度服务暂不可用",
-      });
+    const usage = this.accountUsage;
+    const force = parsedUrl.searchParams.get("refresh") === "1";
+    const reusable = !force && usage.data && Date.now() - usage.fetchedAt < this.accountUsageReuseMs;
+    let ok = true;
+    if (!reusable) {
+      const budget = usage.data ? this.accountUsageTimeoutMs : Math.max(this.accountUsageTimeoutMs, ACCOUNT_USAGE_COLD_WAIT_MS);
+      let timer;
+      ok = await Promise.race([
+        this.refreshAccountUsage(force),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), budget); timer.unref?.(); }),
+      ]);
+      clearTimeout(timer);
+      if (ok === null) {
+        // Degraded answer (stale snapshot or 503) while the bridge is still working: logged, rate-limited.
+        usage.slowAnswers += 1;
+        const now = Date.now();
+        if (now - usage.lastSlowLogAt >= 600_000) {
+          usage.lastSlowLogAt = now;
+          this.log("account-usage-proxy-slow", { bridgePort: this.bridgePort, budgetMs: budget, slowAnswers: usage.slowAnswers, snapshotAgeMs: usage.data ? now - usage.fetchedAt : null });
+        }
+      }
     }
+    if (usage.data) {
+      const ageMs = Math.max(0, Date.now() - usage.fetchedAt);
+      const source = reusable ? "memory" : ok ? "bridge" : ok === null ? "stale-slow" : "stale-snapshot";
+      this.jsonResponse(response, 200, { ...usage.data, proxyAgeMs: ageMs, ...(ok ? {} : { proxyStale: true }) }, { "x-pi-usage-source": source });
+      return;
+    }
+    this.jsonResponse(response, 503, {
+      ok: false,
+      enabled: false,
+      refreshing: false,
+      modelTokensConsumed: 0,
+      accounts: [],
+      error: "账号额度服务暂不可用",
+    });
+  }
+
+  // Browser-side fail-open/degraded paths report here so they land in this proxy's rotating log.
+  async handleUiEvent(request, response) {
+    if (!this.mutationOriginAllowed(request) || !/^application\/json\b/iu.test(String(request.headers["content-type"] || ""))) {
+      this.jsonResponse(response, 403, { ok: false });
+      return;
+    }
+    let input;
+    try { input = await this.readControlJson(request, 2048); }
+    catch { this.jsonResponse(response, 400, { ok: false }); return; }
+    const event = String(input?.event || "");
+    if (!/^[a-z0-9-]{1,64}$/u.test(event)) { this.jsonResponse(response, 400, { ok: false }); return; }
+    const detail = JSON.stringify(input?.detail ?? {}).slice(0, 300);
+    const key = `${event}:${detail}`;
+    const now = Date.now();
+    if (now - (this.uiEvents.get(key) || 0) >= 600_000) {
+      if (this.uiEvents.size > 200) this.uiEvents.clear();
+      this.uiEvents.set(key, now);
+      this.log(`ui-${event}`, { detail });
+    }
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
   }
 
   async readControlJson(request, limit = 4096) {
@@ -508,28 +756,86 @@ export class PiWebUiProxy {
     }
   }
 
-  serveArchiveUi(response) {
-    try {
-      const currentSource = fs.readFileSync(PIWEB_ARCHIVE_UI_FILE, "utf8");
-      if (currentSource !== this.archiveUiSource) {
-        this.archiveUiSource = currentSource;
-        this.log("piweb-archive-ui-reloaded", { version: PIWEB_ARCHIVE_VERSION });
-      }
-    } catch (error) {
-      this.log("piweb-archive-ui-reload-failed", { reason: normalizeError(error?.message || error) });
-    }
-    const body = Buffer.from(this.archiveUiSource);
-    response.writeHead(200, {
-      "content-type": "application/javascript; charset=utf-8",
-      "content-length": String(body.length),
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
+  setArchiveUi(source) {
+    const buffer = Buffer.from(source);
+    const sha = sha1(buffer).slice(0, 12);
+    const existing = this.archiveUiVersions.get(sha);
+    if (existing) { this.archiveUi = existing; return existing; }
+    const entry = { sha, buffer, path: `/__pi_archive_ui.${sha}.js`, encoded: new Map() };
+    this.archiveUi = entry;
+    this.archiveUiVersions.set(sha, entry);
+    // Pages loaded before an edit keep requesting their own hash; keep a few recent versions.
+    for (const old of [...this.archiveUiVersions.keys()].slice(0, Math.max(0, this.archiveUiVersions.size - 4))) this.archiveUiVersions.delete(old);
+    // Pre-compress off the event loop so the first page load does not pay for it.
+    for (const encoding of ["br", "gzip"]) encodeCached(buffer, encoding, entry.encoded).catch((error) => {
+      this.log("piweb-archive-ui-compress-failed", { encoding, reason: normalizeError(error?.message || error) });
     });
-    response.end(body);
+    return entry;
+  }
+
+  refreshArchiveUi() {
+    if (this.archiveUiFixed || Date.now() - this.archiveUiCheckedAt < 1_000) return this.archiveUiRefreshing;
+    if (this.archiveUiRefreshing) return this.archiveUiRefreshing;
+    this.archiveUiCheckedAt = Date.now();
+    this.archiveUiRefreshing = (async () => {
+      try {
+        const stat = await fs.promises.stat(PIWEB_ARCHIVE_UI_FILE);
+        const stamp = `${stat.mtimeMs}:${stat.size}`;
+        if (stamp === this.archiveUiStamp) return;
+        const source = await fs.promises.readFile(PIWEB_ARCHIVE_UI_FILE, "utf8");
+        this.archiveUiStamp = stamp;
+        this.archiveUiFailure = "";
+        if (source === this.archiveUiSource) return;
+        this.archiveUiSource = source;
+        const entry = this.setArchiveUi(source);
+        this.log("piweb-archive-ui-reloaded", { version: PIWEB_ARCHIVE_VERSION, sha: entry.sha, bytes: entry.buffer.length });
+      } catch (error) {
+        const reason = normalizeError(error?.message || error);
+        if (reason !== this.archiveUiFailure) this.log("piweb-archive-ui-reload-failed", { reason });
+        this.archiveUiFailure = reason;
+      } finally {
+        this.archiveUiRefreshing = null;
+      }
+    })();
+    return this.archiveUiRefreshing;
+  }
+
+  async serveArchiveUi(request, response, parsedUrl) {
+    const requested = PIWEB_ARCHIVE_UI_PATH_RE.exec(parsedUrl.pathname)?.[1] || "";
+    let entry = requested ? this.archiveUiVersions.get(requested) : null;
+    const immutable = Boolean(entry);
+    if (!entry) {
+      // Legacy URL, or a hash this process no longer holds: serve the current file, revalidated.
+      if (requested) this.log("piweb-archive-ui-version-miss", { requested, current: this.archiveUi.sha });
+      await this.refreshArchiveUi();
+      entry = this.archiveUi;
+    }
+    const etag = `"${entry.sha}"`;
+    const headers = {
+      "content-type": "application/javascript; charset=utf-8",
+      "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
+      etag,
+      "x-content-type-options": "nosniff",
+    };
+    if (!immutable && request.headers["if-none-match"] === etag) {
+      response.writeHead(304, { ...headers, vary: "Accept-Encoding" });
+      response.end();
+      return;
+    }
+    await this.sendBuffer(request, response, 200, headers, entry.buffer, { encoded: entry.encoded, minBytes: 0 });
   }
 
   currentPiWebPageChunk() {
     if (!this.piWebPackageRoot) return null;
+    // Re-validated at most every 5 s (failures included): never a stat per request.
+    const now = Date.now();
+    if (now - this.pageChunkCheckedAt < 5_000) return this.pageChunkResult;
+    this.pageChunkCheckedAt = now;
+    this.pageChunkResult = this.readPiWebPageChunk();
+    return this.pageChunkResult;
+  }
+
+  readPiWebPageChunk() {
     const manifestFile = path.join(this.piWebPackageRoot, ".next", "server", "app", "page_client-reference-manifest.js");
     try {
       const stat = fs.statSync(manifestFile);
@@ -550,51 +856,69 @@ export class PiWebUiProxy {
     }
   }
 
-  serveCurrentPiWebPageChunk(parsedUrl, response) {
+  async serveCurrentPiWebPageChunk(request, parsedUrl, response) {
     const asset = this.currentPiWebPageChunk();
     if (!asset || parsedUrl.pathname !== `/_next/static/chunks/app/${asset.name}`) return false;
     try {
-      const body = fs.readFileSync(asset.file);
-      response.writeHead(200, {
+      // Read once per asset (617 KB); compressed variants are cached with it, as Next would gzip it.
+      if (this.pageChunkBody?.name !== asset.name) {
+        this.pageChunkBody = { name: asset.name, buffer: await fs.promises.readFile(asset.file), encoded: new Map() };
+      }
+      const body = this.pageChunkBody.buffer;
+      await this.sendBuffer(request, response, 200, {
         "content-type": "application/javascript; charset=utf-8",
-        "content-length": String(body.length),
         "cache-control": "public, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
-      });
-      response.end(body);
+      }, body, { encoded: this.pageChunkBody.encoded, minBytes: 0 });
       if (!this.pageChunkServedNames.has(asset.name)) {
         this.pageChunkServedNames.add(asset.name);
         this.log("piweb-page-chunk-served", { asset: asset.name, bytes: body.length });
       }
     } catch (error) {
       const reason = normalizeError(error?.message || error);
+      this.pageChunkBody = null;
       this.log("piweb-page-chunk-serve-error", { asset: asset.name, reason });
-      response.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-      response.end(`Pi Web current page chunk unavailable: ${reason}`);
+      if (!response.headersSent) response.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      if (!response.writableEnded) response.end(`Pi Web current page chunk unavailable: ${reason}`);
     }
     return true;
   }
 
-  composerPreferenceBootstrap(nonceAttribute = "") {
+  // settings.json is re-read only when its mtime/size changes (async stat, at most every 2 s).
+  async composerPreferences() {
+    const now = Date.now();
+    const cached = this.preferenceCache;
+    if (cached && now - cached.checkedAt < 2_000) return cached;
     const settingsFile = path.join(this.dataRoot, ".pi", "agent", "settings.json");
+    let stamp = "missing";
     try {
-      const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+      const stat = await fs.promises.stat(settingsFile);
+      stamp = `${stat.mtimeMs}:${stat.size}`;
+      if (cached?.stamp === stamp) { cached.checkedAt = now; return cached; }
+      const settings = JSON.parse(await fs.promises.readFile(settingsFile, "utf8"));
       const provider = String(settings.defaultProvider || "");
       const modelId = String(settings.defaultModel || "");
       if (!provider || !modelId) throw new Error("default model is missing");
       const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
       const configured = settings.modelThinkingLevels?.[`${provider}/${modelId}`] ?? settings.defaultThinkingLevel ?? "medium";
-      const thinking = levels.has(configured) ? configured : "medium";
-      const model = JSON.stringify({ provider, modelId }).replace(/</gu, "\\u003c");
-      return `<script${nonceAttribute}>try{localStorage.getItem("pi-last-model")||localStorage.setItem("pi-last-model",${JSON.stringify(model)});localStorage.getItem("pi-last-thinking-level")||localStorage.setItem("pi-last-thinking-level",${JSON.stringify(thinking)})}catch(e){console.error("[pi-web] composer preference bootstrap failed:",e)}</script>`;
+      this.preferenceCache = { stamp, checkedAt: now, provider, modelId, thinking: levels.has(configured) ? configured : "medium", error: "" };
     } catch (error) {
-      this.log("composer-preference-bootstrap-skipped", { reason: normalizeError(error?.message || error) });
-      return "";
+      const reason = normalizeError(error?.message || error);
+      if (cached?.error !== reason) this.log("composer-preference-bootstrap-skipped", { reason });
+      this.preferenceCache = { stamp, checkedAt: now, error: reason };
     }
+    return this.preferenceCache;
+  }
+
+  async composerPreferenceBootstrap(nonceAttribute = "") {
+    const preferences = await this.composerPreferences();
+    if (preferences.error) return "";
+    const model = JSON.stringify({ provider: preferences.provider, modelId: preferences.modelId }).replace(/</gu, "\\u003c");
+    return `<script${nonceAttribute}>try{localStorage.getItem("pi-last-model")||localStorage.setItem("pi-last-model",${JSON.stringify(model)});localStorage.getItem("pi-last-thinking-level")||localStorage.setItem("pi-last-thinking-level",${JSON.stringify(preferences.thinking)})}catch(e){console.error("[pi-web] composer preference bootstrap failed:",e)}</script>`;
   }
 
   async handleHtmlProxy(request, response) {
-    const upstreamResult = await this.fetchBufferedUpstream(request);
+    const [upstreamResult] = await Promise.all([this.fetchBufferedUpstream(request), this.refreshArchiveUi()]);
     const contentType = String(upstreamResult.headers["content-type"] || "");
     if (upstreamResult.status >= 400 || !contentType.toLowerCase().includes("text/html")) {
       this.writeBuffered(response, upstreamResult);
@@ -611,18 +935,28 @@ export class PiWebUiProxy {
         this.log("piweb-page-chunk-rewritten", { stale: rewrite.staleNames, current: currentPageChunk.name, replacements: rewrite.replacements });
       }
     }
-    if (!html.includes(PIWEB_ARCHIVE_UI_PATH)) {
+    if (!/\/__pi_archive_ui(?:\.[0-9a-f]+)?\.js/u.test(html)) {
       const nonce = /<script\b[^>]*\bnonce=["']([^"']+)["']/iu.exec(html)?.[1];
       const nonceAttribute = nonce ? ` nonce="${nonce.replace(/["&<>]/gu, "")}"` : "";
-      const preferences = this.composerPreferenceBootstrap(nonceAttribute);
-      const tag = preferences + `<script src="${PIWEB_ARCHIVE_UI_PATH}" data-pi-session-archive-bootstrap="${PIWEB_ARCHIVE_VERSION}"${nonceAttribute}></script>`;
+      const preferences = await this.composerPreferenceBootstrap(nonceAttribute);
+      // Stays a synchronous script at the top of <head>: its fetch wrappers (archive view, TIER)
+      // must be installed before Next issues its first /api/sessions. The hashed URL is immutable,
+      // so a repeat load costs no network and keeps V8's code cache.
+      const tag = preferences + `<script src="${this.archiveUi.path}" data-pi-session-archive-bootstrap="${PIWEB_ARCHIVE_VERSION}"${nonceAttribute}></script>`;
       html = /<head\b[^>]*>/iu.test(html) ? html.replace(/<head\b[^>]*>/iu, (head) => head + tag) : tag + html;
     }
-    this.writeBuffered(response, upstreamResult, {
-      body: Buffer.from(html),
-      headers: { "cache-control": "no-store" },
-      changed: true,
-    });
+    const body = Buffer.from(html);
+    const etag = `W/"pi-${sha1(body).slice(0, 20)}"`;
+    const headers = { ...upstreamResult.headers, "cache-control": "private, no-cache", etag };
+    delete headers["content-length"];
+    delete headers["content-md5"];
+    if (request.headers["if-none-match"] === etag) {
+      for (const name of ["content-type", "content-encoding", "transfer-encoding"]) delete headers[name];
+      response.writeHead(304, headers);
+      response.end();
+      return;
+    }
+    await this.sendBuffer(request, response, upstreamResult.status, headers, body);
   }
 
   loadBootstrapSessionList() {
@@ -643,40 +977,91 @@ export class PiWebUiProxy {
     }
   }
 
-  saveSessionListCache(body) {
-    try {
-      fs.mkdirSync(path.dirname(this.sessionListCacheFile), { recursive: true });
+  // Startup snapshot of the full catalogue. Written off the request path: at most once per
+  // persist delay, only when the upstream bytes changed, asynchronously (tmp file + rename).
+  // The upstream JSON is embedded as is, so writing never re-serializes 831 KB.
+  scheduleSessionListPersist(body, raw = null) {
+    this.sessionListPersistPending = { body, raw, savedAtMs: this.now() };
+    if (this.sessionListPersistTimer || this.closed) return;
+    this.sessionListPersistTimer = setTimeout(() => {
+      this.sessionListPersistTimer = null;
+      void this.flushSessionListPersist();
+    }, this.sessionListPersistDelayMs);
+    this.sessionListPersistTimer.unref?.();
+  }
+
+  async flushSessionListPersist() {
+    if (this.sessionListPersistRunning) await this.sessionListPersistRunning;
+    const pending = this.sessionListPersistPending;
+    this.sessionListPersistPending = null;
+    if (!pending) return;
+    if (pending.raw && this.sessionListPersistedRaw?.equals(pending.raw)) return;
+    this.sessionListPersistRunning = (async () => {
       const temporary = `${this.sessionListCacheFile}.tmp-${process.pid}-${crypto.randomUUID()}`;
-      fs.writeFileSync(temporary, JSON.stringify({ version: 1, savedAtMs: this.now(), body }), { flag: "wx" });
-      try { fs.renameSync(temporary, this.sessionListCacheFile); }
-      finally { try { if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true }); } catch {} }
-    } catch (error) {
-      this.log("session-list-bootstrap-cache-write-failed", { reason: normalizeError(error?.message || error) });
+      try {
+        const payload = pending.raw
+          ? Buffer.concat([Buffer.from(`{"version":1,"savedAtMs":${Number(pending.savedAtMs) || 0},"body":`), pending.raw, Buffer.from("}")])
+          : Buffer.from(JSON.stringify({ version: 1, savedAtMs: pending.savedAtMs, body: pending.body }));
+        await fs.promises.mkdir(path.dirname(this.sessionListCacheFile), { recursive: true });
+        await fs.promises.writeFile(temporary, payload, { flag: "wx" });
+        await fs.promises.rename(temporary, this.sessionListCacheFile);
+        this.sessionListPersistedRaw = pending.raw;
+      } catch (error) {
+        this.log("session-list-bootstrap-cache-write-failed", { reason: normalizeError(error?.message || error) });
+        await fs.promises.rm(temporary, { force: true }).catch(() => {});
+      } finally {
+        this.sessionListPersistRunning = null;
+      }
+    })();
+    await this.sessionListPersistRunning;
+  }
+
+  // Parsed list + archive partition for one upstream body. Identical bytes with an unchanged
+  // archive index reuse the previous result (no parse, no partition, no stringify).
+  sessionListEntry(kind, raw, parsed = null) {
+    const archive = this.archiveStore.cached();
+    const previous = this.sessionListMemo[kind];
+    if (previous && raw && previous.raw?.equals(raw)) {
+      if (previous.archive === archive) { previous.reused += 1; return previous; }
+      parsed = previous.body;
     }
-  }
-
-  sessionListValue(body, parsedUrl) {
+    const body = parsed ?? JSON.parse(raw.toString("utf8"));
+    if (!Array.isArray(body?.sessions)) return null;
     const partition = this.archiveStore.partition(body.sessions);
-    const archivedGroupCount = new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size;
-    const view = parsedUrl.searchParams.get("archiveView") === "archived" ? "archived" : "active";
-    return {
-      ...body,
-      sessions: view === "archived" ? partition.archived : partition.active,
-      archive: {
-        view,
-        activeCount: partition.active.length,
-        archivedCount: archivedGroupCount,
-        archivedSessionCount: partition.archived.length,
-        version: PIWEB_ARCHIVE_VERSION,
-      },
+    const entry = {
+      raw, body, archive, partition, reused: 0, views: new Map(),
+      archivedCount: new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size,
     };
+    this.sessionListMemo[kind] = entry;
+    return entry;
   }
 
-  acceptFreshSessionList(body) {
+  sessionListView(entry, parsedUrl) {
+    const view = parsedUrl.searchParams.get("archiveView") === "archived" ? "archived" : "active";
+    let cached = entry.views.get(view);
+    if (!cached) {
+      const value = {
+        ...entry.body,
+        sessions: view === "archived" ? entry.partition.archived : entry.partition.active,
+        archive: {
+          view,
+          activeCount: entry.partition.active.length,
+          archivedCount: entry.archivedCount,
+          archivedSessionCount: entry.partition.archived.length,
+          version: PIWEB_ARCHIVE_VERSION,
+        },
+      };
+      cached = { buffer: Buffer.from(JSON.stringify(value)), encoded: new Map() };
+      entry.views.set(view, cached);
+    }
+    return cached;
+  }
+
+  acceptFreshSessionList(body, raw = null) {
     this.sessionCatalogue = body.sessions;
     this.sessionCatalogueAt = this.now();
     if (Array.isArray(body.runningSessionIds)) this.runningIds = new Set(body.runningSessionIds.map(String));
-    this.saveSessionListCache(body);
+    this.scheduleSessionListPersist(body, raw);
   }
 
   refreshSessionListInBackground() {
@@ -686,42 +1071,55 @@ export class PiWebUiProxy {
       cache: "no-store",
       signal: timeoutSignal(15000),
     }).then(async (upstream) => {
-      const body = await upstream.json();
+      const raw = Buffer.from(await upstream.arrayBuffer());
+      const body = JSON.parse(raw.toString("utf8"));
       if (!upstream.ok || !Array.isArray(body?.sessions)) throw new Error(`sessions HTTP ${upstream.status}`);
-      this.acceptFreshSessionList(body);
+      this.acceptFreshSessionList(body, raw);
+      // Seed the memo: the page's next plain list request with the same bytes is served without re-parsing.
+      this.sessionListEntry("full", raw, body);
       this.log("session-list-bootstrap-refreshed", { elapsedMs: Math.max(0, this.now() - startedAt), count: body.sessions.length });
     }).catch((error) => {
       this.log("session-list-bootstrap-refresh-failed", { reason: normalizeError(error?.message || error) });
     }).finally(() => { this.sessionListRefreshPromise = null; });
   }
 
+  async sendSessionList(request, response, status, baseHeaders, entry, parsedUrl, source) {
+    const view = this.sessionListView(entry, parsedUrl);
+    const headers = { ...baseHeaders };
+    for (const name of ["content-length", "content-encoding", "transfer-encoding", "etag", "content-md5"]) delete headers[name];
+    Object.assign(headers, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-pi-session-list": source,
+      // The page reads the archived-conversation count here instead of parsing the list a second time.
+      "x-pi-archived-count": String(entry.archivedCount),
+    });
+    await this.sendBuffer(request, response, status, headers, view.buffer, { encoded: view.encoded });
+  }
+
   async handleSessionList(request, response, parsedUrl) {
     const force = parsedUrl.searchParams.get("force") === "1";
+    const summary = parsedUrl.searchParams.get("summary") === "1";
     const bootstrap = !force && !this.bootstrapSessionListServed ? this.loadBootstrapSessionList() : null;
     if (bootstrap) {
       this.bootstrapSessionListServed = true;
-      const value = this.sessionListValue(bootstrap, parsedUrl);
-      this.jsonResponse(response, 200, value, { "x-pi-session-list": "bootstrap-cache" });
+      const entry = this.sessionListEntry("bootstrap", null, bootstrap);
+      await this.sendSessionList(request, response, 200, {}, entry, parsedUrl, "bootstrap-cache");
       this.log("session-list-bootstrap-served", { ageMs: this.sessionCatalogueAt ? Math.max(0, this.now() - this.sessionCatalogueAt) : null, count: bootstrap.sessions.length });
       this.refreshSessionListInBackground();
       return;
     }
 
     const upstreamResult = await this.fetchBufferedUpstream(request);
-    let body;
-    try { body = JSON.parse(upstreamResult.body.toString("utf8")); }
+    if (upstreamResult.status >= 400) { this.writeBuffered(response, upstreamResult); return; }
+    let entry;
+    try { entry = this.sessionListEntry(summary ? "summary" : "full", upstreamResult.body); }
     catch { this.writeBuffered(response, upstreamResult); return; }
-    if (upstreamResult.status >= 400 || !Array.isArray(body?.sessions)) {
-      this.writeBuffered(response, upstreamResult);
-      return;
-    }
-    this.acceptFreshSessionList(body);
-    const value = this.sessionListValue(body, parsedUrl);
-    this.writeBuffered(response, upstreamResult, {
-      body: Buffer.from(JSON.stringify(value)),
-      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-pi-session-list": "fresh" },
-      changed: true,
-    });
+    if (!entry) { this.writeBuffered(response, upstreamResult); return; }
+    // summary=1 rows are placeholders (detailsPending): they must not become the archive
+    // catalogue or overwrite the persisted startup snapshot.
+    if (!summary) this.acceptFreshSessionList(entry.body, upstreamResult.body);
+    await this.sendSessionList(request, response, upstreamResult.status, upstreamResult.headers, entry, parsedUrl, entry.reused ? "fresh-reused" : "fresh");
   }
 
   async fetchSessionCatalogue() {
@@ -943,7 +1341,8 @@ export class PiWebUiProxy {
 
   async handlePublicProxy(request, response) {
     const parsedUrl = new URL(request.url || "/", "http://127.0.0.1");
-    if (request.method === "GET" && parsedUrl.pathname === PIWEB_ARCHIVE_UI_PATH) return this.serveArchiveUi(response);
+    if (request.method === "GET" && PIWEB_ARCHIVE_UI_PATH_RE.test(parsedUrl.pathname)) return this.serveArchiveUi(request, response, parsedUrl);
+    if (request.method === "POST" && parsedUrl.pathname === PIWEB_UI_EVENT_PATH) return this.handleUiEvent(request, response);
     if (request.method === "GET" && parsedUrl.pathname === PIWEB_ACCOUNT_USAGE_PATH) return this.handleAccountUsageProxy(response, parsedUrl);
     if (request.method === "POST" && parsedUrl.pathname === PIWEB_ARCHIVE_OLDER_PATH) return this.handleArchiveOlder(request, response);
     if (request.method === "POST" && parsedUrl.pathname === PIWEB_ACCOUNT_AUTO_RESET_PATH) return this.handleAccountAutoReset(request, response);
@@ -952,7 +1351,7 @@ export class PiWebUiProxy {
       if (request.method !== "POST") return this.jsonResponse(response, 405, { ok: false, error: "POST required" }, { Allow: "POST" });
       return this.handleAccountLogin(request, response);
     }
-    if (request.method === "GET" && this.serveCurrentPiWebPageChunk(parsedUrl, response)) return;
+    if (request.method === "GET" && parsedUrl.pathname.startsWith("/_next/static/chunks/app/page-") && await this.serveCurrentPiWebPageChunk(request, parsedUrl, response)) return;
     if (request.method === "GET" && parsedUrl.pathname === "/api/sessions") return this.handleSessionList(request, response, parsedUrl);
 
     const explicitArchive = /^\/api\/sessions\/([^/]+)\/(archive|restore)$/u.exec(parsedUrl.pathname);
@@ -1022,6 +1421,9 @@ export class PiWebUiProxy {
       if (!server?.listening) return resolve();
       server.close(() => resolve());
     });
+    clearTimeout(this.sessionListPersistTimer);
+    this.sessionListPersistTimer = null;
+    await this.flushSessionListPersist().catch(() => {});
     await Promise.all([closeServer(this.proxyServer), closeServer(this.server)]);
     this.log("stopped");
   }

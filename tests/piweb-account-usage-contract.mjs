@@ -17,7 +17,7 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const uiSource = fs.readFileSync(path.join(root, "src", "piweb-archive-ui.js"), "utf8");
 // Only the quota IIFE: later IIFEs (service tier) legitimately read /api/agent and are covered by their own contract.
-const quotaStart = uiSource.indexOf('const VERSION = "piweb-account-usage-v2"');
+const quotaStart = uiSource.indexOf('const VERSION = "piweb-account-usage-');
 const quotaUi = uiSource.slice(quotaStart, uiSource.indexOf("\n})();", quotaStart));
 assert.ok(quotaStart > 0 && quotaUi.length > 10000, "quota UI section must be located");
 const bridgeSource = fs.readFileSync(path.join(root, "src", "bridge", "codex-responses-proxy.mjs"), "utf8");
@@ -53,9 +53,19 @@ test("quota control is half-area compact, cached, keyboard accessible, and opens
   assert.match(quotaUi, /aria-haspopup", "dialog/u);
   assert.match(quotaUi, /aria-expanded/u);
   assert.match(quotaUi, /event\.key !== "Escape"/u);
-  assert.match(quotaUi, /prefers-reduced-motion/u);
-  assert.match(quotaUi, /width:280px/u);
-  assert.doesNotMatch(quotaUi, /width:352px/u);
+  // D26: the gauge and panel only carry the shared primitives (.pw-quota / .pw-menu); fonts, radii,
+  // shadows, width (320) and the reduced-motion handling all come from the app's stylesheet.
+  assert.match(quotaUi, /button\.className = "pw-quota"/u);
+  assert.match(quotaUi, /className = "pw-menu pw-menu--up pw-slot-popover pw-quota-panel"/u);
+  assert.doesNotMatch(quotaUi, /cssText|style\.(font|borderRadius|boxShadow)/u, "no inline font, radius or shadow");
+  const tick = String.fromCharCode(96);
+  const cssStart = uiSource.indexOf("const CSS = " + tick);
+  const injectedCss = uiSource.slice(cssStart, uiSource.indexOf(tick + ";", cssStart));
+  assert.ok(cssStart > 0 && injectedCss.length > 1000, "the single injected stylesheet must be located");
+  assert.doesNotMatch(injectedCss, /@keyframes|animation:|transition:/u, "motion comes from the .pw-menu primitive, which honours prefers-reduced-motion");
+  assert.match(quotaUi, /register\(\{ name: "quota", slot: "composer"/u, "the gauge is appended into [data-pi-composer-slot], in document order");
+  assert.doesNotMatch(quotaUi, /panel\.focus\(/u, "a mouse open must not focus (and ring) the whole panel");
+  assert.match(quotaUi, /setOpen\(!state\.open, performance\.now\(\), event\.detail === 0\)/u, "keyboard opens move focus to the first item");
   assert.match(quotaUi, /switchAccount: "切换"/u);
   assert.match(quotaUi, /reauth: "重新登录", addAccount: "添加账号"/u);
   assert.match(quotaUi, /const LOGIN_ENDPOINT = "\/__pi_account_login"/u);
@@ -63,7 +73,8 @@ test("quota control is half-area compact, cached, keyboard accessible, and opens
   assert.match(quotaUi, /addButton\.addEventListener\("click"/u);
   assert.match(quotaUi, /input\.setAttribute\("aria-label", text\.callback\)/u);
   assert.doesNotMatch(quotaUi, /window\.open\(/u, "authorization opens only through an explicit user link");
-  assert.match(quotaUi, /className = "pi-account-usage-switch"/u);
+  assert.match(quotaUi, /action\.className = "pw-btn pw-btn--sm"/u);
+  assert.match(quotaUi, /switchAccount\(String\(account\.id/u);
   assert.match(quotaUi, /remaining: "剩余"/u);
   assert.match(quotaUi, /resets: "重置卡余额（不是当前可立即使用的次数）"/u);
   assert.match(quotaUi, /resetCountShort: "重置卡"/u);
@@ -82,7 +93,10 @@ test("account management uses existing header whitespace and never overlays acco
   assert.doesNotMatch(quotaUi, /row\.appendChild\(controls\)/u, "management buttons must not add a separate row");
   assert.match(quotaUi, /reauth\.title = `\$\{text\.reauth\} \$\{email\}`/u);
   assert.match(quotaUi, /remove\.setAttribute\("aria-label"/u);
-  const footer = quotaUi.match(/\.pi-account-login-footer\{([^}]+)\}/u)?.[1];
+  // Delete/re-login/switch replace the value on row hover or keyboard focus; hidden ones stay focusable.
+  assert.match(uiSource, /\.pi-account-usage-row:not\(:hover,:focus-within\) \.pi-account-row-controls\{position:absolute;[^}]*clip-path:inset\(50%\)/u);
+  assert.doesNotMatch(uiSource, /\.pi-account-row-controls\{display:none/u, "display:none would make the row actions unreachable by keyboard");
+  const footer = uiSource.match(/\.pi-account-login-footer\{([^}]+)\}/u)?.[1];
   assert.ok(footer);
   assert.doesNotMatch(footer, /position\s*:\s*(sticky|fixed|absolute)/u, "add account must flow after the list, not cover its last row");
 });
@@ -186,4 +200,116 @@ test("cross-origin switch and quota proxy failures are visible in response and l
   assert.match(log, /"event":"account-select-rejected"/u);
   assert.match(log, /"event":"account-usage-proxy-error"/u);
   fs.rmSync(temporary, { recursive: true, force: true });
+});
+
+test("a busy bridge is waited for, then answered from the last snapshot instead of a false 503", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-account-usage-busy-"));
+  const logFile = path.join(temporary, "ui-proxy.log");
+  let mode = "slow", calls = 0;
+  const proxy = new PiWebUiProxy({
+    dataRoot: temporary,
+    logFile,
+    accountUsageReuseMs: 0,
+    accountUsageTimeoutMs: 400,
+    fetchImpl: async (_url, init) => {
+      calls += 1;
+      if (mode === "down") throw new Error("bridge unavailable");
+      // The old proxy gave up after 500 ms; a busy bridge answering late is normal, not an outage.
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 150);
+        init.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(init.signal.reason); });
+      });
+      return new Response(JSON.stringify({ ok: true, enabled: true, accounts: [{ id: "acct2", remainingPercent: 70 }] }), { status: 200 });
+    },
+  });
+  const read = async () => {
+    const response = responseCollector();
+    await proxy.handleAccountUsageProxy(response, new URL("http://127.0.0.1/__pi_account_usage"));
+    return { ...response, json: JSON.parse(response.body) };
+  };
+  const first = await read();
+  assert.equal(first.status, 200);
+  assert.equal(first.headers["x-pi-usage-source"], "bridge");
+  mode = "down";
+  const stale = [await read(), await read(), await read()];
+  for (const response of stale) {
+    assert.equal(response.status, 200, "a failing bridge must not turn a known snapshot into a 503");
+    assert.equal(response.json.proxyStale, true);
+    assert.equal(response.json.accounts[0].remainingPercent, 70);
+    assert.equal(response.headers["x-pi-usage-source"], "stale-snapshot");
+  }
+  const errors = fs.readFileSync(logFile, "utf8").split("\n").filter((line) => line.includes('"account-usage-proxy-error"'));
+  assert.equal(errors.length, 1, "failures are logged on the transition, not once per poll");
+  mode = "slow";
+  assert.equal((await read()).headers["x-pi-usage-source"], "bridge");
+  assert.match(fs.readFileSync(logFile, "utf8"), /"event":"account-usage-proxy-recovered"[^\n]*"failures":3/u);
+  assert.equal(calls, 5);
+  fs.rmSync(temporary, { recursive: true, force: true });
+});
+
+test("parallel tabs share one bridge read and recent snapshots are reused", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-account-usage-shared-"));
+  let calls = 0;
+  const proxy = new PiWebUiProxy({
+    dataRoot: temporary,
+    logFile: path.join(temporary, "ui-proxy.log"),
+    fetchImpl: async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return new Response(JSON.stringify({ ok: true, enabled: true, accounts: [] }), { status: 200 });
+    },
+  });
+  const read = async () => {
+    const response = responseCollector();
+    await proxy.handleAccountUsageProxy(response, new URL("http://127.0.0.1/__pi_account_usage"));
+    return response;
+  };
+  const results = await Promise.all([read(), read(), read()]);
+  assert.deepEqual(results.map((response) => response.status), [200, 200, 200]);
+  assert.equal(calls, 1, "concurrent polls are single-flight");
+  assert.equal((await read()).headers["x-pi-usage-source"], "memory");
+  assert.equal(calls, 1);
+  fs.rmSync(temporary, { recursive: true, force: true });
+});
+
+test("a bridge slower than the page budget is not aborted: its answer lands in the snapshot", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-account-usage-slow-"));
+  const logFile = path.join(temporary, "ui-proxy.log");
+  let delay = 50, generation = 0;
+  const proxy = new PiWebUiProxy({
+    dataRoot: temporary,
+    logFile,
+    accountUsageReuseMs: 0,
+    accountUsageTimeoutMs: 100,
+    fetchImpl: async () => {
+      const value = ++generation;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return new Response(JSON.stringify({ ok: true, enabled: true, accounts: [{ id: "acct1", remainingPercent: value }] }), { status: 200 });
+    },
+  });
+  const read = async () => {
+    const response = responseCollector();
+    await proxy.handleAccountUsageProxy(response, new URL("http://127.0.0.1/__pi_account_usage"));
+    return { ...response, json: JSON.parse(response.body) };
+  };
+  assert.equal((await read()).json.accounts[0].remainingPercent, 1);
+  delay = 300;
+  const slow = await read();
+  assert.equal(slow.status, 200);
+  assert.equal(slow.headers["x-pi-usage-source"], "stale-slow");
+  assert.equal(slow.json.accounts[0].remainingPercent, 1, "the page gets the last snapshot at once");
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  delay = 50;
+  assert.equal((await read()).json.accounts[0].remainingPercent, 3, "a fresh read follows; the slow read 2 was kept, not aborted");
+  assert.equal(proxy.accountUsage.failures, 0);
+  const log = fs.readFileSync(logFile, "utf8");
+  assert.match(log, /"event":"account-usage-proxy-slow"/u, "a degraded answer is logged");
+  assert.doesNotMatch(log, /"event":"account-usage-proxy-error"/u, "a slow bridge is not an outage");
+  fs.rmSync(temporary, { recursive: true, force: true });
+});
+
+test("the browser backs off 5 s / 15 s / 45 s with jitter and retries at once when the panel opens on an error", () => {
+  assert.match(quotaUi, /const RETRY_MS = \[5_000, 15_000, 45_000\]/u);
+  assert.match(quotaUi, /0\.8 \+ Math\.random\(\) \* 0\.4/u);
+  assert.match(quotaUi, /if \(state\.error \|\| !state\.lastFetchAt/u);
 });
