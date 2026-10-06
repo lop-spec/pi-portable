@@ -118,11 +118,17 @@ test('icon menus reuse native event and immediate archive, no model calls or pol
   const archive = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
   assert.match(archive, /beginOptimisticAction\(row.querySelector/); assert.match(archive, /void performDirectAction\(pending, id\)/);
 });
-test('row archive shortcut and reserved slot are hidden without touching the menu or archive-view entry', () => {
+test('no per-row archive shortcut; archiving stays in the row menu and the archive-view entry', () => {
   const archive = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
-  assert.ok(archive.includes('.sidebar-container [data-pi-session-id]>div:has(>[data-pi-session-archive-action]),.sidebar-container [data-pi-session-id] [data-pi-session-archive-action]{display:none!important}'));
-  assert.match(archive, /function ensureControl\(\)/u);
-  assert.match(archive, /window.addEventListener\('pi-web:archive-session'/u);
+  // lop 2026-09-15 (4c3c575) removed the row shortcut to reclaim title width; the redesign keeps it removed.
+  // The row slot only gets cleaned of buttons left by older script builds, never populated.
+  const decorate = archive.slice(archive.indexOf('function decorateRows()'), archive.indexOf('function sessionRow('));
+  assert.ok(decorate.includes('[data-pi-row-slot] > [data-pi-session-archive-action]")) action.remove();'));
+  assert.ok(!decorate.includes('appendChild'), 'rows are never decorated with an archive button');
+  assert.doesNotMatch(archive, /dataset\.piSessionArchiveAction = "true"/u);
+  assert.match(archive, /function archiveHost\(\)/u);
+  assert.match(archive, /control\.dataset\.piSessionArchiveControl = "true"/u);
+  assert.match(archive, /window\.addEventListener\('pi-web:archive-session'/u);
   assert.doesNotMatch(archive, /\[data-pi-session-archive-control\]\{display:none/u);
 });
 console.log('Context-action fixtures:', root);

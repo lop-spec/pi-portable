@@ -31,15 +31,12 @@ test("archive action is a one-click operation with no confirmation state", () =>
   assert.match(source, /nativeFetch\(`\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{action\}`/u);
   assert.match(source, /forwardedActionEvents\.add\(forwarded\)/u, "the guarded native fallback must remain deduplicated");
   assert.doesNotMatch(source, /button\.innerHTML/u, "decorating a React-owned action must not replace its children and break reconciliation");
-  assert.match(source, /slot\.appendChild\(action\)/u, "the row action is our own button, appended into React's empty [data-pi-row-slot]");
-  assert.match(source, /\[data-pi-session-row\] \[data-pi-row-slot\]/u);
-  assert.match(source, /dataset\.piSessionArchiveMode = mode/u, "archive and restore need distinct semantic glyphs");
-  // Visually collapsed (not display:none) until the row is hovered or holds focus: the button stays
-  // in the tab sequence in both directions and expands as soon as it receives focus.
-  assert.match(source, /\.pw-sess-row:not\(:hover,:focus-within,\.is-menu-open\) \[data-pi-row-slot\]:has\(>\[data-pi-session-archive-action\]\)\{position:absolute;[^}]*clip-path:inset\(50%\)/u,
-    "row actions appear on row hover or keyboard focus within the row");
-  assert.doesNotMatch(source, /\[data-pi-session-archive-action\][^{]*\{display:none/u, "a display:none row action would be unreachable by keyboard");
-  assert.match(source, /action\.tabIndex = tabIndex/u, "only the roving row's action joins the tab sequence");
+  // No per-row shortcut (lop 2026-09-15, 4c3c575): the row ⋯ menu dispatches pi-web:archive-session,
+  // which reuses the same one-click optimistic path; leftovers from older builds are removed from the slot.
+  assert.match(source, /window\.addEventListener\('pi-web:archive-session'/u, "the row menu is the archive entry");
+  assert.match(source, /\[data-pi-session-row\] \[data-pi-row-slot\] > \[data-pi-session-archive-action\]"\)\) action\.remove\(\)/u);
+  assert.doesNotMatch(source, /slot\.appendChild\(action\)/u, "rows are not decorated with an archive shortcut");
+  assert.doesNotMatch(source, /\[data-pi-session-archive-action\][^{]*\{display:none/u, "no display:none rules that would hide keyboard-reachable actions");
   assert.doesNotMatch(source, /oldDeleteTitles|style\.height === "54px"/u, "rows are recognised by data-pi-session-row only");
   assert.doesNotMatch(source, /refresh\.parentElement\.insertBefore/u, "the archive-view control must not become a React-managed sibling");
   assert.doesNotMatch(source, /element\.textContent\s*=/u, "archive decoration must not replace React-owned text nodes");

@@ -819,36 +819,13 @@
     meta.hidden = !archivedView;
   }
 
-  // Row action: one 24px icon button per rendered row, shown on row hover/focus-within (CSS).
-  // Keyboard: only the row whose main button is in the roving tab sequence gets tabIndex 0.
+  // No per-row archive shortcut (lop 2026-09-15「remove row archive shortcut and reclaim title width」,
+  // 4c3c575): archiving goes through the row ⋯ menu (pi-web:archive-session). The empty
+  // [data-pi-row-slot] stays reserved; anything left in it by an older script build is removed.
   function decorateRows() {
     const root = document.querySelector(".sidebar-container");
     if (!root) return;
-    const text = words();
-    const restoring = state.view === "archived";
-    const mode = restoring ? "restore" : "archive";
-    const label = restoring ? text.actionRestore : text.actionArchive;
-    const title = restoring ? text.restoreTitle : text.archiveTitle;
-    for (const slot of root.querySelectorAll("[data-pi-session-row] [data-pi-row-slot]")) {
-      let action = slot.firstElementChild;
-      if (!action) {
-        if (!window.__piUiSlots?.reactOwned(slot)) continue;
-        action = document.createElement("button");
-        action.type = "button";
-        action.className = "pw-icon-btn pw-icon-btn--sm";
-        action.dataset.piSessionArchiveAction = "true";
-        slot.appendChild(action);
-      }
-      if (action.dataset.piSessionArchiveMode !== mode) {
-        action.dataset.piSessionArchiveMode = mode;
-        action.innerHTML = icon(mode);
-      }
-      if (action.title !== title) action.title = title;
-      if (action.getAttribute("aria-label") !== label) action.setAttribute("aria-label", label);
-      const main = slot.closest("[data-pi-session-row]")?.querySelector(".pw-sess-main");
-      const tabIndex = main?.tabIndex === 0 ? 0 : -1;
-      if (action.tabIndex !== tabIndex) action.tabIndex = tabIndex;
-    }
+    for (const action of root.querySelectorAll("[data-pi-session-row] [data-pi-row-slot] > [data-pi-session-archive-action]")) action.remove();
   }
 
   function sessionRow(button) {
