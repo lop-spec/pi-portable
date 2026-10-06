@@ -9,8 +9,8 @@ const read = async (name) => (await readFile(new URL(name, import.meta.url), "ut
 const actionsSource = await read("./PortableContextActions.tsx");
 const switcherSource = await read("./sidebar/ProjectSwitcher.tsx");
 
-const KEY = "c:\\users\\lop\\appdata\\local\\pi-web-redesign\\qa-projects\\qa-f11-54650-renamed";
-const ROOT = "C:\\Users\\lop\\AppData\\Local\\pi-web-redesign\\qa-projects\\qa-f11-54650-renamed";
+const KEY = "c:\\users\\demo\\projects\\renamed-demo";
+const ROOT = "C:\\Users\\demo\\Projects\\renamed-demo";
 
 test("regression: a hidden project with no sessions shows its remembered original-case root, not the lowercase registry key", () => {
   const registry = { projects: [], hidden: [KEY] };

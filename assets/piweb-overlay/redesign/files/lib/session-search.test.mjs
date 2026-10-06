@@ -133,10 +133,10 @@ test("prefilter key is the longest case-safe run, JSON-escaped", () => {
 
 test("finds escaped, mixed-case and non-ASCII-cased text through the byte prefilter", async (t) => {
   const session = fixture(t, [
-    message("toolResult", 'C:\\Users\\Lop "Quoted" ÄPFEL'),
-    { ...message("user", 'open C:\\Users\\Lop and the "Quoted" ÄPFEL\twith tab'), id: "u1" },
+    message("toolResult", 'C:\\Users\\Demo "Quoted" ÄPFEL'),
+    { ...message("user", 'open C:\\Users\\Demo and the "Quoted" ÄPFEL\twith tab'), id: "u1" },
   ]);
-  for (const [query, match] of [["c:\\users\\lop", "C:\\Users\\Lop"], ['"quoted"', '"Quoted"'], ["äpfel", "ÄPFEL"], ["ÄPFEL\twith", "ÄPFEL with"], ["ä", "Ä"]]) {
+  for (const [query, match] of [["c:\\users\\demo", "C:\\Users\\Demo"], ['"quoted"', '"Quoted"'], ["äpfel", "ÄPFEL"], ["ÄPFEL\twith", "ÄPFEL with"], ["ä", "Ä"]]) {
     const result = await searchSessionContents([session], query);
     assert.equal(result.results.length, 1, query);
     assert.equal(result.results[0].entryId, "u1", query);

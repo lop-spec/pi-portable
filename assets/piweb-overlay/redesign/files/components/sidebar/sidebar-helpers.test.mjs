@@ -46,20 +46,20 @@ test("untitled sessions get a readable title instead of a raw error, path or URL
     "中间件-云上与Docker一致性对比清单 看下这个，先将 redis 9412 对齐",
   );
   assert.equal(deriveSessionTitle(undefined, "https://yyh-001.github.io/llm-value-ranking 看看这个榜单", "id"), "yyh-001.github.io/llm-value-ranking 看看这个榜单");
-  assert.equal(deriveSessionTitle(undefined, "C:\\Users\\lop\\Documents\\claude\\memory-archive 里有什么", "id"), "memory-archive 里有什么");
+  assert.equal(deriveSessionTitle(undefined, "C:\\Users\\demo\\Documents\\notes\\archive 里有什么", "id"), "archive 里有什么");
   assert.equal(deriveSessionTitle(undefined, "Error: something broke", "id"), "something broke");
   assert.equal(deriveSessionTitle(undefined, "   ", "0123456789abcdef"), "0123456789ab");
 });
 
 test("project labels prefer the registry name, then the last path segment; short paths fold the home dir", () => {
-  assert.equal(projectLabel({ name: "综合工作台", root: "C:\\x\\y" }), "综合工作台");
-  assert.equal(projectLabel({ root: "C:\\Users\\pi-web\\内容创作\\智能回测\\" }), "智能回测");
+  assert.equal(projectLabel({ name: "示例项目", root: "C:\\x\\y" }), "示例项目");
+  assert.equal(projectLabel({ root: "C:\\Users\\team\\内容库\\回测项目\\" }), "回测项目");
   assert.equal(projectInitial("android"), "A");
-  assert.equal(projectInitial("综合工作台"), "综");
-  assert.equal(shortProjectPath("C:\\Users\\pi-web\\开发工具\\综合工作台", "C:\\Users\\lop"), "pi-web / 开发工具 / 综合工作台");
-  assert.equal(shortProjectPath("C:\\Users\\lop\\Documents\\x", "C:\\Users\\lop"), "~ / Documents / x");
+  assert.equal(projectInitial("示例项目"), "示");
+  assert.equal(shortProjectPath("C:\\Users\\team\\工具\\示例项目", "C:\\Users\\demo"), "team / 工具 / 示例项目");
+  assert.equal(shortProjectPath("C:\\Users\\demo\\Documents\\x", "C:\\Users\\demo"), "~ / Documents / x");
   assert.equal(
-    shortProjectPath("c:\\users\\lop\\AppData\\Local\\pi-web\\data\\workspaces", "C:\\Users\\lop"),
+    shortProjectPath("c:\\users\\demo\\AppData\\Local\\pi-web\\data\\workspaces", "C:\\Users\\demo"),
     "~ / AppData / … / data / workspaces",
   );
   assert.equal(shortProjectPath("/home/me/code/app", "/home/me"), "~ / code / app");
@@ -203,7 +203,7 @@ test("regression: the today/yesterday grouping is re-evaluated at the next local
 
 // ───────── fixw2：删除确认路径比较 + 隐藏/恢复保留原始大小写 root ─────────
 test("regression: the delete confirmation is a whole-path match that ignores Windows case and slash direction", () => {
-  const root = "C:\\Users\\lop\\AppData\\Local\\pi-web-redesign\\qa-projects\\qa-f11-54650-renamed";
+  const root = "C:\\Users\\demo\\Projects\\renamed-demo";
   // QA F11：注册表只剩小写 key，对话框显示全小写；用户按真实大小写输入时按钮一直禁用
   assert.equal(projectPathConfirmed(root, root.toLowerCase()), true);
   assert.equal(projectPathConfirmed(root.toLowerCase(), root), true);
@@ -211,8 +211,8 @@ test("regression: the delete confirmation is a whole-path match that ignores Win
   assert.equal(projectPathConfirmed(root + "\\", root), true);
   assert.equal(projectPathConfirmed("  " + root + "  ", root), true);
   // 仍是整串确认：目录名、父目录、前缀、空串都不行
-  assert.equal(projectPathConfirmed("qa-f11-54650-renamed", root), false);
-  assert.equal(projectPathConfirmed("C:\\Users\\lop", root), false);
+  assert.equal(projectPathConfirmed("renamed-demo", root), false);
+  assert.equal(projectPathConfirmed("C:\\Users\\demo", root), false);
   assert.equal(projectPathConfirmed(root.slice(0, -1), root), false);
   assert.equal(projectPathConfirmed(root + "x", root), false);
   assert.equal(projectPathConfirmed("", root), false);
@@ -224,8 +224,8 @@ test("regression: the delete confirmation is a whole-path match that ignores Win
 });
 
 test("regression: the path sent with a confirmed delete is the project's own root in native form, which the server compares exactly", () => {
-  assert.equal(confirmPathFor("C:/Users/lop/Proj/"), "C:\\Users\\lop\\Proj");
-  assert.equal(confirmPathFor("C:\\Users\\lop\\Proj"), "C:\\Users\\lop\\Proj");
+  assert.equal(confirmPathFor("C:/Users/demo/Proj/"), "C:\\Users\\demo\\Proj");
+  assert.equal(confirmPathFor("C:\\Users\\demo\\Proj"), "C:\\Users\\demo\\Proj");
   assert.equal(confirmPathFor("c:\\"), "c:\\");
   assert.equal(confirmPathFor("//nas/share/proj"), "\\\\nas\\share\\proj");
   assert.equal(confirmPathFor("/srv/app/"), "/srv/app");
@@ -235,12 +235,12 @@ test("regression: hiding a project remembers its original-case root so the hidde
   const store = new Map();
   const storage = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value); } };
   assert.equal(readRememberedRoots(storage).size, 0);
-  rememberProjectRoot("c:\\users\\lop\\myproj", "C:\\Users\\lop\\MyProj", storage);
-  rememberProjectRoot("c:\\users\\lop\\other", "C:\\Users\\lop\\Other", storage);
-  assert.equal(readRememberedRoots(storage).get("c:\\users\\lop\\myproj"), "C:\\Users\\lop\\MyProj");
-  forgetProjectRoot("c:\\users\\lop\\myproj", storage);
-  assert.equal(readRememberedRoots(storage).has("c:\\users\\lop\\myproj"), false);
-  assert.equal(readRememberedRoots(storage).get("c:\\users\\lop\\other"), "C:\\Users\\lop\\Other");
+  rememberProjectRoot("c:\\users\\demo\\myproj", "C:\\Users\\demo\\MyProj", storage);
+  rememberProjectRoot("c:\\users\\demo\\other", "C:\\Users\\demo\\Other", storage);
+  assert.equal(readRememberedRoots(storage).get("c:\\users\\demo\\myproj"), "C:\\Users\\demo\\MyProj");
+  forgetProjectRoot("c:\\users\\demo\\myproj", storage);
+  assert.equal(readRememberedRoots(storage).has("c:\\users\\demo\\myproj"), false);
+  assert.equal(readRememberedRoots(storage).get("c:\\users\\demo\\other"), "C:\\Users\\demo\\Other");
   // 存储损坏或不可用：当作没有，不抛
   store.set("pi-web:hidden-project-roots", "{not json");
   assert.equal(readRememberedRoots(storage).size, 0);

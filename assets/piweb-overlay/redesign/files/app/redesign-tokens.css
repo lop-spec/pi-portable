@@ -5,7 +5,7 @@
  *   选择器优先级：:root(0,1,0) < html.dark(0,1,1) < :root[data-theme=x](0,2,0)，
  *   所以 pine（同时带 html.dark）先拿到暗色的状态色/阴影，再被自己的色板覆盖。
  * - 组件里只用语义变量；状态色只用 --danger/--warning/--success/--info(=--accent)。
- * - 用法说明：C:/Users/lop/AppData/Local/pi-web-redesign/impl/primitives.md
+ * - 用法说明：primitives 速查文档（组件原语的类名、结构与状态）
  */
 
 /* ============ 1. 主题无关：字体、字号、行高、间距、圆角、尺寸、动效 ============ */

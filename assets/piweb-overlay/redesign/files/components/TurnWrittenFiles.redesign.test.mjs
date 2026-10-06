@@ -12,11 +12,11 @@ const render = (props) => renderToStaticMarkup(React.createElement(I18nProvider,
 
 test("labels the row, uses sans chips and shows the folder relative to the project", () => {
   const html = render({
-    cwd: "C:\\Users\\pi-web\\综合工作台",
+    cwd: "C:\\Users\\team\\示例项目",
     files: [
-      { filePath: "C:\\Users\\pi-web\\综合工作台\\next.config.ts" },
-      { filePath: "C:\\Users\\pi-web\\综合工作台\\.tmp\\piweb-fast-deploy.mjs" },
-      { filePath: "c:\\users\\pi-web\\综合工作台\\.tmp\\a\\b\\deep.ts" },
+      { filePath: "C:\\Users\\team\\示例项目\\next.config.ts" },
+      { filePath: "C:\\Users\\team\\示例项目\\.tmp\\piweb-fast-deploy.mjs" },
+      { filePath: "c:\\users\\team\\示例项目\\.tmp\\a\\b\\deep.ts" },
     ],
   });
   assert.match(html, /改动 3 个文件/);

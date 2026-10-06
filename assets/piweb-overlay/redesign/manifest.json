@@ -55,7 +55,7 @@
     },
     "app/redesign-tokens.css": {
       "baseSha": null,
-      "sha": "d903bf5c6c8d5b4866c6030268bb010d0789e45390a1c4cc16f1d606f09259f9"
+      "sha": "de0fa6287d1df08209b865037eb398293ae7fc274ecbadee718c6e7de5fd3ef1"
     },
     "app/settings.css": {
       "baseSha": "84d39d1bcdf36c9cfbb6a2db27321a487350dbd5b754dd867546363732e7cce1",
@@ -231,7 +231,7 @@
     },
     "components/PortableProjects.test.mjs": {
       "baseSha": null,
-      "sha": "65fa14cab8ed1995c61a77bf289f55aaeecc98cf5a1f729773c366d15ac0daca"
+      "sha": "41369b6147e2387d44f56713db1e5a451b0ab5ed5810dc11ff88cf994a032713"
     },
     "components/PortableProjects.tsx": {
       "baseSha": "30981d4d47aeb8b69d0d976f7c1b3a8f8b38c28df4b57b03757dde6f8f75473d",
@@ -343,7 +343,7 @@
     },
     "components/sidebar/sidebar-helpers.test.mjs": {
       "baseSha": null,
-      "sha": "0b5ec8cc9c72da8991581a30884c232b396279c7ee1e6888ad6db1a299ad2a9c"
+      "sha": "ae0ee98d705741caf0f53d6fe2df64644d96600a5f373b63c747f8fbe84f1ac9"
     },
     "components/sidebar/virtual.ts": {
       "baseSha": null,
@@ -359,7 +359,7 @@
     },
     "components/TurnWrittenFiles.redesign.test.mjs": {
       "baseSha": null,
-      "sha": "bb3f5db3110d7e96bc0f9947e4fbbbce1721963a1ca5d371335a5a025d6ffbf0"
+      "sha": "910f7c6c8c8ad8e715bb8439972a43e133312e7e0268b7861e169df3f84a689f"
     },
     "components/TurnWrittenFiles.tsx": {
       "baseSha": "0001c5d1b0ccb41b96e0b969453d1c26abbe31ac4fe325fec83252daf3227507",
@@ -483,7 +483,7 @@
     },
     "lib/session-search.test.mjs": {
       "baseSha": "b7ecb99dcf2166e1f6580262254c0dd6f857d6ba83faee879a5f10994f8e4f0d",
-      "sha": "a702aa80bc32359a15c7a5ddccca4a59c40063427c83758773fe69a07371678f"
+      "sha": "9a16ded6185e936c8355f44661c78ec869002da02b9531de06a28d261bd2e5c8"
     },
     "lib/session-search.ts": {
       "baseSha": "b4756418688ef210c01d4f3be300a7d6bab6e198df61de678064c07188a5c4b1",
