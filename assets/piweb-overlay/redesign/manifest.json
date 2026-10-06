@@ -1,10 +1,6 @@
 {
   "base": "71f882a",
   "files": {
-    "AGENTS.md": {
-      "baseSha": "a2fe60ffa72372c4e10f00ae39176b7db08d37527ae317d1ef18c4197812bd74",
-      "sha": "7a25619ff643d61c0efbb079d723a312b4c3fe63f06ca7321674bc982900b69d"
-    },
     "app/api/files/[...path]/route.ts": {
       "baseSha": "1ea2f102e173ff8aa51856bbe54a160813a9a8d1932b801b94bd4da661d21127",
       "sha": "d10c2fa31060a0f457d7c00c5ba2fb0ee33e5d906232b2d6e0d511ddbd5c8b59"
