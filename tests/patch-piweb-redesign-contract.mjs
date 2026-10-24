@@ -148,14 +148,23 @@ const source = [process.env.PIWEB_SOURCE, path.join(repo, 'upstream'), path.join
 const skip = !source && 'official source checkout required (PIWEB_SOURCE)';
 const stateFile = source && path.join(source, '.pi-portable-overlay.json');
 const state = stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : null;
-const read = name => fs.readFileSync(state?.files[name]?.backup || path.join(source, name), 'utf8');
+const read = name => {
+  const record = state?.files[name];
+  if (record && !record.backup) throw new Error(`Not present in upstream: ${name}`);
+  return fs.readFileSync(record?.backup || path.join(source, name), 'utf8');
+};
 
-test('integrate() twice gives byte-identical results, and every manifest file ends as its template', { skip }, () => {
+test('integrate() twice gives byte-identical results, with pinned templates and pinned history post-processing', { skip }, () => {
   const first = integrate(read);
   const second = integrate(read);
   assert.deepEqual([...second.keys()].sort(), [...first.keys()].sort());
   for (const [name, value] of first) assert.equal(second.get(name), value, `${name} differs between two runs`);
-  for (const [name, entry] of Object.entries(readRedesignManifest().files)) assert.equal(sha(first.get(name)), entry.sha, `${name} is the pinned template`);
+  const history = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/history/manifest.json'), 'utf8'));
+  assert.equal(history.stage, 'history-after-redesign');
+  for (const [name, entry] of Object.entries(readRedesignManifest().files)) {
+    assert.equal(sha(first.get(name)), history.files[name] ?? entry.sha, `${name} is pinned at the final overlay stage`);
+  }
+  for (const [name, expected] of Object.entries(history.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its history output hash`);
 });
 
 test('integrate() refuses a drifted base of a templated file with zero writes', { skip }, () => {

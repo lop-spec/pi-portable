@@ -1,4 +1,5 @@
 // Applied after the pinned redesign, never to compiled chunks.
+import { createHash } from 'node:crypto';
 export function integrateHistory({ get, set, change, prepend, template }) {
   for (const name of ['session-disk-reader.mjs', 'passive-agent-events.mjs', 'ui-message.mjs']) set(`lib/${name}`, template(`history/${name}`));
   set('app/api/sessions/[id]/entries/[entryId]/route.ts', template('history/entry-route.ts'));
@@ -177,4 +178,9 @@ export function integrateHistory({ get, set, change, prepend, template }) {
         {detailError ? <button type="button" onClick={() => setRetry(v => v + 1)}>加载失败，重试</button> : "正在加载工具原文…"}
       </div>}
       {/* ── Expanded: input args (only when no richer view exists) ── */}`);
+  const manifest = JSON.parse(template('history/manifest.json'));
+  for (const [name, expected] of Object.entries(manifest.files)) {
+    const actual = createHash('sha256').update(get(name)).digest('hex');
+    if (actual !== expected) throw new Error(`${name}: history output drift; re-merge and re-pin before integrating; zero writes`);
+  }
 }

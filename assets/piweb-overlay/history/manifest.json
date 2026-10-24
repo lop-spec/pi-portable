@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "stage": "history-after-redesign",
+  "files": {
+    "app/api/agent/[id]/events/route.ts": "dca34bb30c92418106be8332d4585e1a3b102128fe2c390743695e34b26882c6",
+    "app/api/sessions/[id]/context/route.ts": "035ba185bd43c9b480b7b97d8ed0c77cb539594ad6caed2c9e50ad835e276e0b",
+    "app/api/sessions/[id]/entries/[entryId]/route.ts": "1a31462b400459314adcff807f71c00b00675ed991614fdb14b9e0fe73b67684",
+    "app/api/sessions/[id]/entries/[entryId]/thinking/route.ts": "5a7a6ebd53d5d610869195e64cf183693064c7d58d958f299a6257c00364163e",
+    "app/api/sessions/[id]/entries/[entryId]/tool-result-image/route.ts": "82847e84c8a0b19aec4e926fca8ee760b25fd6b374726a30e7df57f418b90260",
+    "app/api/sessions/[id]/route.ts": "4d3d3b71c713517bbb3f892f405e9fa11e11edf6e08ff1550557bd4aed0e50ff",
+    "components/MessageView.tsx": "15c6a8e54969b6e063d8bda8527c1719050a80bd4af9d2603b601d055576e9aa",
+    "components/PortableNodes.tsx": "338080d47b8d2264b98cdb45a8b2d6bca282185aaa76e5d8adcad7ea64e6e3d2",
+    "components/PortableProcessTimeline.tsx": "608352cdf65af6c00faae689695bd4a24c918ad8ede3e215714ec9c124675384",
+    "hooks/useAgentSession.ts": "6c686decbeae932fda1380b0717141e93957860fffca1a4cf0191b3ac2cf2f3a",
+    "lib/agent-event-stream.ts": "5c840abaa6ab4992b79658f4609f1083fe74a837925a2492f0e932c029ff1d23",
+    "lib/agent-event-wire.ts": "4511ae4488bbb6b21d18d6b477b8bab21aa9affdc425ca469582c83084d98ffc",
+    "lib/passive-agent-events.mjs": "3290cf20a62cc7ab1ac1546e8d09483318b23397ee54f6e4bbe0d6af2b46b1a9",
+    "lib/rpc-manager.ts": "a2f225045fba91c52dba3bf290ad5543fbc9bf8fd1d30301e6ad9da305b6761f",
+    "lib/session-disk-reader.mjs": "b8855ff0dfe89c0048e6dd3e327a1f2aa6ea6c9129362f25c9e3ba77a3c152cb",
+    "lib/session-reader.ts": "4620f47e384b0739a42133b967d4d262df4cb7817d0fa125d6d7adee7f77892f",
+    "lib/turn-written-files.ts": "3de194bcfa4ed4fd2dbd80a80d82b91e926f8c0a351de46e8d4ff50a7b34f675",
+    "lib/types.ts": "36092a11c8f60aeb763b6e5e3a2935e12c2041d72e7a3b2182141bd7b49394e4",
+    "lib/ui-message.mjs": "7748c56d0c41657f6dbf835c8c10b0e93221e9753fe503d8511bc09d6c0c06b5"
+  }
+}
