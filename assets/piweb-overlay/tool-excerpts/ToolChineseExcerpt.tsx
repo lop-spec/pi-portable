@@ -11,12 +11,11 @@ export const ToolChineseExcerpt = memo(function ToolChineseExcerpt({ phrases, to
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? phrases : phrases.slice(0, 6);
   return (
-    <div data-entry-id={entryId} data-tool-chinese-excerpt="true">
-      <span className="pw-think-label" title="工具返回文本的中文摘录，不是模型推理；已过滤敏感字段行">工具中文摘录 · {toolName}</span>
-      <p style={{ margin: "4px 0", overflowWrap: "anywhere" }}>{visible.join("；")}</p>
+    <div data-entry-id={entryId} data-tool-chinese-excerpt="true" data-source-kind="tool-output" title={`来源：${toolName} 工具输出`}>
+      {visible.map((text, index) => <p key={index} style={{ margin: "4px 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{text}</p>)}
       {phrases.length > 6 && (
         <button type="button" className="pw-think-fold" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
-          {expanded ? "收起摘录" : `展开其余 ${phrases.length - 6} 条`}
+          {expanded ? "收起摘录" : `展开其余 ${phrases.length - 6} 段`}
         </button>
       )}
     </div>
