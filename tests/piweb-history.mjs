@@ -145,6 +145,20 @@ test('hinted entry reads survive process/cache boundaries and reject forged frag
   assert.equal(await readDiskEntry(file, 'target', new URLSearchParams({ offset: '0', length: '9999999999999' })), null);
 });
 
+test('tail-only metadataPending responses are never cached as final snapshots', async t => {
+  const { SessionReadOffload, fileFingerprint } = await import('../src/piweb-session-read-cache.mjs');
+  const file = await fixture(t, [msg('a', null)]), dataRoot = join(file, '..', 'read-cache');
+  const offload = new SessionReadOffload({ dataRoot, sessionRoot: join(file, '..'), packageRoot: '', env: {}, log() {} });
+  t.after(() => offload.close());
+  const before = await fileFingerprint(file), key = 'fixture-key';
+  const reader = { name: 'stub', read: async () => ({ status: 200, headers: {}, body: Buffer.from('{"metadataPending":true,"context":{"messages":[]}}'), ms: 1, blocked: [] }) };
+  const pending = await offload.compute(reader, 'detail', 'fixture', 'view=chat', key, file, before);
+  assert.equal(pending.source, 'reader-uncached'); assert.equal(await offload.cache.has(key, before.fp), false);
+  reader.read = async () => ({ status: 200, headers: { etag: '"ready"' }, body: Buffer.from('{"snapshotRevision":"ready"}'), ms: 1, blocked: [] });
+  await offload.compute(reader, 'detail', 'fixture', 'view=chat', key, file, before);
+  assert.equal(await offload.cache.has(key, before.fp), true);
+});
+
 test('proxy validates cached ETags without transferring the cached body', async () => {
   const { PiWebUiProxy } = await import('../src/piweb-ui-proxy.mjs');
   let status, ended = false, transmitted = false;

@@ -371,7 +371,14 @@ export class SessionReadOffload {
     }
     if (result.status < 200 || result.status >= 300) return null;
     const after = await fileFingerprint(file);
-    const stable = after?.fp === before.fp && !(result.blocked || []).includes("appendFileSync");
+    let pendingMetadata = false;
+    if (route === "detail" && new URLSearchParams(normalized).get("view") === "chat") {
+      try { pendingMetadata = JSON.parse(result.body.toString("utf8"))?.metadataPending === true; }
+      catch { return null; }
+    }
+    // A tail-only first paint is not an authoritative snapshot. Caching it would
+    // force every later visit through the metadata phase and prevent ETag hits.
+    const stable = after?.fp === before.fp && !pendingMetadata && !(result.blocked || []).includes("appendFileSync");
     if (result.ms > 500) this.log("session-read-offload-slow", { reader: reader.name, route, id, ms: Math.round(result.ms), fileMb: +(before.bytes / 1048576).toFixed(1), cached: stable });
     if (!stable) return { status: result.status, headers: result.headers, body: result.body, encoded: new Map(), source: "reader-uncached" };
     const entry = await this.cache.put(key, before.fp, result.status, result.headers, result.body);
