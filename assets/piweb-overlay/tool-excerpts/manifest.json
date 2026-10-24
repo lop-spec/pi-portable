@@ -1,0 +1,9 @@
+{
+  "stage": "tool-excerpts-after-immediate-stop",
+  "files": {
+    "components/PortableProcessTimeline.tsx": "da75c964534fe9f09356e4742589bf6aa27615833db4cc61b269f58bd2140c4d",
+    "lib/session-reader.ts": "91e2329b0ac02a5e8e9bf32f33647dad448a487f11ec16f83783f388b9b32c42",
+    "lib/tool-chinese-excerpts.mjs": "0c0e3994948500b98cdc29e99bc741f1d232e636c8d48e6e08427526b625041d",
+    "components/ToolChineseExcerpt.tsx": "b7c931c323a26a71c1d61f7462100e80f77baf6fa3b8dbf0e7b5095667db5a09"
+  }
+}

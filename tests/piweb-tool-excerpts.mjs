@@ -1,0 +1,99 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { createRequire } from 'node:module';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { toolChineseExcerpts, newToolChineseExcerpts } from '../assets/piweb-overlay/tool-excerpts/tool-chinese-excerpts.mjs';
+import { integrateToolExcerpts } from '../tools/patch-piweb-tool-excerpts.mjs';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const result = text => ({ role: 'toolResult', toolCallId: 'call', content: [{ type: 'text', text }] });
+test('only continuous 5+ Han characters; punctuation/Latin/digits break runs', () => {
+  assert.deepEqual(toolChineseExcerpts(result('四个汉字，五个中文字；检查ABC已经通过验证 这是123中文输出片段')), ['五个中文字', '已经通过验证', '中文输出片段']);
+});
+test('deduplicates within a result and then within a turn, preserving first appearance', () => {
+  const seen = new Set();
+  assert.deepEqual(newToolChineseExcerpts(result('第一条中文摘录；第一条中文摘录'), seen), ['第一条中文摘录']);
+  assert.deepEqual(newToolChineseExcerpts(result('第一条中文摘录；第二条中文摘录'), seen), ['第二条中文摘录']);
+  assert.deepEqual(newToolChineseExcerpts(result('第一条中文摘录'), new Set()), ['第一条中文摘录']);
+});
+test('never reads assistant reasoning, tool arguments, images or private metadata', () => {
+  assert.deepEqual(toolChineseExcerpts({ role: 'assistant', content: [{ type: 'thinking', thinking: '这段内容不可提取' }] }), []);
+  assert.deepEqual(toolChineseExcerpts({ ...result(''), content: [{ type: 'image', text: '这是图像里的文字' }], thinking: '这段内容不可提取', arguments: { text: '这段内容不可提取' } }), []);
+});
+test('sensitive lines are excluded; other lines stay verbatim', () => {
+  assert.deepEqual(toolChineseExcerpts(result('密码说明不要展示\n检查结果已经通过\nAuthorization: 这段内容不可展示\n密钥检查不要展示')), ['检查结果已经通过']);
+});
+test('full-result extraction survives the shortened history preview', () => {
+  const raw = result('x'.repeat(3000) + '\n末尾检查结果已经通过');
+  const slim = { ...raw, content: [{ type: 'text', text: 'x'.repeat(500) }], chatView: { chineseExcerpts: toolChineseExcerpts(raw) } };
+  assert.deepEqual(toolChineseExcerpts(slim), ['末尾检查结果已经通过']);
+});
+test('untrusted saved values cannot inject markup or non-Chinese tokens', () => {
+  assert.deepEqual(toolChineseExcerpts({ ...result(''), chatView: { chineseExcerpts: ['检查结果已经通过', '<img src=x>', '短语', '五个中文字', null] } }), ['检查结果已经通过', '五个中文字']);
+});
+test('cache is read-only and replacement streaming results get new excerpts', () => {
+  const raw = result('检查结果已经通过'), snapshot = JSON.stringify(raw);
+  assert.equal(toolChineseExcerpts(raw), toolChineseExcerpts(raw));
+  assert.equal(JSON.stringify(raw), snapshot);
+  assert.deepEqual(toolChineseExcerpts({ ...raw, content: [{ type: 'text', text: '新增第二条检查结果' }] }), ['新增第二条检查结果']);
+});
+function integratedFixture() {
+  const files = new Map([
+    ['components/PortableProcessTimeline.tsx', fs.readFileSync(path.join(root, 'assets/piweb-overlay/redesign/files/components/PortableProcessTimeline.tsx'), 'utf8').replaceAll('\r\n', '\n').replace('portableLoadThinkingContent(sessionId, entryId, blockIndex)', 'portableLoadThinkingContent(sessionId, entryId, blockIndex, block.entryQuery)')],
+    ['lib/session-reader.ts', 'chatView: { bytes: number; images: number; truncated: boolean }\nchatView: { bytes, images, truncated: text.length > CHAT_VIEW_PREVIEW_CHARS || images > 0 },'],
+  ]);
+  integrateToolExcerpts({
+    get: name => files.get(name), set: (name, text) => files.set(name, text),
+    prepend: (name, text) => { const s = files.get(name); files.set(name, s.startsWith('"use client";\n') ? s.replace('"use client";\n', '"use client";\n' + text) : text + s); },
+    change: (name, old, text) => { const s = files.get(name); assert.equal(s.split(old).length - 1, 1, name + ': unique anchor'); files.set(name, s.replace(old, text)); },
+    template: name => name === 'tool-excerpts/manifest.json' ? '{"files":{}}' : fs.readFileSync(path.join(root, 'assets/piweb-overlay', name), 'utf8').replaceAll('\r\n', '\n'),
+  });
+  return files;
+}
+test('history and live views share the labelled renderer, memo observes new tool results', () => {
+  const files = integratedFixture(), timeline = files.get('components/PortableProcessTimeline.tsx');
+  assert.match(timeline, /toolName=\{item.toolName\}/);
+  assert.match(timeline, /modelNames, toolResults\), \[entries, searchBlock, modelNames, toolResults\]/);
+  assert.match(files.get('lib/session-reader.ts'), /chineseExcerpts: toolChineseExcerpts\(result\)/);
+  assert.doesNotMatch(files.get('components/ToolChineseExcerpt.tsx'), /innerHTML|MarkdownBody|fetch\(/);
+});
+const source = [process.env.PIWEB_SOURCE, path.join(root, 'upstream')].find(p => p && fs.existsSync(path.join(p, 'node_modules/typescript')));
+function loadTs(text, imports, filename) {
+  const require = createRequire(path.join(source, 'package.json'));
+  const ts = require('typescript');
+  const js = ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const exports = {};
+  vm.runInNewContext(js, { exports, require: id => imports[id] ?? require(id), console, setInterval, clearInterval, setTimeout, clearTimeout }, { filename });
+  return exports;
+}
+test('timeline emits excerpts for hidden tool calls, not narration/thinking; live replacements update', { skip: !source }, () => {
+  const display = loadTs(fs.readFileSync(path.join(root, 'assets/piweb-overlay/redesign/files/lib/message-display.ts'), 'utf8'), {}, 'message-display.ts');
+  const component = loadTs(integratedFixture().get('components/PortableProcessTimeline.tsx'), {
+    './MessageView': { getModelDisplayName: () => 'Model' },
+    './ToolChineseExcerpt': {}, './conversation/ErrorNotice': {}, './conversation/icons': {},
+    '@/lib/tool-chinese-excerpts.mjs': { newToolChineseExcerpts }, '@/lib/message-display': display,
+    '@/lib/apply-patch': {}, '@/lib/tool-names': {},
+  }, 'PortableProcessTimeline.tsx');
+  const entries = [{ kind: 'assistant', key: 'a', entryId: 'a', message: { role: 'assistant', content: [{ type: 'toolCall', toolCallId: 'call', toolName: 'read' }] } }];
+  assert.equal(component.buildTimelineItems(entries).length, 0);
+  const results = new Map([['call', result('检查结果已经通过')]]);
+  let items = component.buildTimelineItems(entries, () => false, undefined, results);
+  assert.equal(items.length, 1); assert.equal(items[0].type, 'tool-excerpt');
+  assert.deepEqual([...items[0].phrases], ['检查结果已经通过']);
+  assert.equal(component.summarizeTimelineItems(items).thinking, 0);
+  assert.equal(component.summarizeTimelineItems(items).narration, 0);
+  results.set('call', result('新增第二条检查结果'));
+  items = component.buildTimelineItems(entries, () => false, undefined, results);
+  assert.deepEqual([...items[0].phrases], ['新增第二条检查结果']);
+});
+test('real React renders a separate source label and six phrases by default without commands', { skip: !source }, () => {
+  const require = createRequire(path.join(source, 'package.json'));
+  const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
+  const { ToolChineseExcerpt } = loadTs(integratedFixture().get('components/ToolChineseExcerpt.tsx'), {}, 'ToolChineseExcerpt.tsx');
+  const phrases = Array.from({ length: 10 }, (_, i) => '检查结果已经通过' + String.fromCharCode(0x4e00 + i));
+  const html = renderToStaticMarkup(React.createElement(ToolChineseExcerpt, { phrases, toolName: 'read' }));
+  assert.match(html, /工具中文摘录/); assert.match(html, /展开其余 4 条/);
+  assert.ok(html.includes(phrases[5])); assert.ok(!html.includes(phrases[6]));
+});
