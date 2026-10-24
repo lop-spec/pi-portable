@@ -161,10 +161,13 @@ test('integrate() twice gives byte-identical results, with pinned templates and 
   for (const [name, value] of first) assert.equal(second.get(name), value, `${name} differs between two runs`);
   const history = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/history/manifest.json'), 'utf8'));
   assert.equal(history.stage, 'history-after-redesign');
+  const stop = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/immediate-stop/manifest.json'), 'utf8'));
+  assert.equal(stop.stage, 'immediate-stop-after-history');
+  for (const [name, expected] of Object.entries(stop.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its stop-stage output hash`);
   for (const [name, entry] of Object.entries(readRedesignManifest().files)) {
-    assert.equal(sha(first.get(name)), history.files[name] ?? entry.sha, `${name} is pinned at the final overlay stage`);
+    assert.equal(sha(first.get(name)), stop.files[name] ?? history.files[name] ?? entry.sha, `${name} is pinned at the final overlay stage`);
   }
-  for (const [name, expected] of Object.entries(history.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its history output hash`);
+  for (const [name, expected] of Object.entries(history.files)) assert.equal(sha(first.get(name)), stop.files[name] ?? expected, `${name} matches its final output hash`);
 });
 
 test('integrate() refuses a drifted base of a templated file with zero writes', { skip }, () => {
