@@ -78,6 +78,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           node tests/launcher-portable-node-contract.mjs
           node --test tests/piweb-source-release-contract.mjs
+          node --test tests/piweb-history.mjs
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node tests/browser-background-contract.mjs
@@ -195,6 +196,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "source integration contracts failed" }
           node tools/patch-piweb-source.mjs --source upstream
           if ($LASTEXITCODE -ne 0) { throw "source integration failed" }
+          node --test tests/piweb-history-integration.mjs
+          if ($LASTEXITCODE -ne 0) { throw "history loading regression" }
           node --test tests/piweb-image-output.mjs
           if ($LASTEXITCODE -ne 0) { throw "image output contracts failed" }
           Push-Location upstream

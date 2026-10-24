@@ -10,6 +10,7 @@ import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { appendLineRotating } from "./log-rotate.mjs";
 import { AccountLogin } from "./account-login.mjs";
+import { SessionReadOffload, matchSessionRead } from "./piweb-session-read-cache.mjs";
 
 export const PIWEB_UI_PROXY_VERSION = "piweb-ui-proxy-v2";
 export const PIWEB_ARCHIVE_VERSION = "piweb-session-archive-v9";
@@ -366,6 +367,24 @@ export class PiWebUiProxy {
     this.server = null;
     this.proxyServer = null;
     this.closed = false;
+    // 会话详情读取分流：空闲会话的 GET /api/sessions/<id>(/context) 在只读子进程里算并按文件指纹缓存，
+    // pi-web 主进程不再被大会话的同步解析冻结（实测 242 MB 会话把所有请求卡住 4–25 s）。
+    this.sessionReads = options.sessionReadOffload === false ? null : new SessionReadOffload({
+      dataRoot,
+      sessionRoot: this.sessionRoot,
+      packageRoot: options.sessionReaderPackageRoot ?? this.piWebPackageRoot,
+      readerScript: options.sessionReaderScript,
+      env: {
+        ...process.env,
+        PI_PORTABLE_DATA: dataRoot,
+        PI_CODING_AGENT_DIR: path.dirname(this.sessionRoot), // = DATA/.pi/agent，与 pi-web 相同
+        HOME: dataRoot, USERPROFILE: dataRoot, // 与 launcher 给 pi-web 的环境一致
+        NODE_ENV: "production",
+      },
+      log: (event, detail) => this.log(event, detail),
+    });
+    this.readRunning = { ids: new Set(), at: 0, probe: null };
+    this.sessionReadWarmAt = 0;
     this.accountLogin = options.accountLogin || new AccountLogin({
       dataRoot,
       log: (event, detail) => this.log(event, detail),
@@ -968,6 +987,7 @@ export class PiWebUiProxy {
       if (cached?.version !== 1 || !Array.isArray(cached?.body?.sessions)) throw new Error("unsupported cache schema");
       this.bootstrapSessionList = cached.body;
       this.sessionCatalogue = cached.body.sessions;
+      this.sessionReads?.setCatalogue(cached.body.sessions);
       this.sessionCatalogueAt = Number(cached.savedAtMs) || 0;
       if (Array.isArray(cached.body.runningSessionIds)) this.runningIds = new Set(cached.body.runningSessionIds.map(String));
       return this.bootstrapSessionList;
@@ -1059,9 +1079,62 @@ export class PiWebUiProxy {
 
   acceptFreshSessionList(body, raw = null) {
     this.sessionCatalogue = body.sessions;
+    this.sessionReads?.setCatalogue(body.sessions);
     this.sessionCatalogueAt = this.now();
     if (Array.isArray(body.runningSessionIds)) this.runningIds = new Set(body.runningSessionIds.map(String));
     this.scheduleSessionListPersist(body, raw);
+    this.scheduleSessionReadWarm();
+  }
+
+  // Warm at most every 30 s, from the newest catalogue, active (non-archived) idle sessions only.
+  scheduleSessionReadWarm(force = false) {
+    if (!this.sessionReads?.enabled || this.closed) return;
+    const now = this.now();
+    if (!force && now - this.sessionReadWarmAt < 30_000) return;
+    this.sessionReadWarmAt = now;
+    this.sessionReads.scheduleWarm(() => ({
+      sessions: this.archiveStore.partition(this.sessionCatalogue).active,
+      runningIds: new Set([...this.runningIds, ...this.readRunning.ids]),
+    }));
+  }
+
+  // Running sessions stay on pi-web (their state is in its memory). A probe answers in a few ms; when
+  // pi-web is busy the last known set is used rather than waiting behind it.
+  async runningForRead(maxWaitMs = 200) {
+    const state = this.readRunning;
+    if (this.now() - state.at < 500) return state.ids;
+    if (!state.probe) {
+      state.probe = this.fetchRunning()
+        .then((ids) => { state.ids = ids; state.at = this.now(); this.runningIds = ids; })
+        .catch(() => {})
+        .finally(() => { state.probe = null; });
+    }
+    let timer;
+    await Promise.race([state.probe, new Promise((resolve) => { timer = setTimeout(resolve, maxWaitMs); })]);
+    clearTimeout(timer);
+    return new Set([...state.ids, ...this.runningIds]);
+  }
+
+  async handleSessionRead(request, response, parsedUrl, match) {
+    let id;
+    try { id = decodeURIComponent(match.encodedId); } catch { return this.streamProxy(request, response); }
+    const running = await this.runningForRead();
+    if (running.has(id)) return this.streamProxy(request, response);
+    let result = null;
+    try { result = await this.sessionReads.read(match.route, id, parsedUrl.searchParams); }
+    catch (error) { this.log("session-read-offload-error", { route: match.route, id, reason: normalizeError(error?.message || error) }); }
+    if (!result) {
+      this.sessionReads.stats.fallback += 1;
+      return this.streamProxy(request, response);
+    }
+    if (response.destroyed) return;
+    const headers = { ...result.headers, "cache-control": "no-store", "x-pi-session-read": result.source };
+    if (result.headers.etag && String(request.headers["if-none-match"] || "").split(",").map((tag) => tag.trim()).includes(result.headers.etag)) {
+      response.writeHead(304, headers);
+      response.end();
+      return;
+    }
+    await this.sendBuffer(request, response, result.status, headers, result.body, { encoded: result.encoded });
   }
 
   refreshSessionListInBackground() {
@@ -1119,6 +1192,7 @@ export class PiWebUiProxy {
     // summary=1 rows are placeholders (detailsPending): they must not become the archive
     // catalogue or overwrite the persisted startup snapshot.
     if (!summary) this.acceptFreshSessionList(entry.body, upstreamResult.body);
+    else this.sessionReads?.setCatalogue(entry.body.sessions); // placeholder rows still carry the session file path
     await this.sendSessionList(request, response, upstreamResult.status, upstreamResult.headers, entry, parsedUrl, entry.reused ? "fresh-reused" : "fresh");
   }
 
@@ -1131,6 +1205,7 @@ export class PiWebUiProxy {
     const body = await response.json();
     if (!Array.isArray(body?.sessions)) throw new Error("sessions response has no catalogue");
     this.sessionCatalogue = body.sessions;
+    this.sessionReads?.setCatalogue(body.sessions);
     this.sessionCatalogueAt = this.now();
     return body.sessions;
   }
@@ -1358,6 +1433,8 @@ export class PiWebUiProxy {
     const legacyArchive = /^\/api\/sessions\/([^/]+)$/u.exec(parsedUrl.pathname);
     if (request.method === "POST" && explicitArchive) return this.handleArchiveMutation(request, response, explicitArchive[2], explicitArchive[1]);
     if (request.method === "DELETE" && legacyArchive) return this.handleArchiveMutation(request, response, "archive", legacyArchive[1]);
+    const sessionRead = this.sessionReads?.enabled ? matchSessionRead(request.method, parsedUrl.pathname) : null;
+    if (sessionRead) return this.handleSessionRead(request, response, parsedUrl, sessionRead);
 
     const acceptsHtml = String(request.headers.accept || "").toLowerCase().includes("text/html");
     if (request.method === "GET" && !parsedUrl.pathname.startsWith("/api/") && !parsedUrl.pathname.startsWith("/_next/") && (parsedUrl.pathname === "/" || acceptsHtml)) {
@@ -1380,6 +1457,7 @@ export class PiWebUiProxy {
       recoveryDispatch: false,
       goalStateConsumer: false,
       agentRequests: "byte-stream-pass-through",
+      sessionReadOffload: this.sessionReads?.enabled ? { ...this.sessionReads.stats } : false,
     };
   }
 
@@ -1411,12 +1489,20 @@ export class PiWebUiProxy {
       this.server.listen(this.healthPort, "127.0.0.1", resolve);
     });
     this.log("started", this.health());
+    if (this.sessionReads?.enabled) {
+      // Reader ready before the first click (module load ~0.5 s); warm from the persisted catalogue.
+      this.sessionReads.reader.start().catch(() => {});
+      this.loadBootstrapSessionList();
+      const warmTimer = setTimeout(() => this.scheduleSessionReadWarm(true), 3_000);
+      warmTimer.unref?.();
+    }
     return this.health();
   }
 
   async close() {
     this.closed = true;
     this.accountLogin.close();
+    this.sessionReads?.close();
     const closeServer = (server) => new Promise((resolve) => {
       if (!server?.listening) return resolve();
       server.close(() => resolve());

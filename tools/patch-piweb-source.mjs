@@ -16,6 +16,7 @@ import { integrateModelMenu } from './patch-piweb-model-menu.mjs';
 import { integrateProcessTimeline } from './patch-piweb-process-timeline.mjs';
 import { integrateComposerLayout } from './patch-piweb-composer-layout.mjs';
 import { integrateRedesign } from './patch-piweb-redesign.mjs';
+import { integrateHistory } from './patch-piweb-history.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -350,6 +351,7 @@ export function integrate(getFile) {
   set('package.json', JSON.stringify(pkg, null, 2) + '\n');
   // Whole-file templates of the 2026-10 front-end rewrite go last: their pinned bases are the output above.
   integrateRedesign({ get, set });
+  integrateHistory({ get, set, change, prepend, template });
   return files;
 }
 

@@ -11,7 +11,11 @@ const source = [process.env.PIWEB_SOURCE, path.join(repo, 'upstream'), path.join
 if (!source) throw new Error('Official source checkout required: set PIWEB_SOURCE (CI uses upstream/)');
 const stateFile = path.join(source, '.pi-portable-overlay.json');
 const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : null;
-const read = name => fs.readFileSync(state?.files[name]?.backup || path.join(source, name), 'utf8');
+const read = name => {
+  const record = state?.files[name];
+  if (record && !record.backup) throw new Error(`Not present in upstream: ${name}`);
+  return fs.readFileSync(record?.backup || path.join(source, name), 'utf8');
+};
 const integrated = integrate(read);
 const runtime = integrated.get('lib/pi-portable-runtime.js').replace(/^export /gm, '');
 const helpers = vm.runInNewContext(`${runtime};({ collectConversationNodeRecords, filterSessionsForWorktree, getClipboardPastePlan, readPreference, rememberPreference })`, { console, window: {}, localStorage: { getItem: () => null, setItem() {} } });
@@ -75,7 +79,9 @@ test('Q/A nodes exclude intermediate tool/error turns without transporting messa
   assert.match(route, /records.map\(\(\{ role, text, fullText, entryId \}\) => \(\{ role, text, fullText, entryId \}\)\)/);
   const nodes = integrated.get('components/PortableNodes.tsx');
   assert.match(nodes, /nodes.slice\(start, start \+ 24\)/);
-  assert.match(nodes, /\[sessionId, leafId\]/);
+  assert.match(nodes, /\[sessionId, leafId, open\]/);
+  assert.match(nodes, /if \(open\) run\(\)/);
+  assert.doesNotMatch(nodes, /requestIdleCallback|setTimeout\(run/);
   assert.doesNotMatch(nodes, /setInterval|\/api\/agent/);
 });
 
