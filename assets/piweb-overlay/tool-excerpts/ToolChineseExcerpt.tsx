@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 
 /** Extracted source text, explicitly NOT the assistant's reasoning. */
 export const ToolChineseExcerpt = memo(function ToolChineseExcerpt({ phrases, toolName, entryId, replyActive = false }: {
@@ -17,13 +17,24 @@ export const ToolChineseExcerpt = memo(function ToolChineseExcerpt({ phrases, to
     setWasReplyActive(replyActive);
     if (wasReplyActive && !replyActive) setExpanded(false);
   }
-  const visible = expanded ? phrases : phrases.slice(0, 6);
+  const text = phrases.join("\n\n");
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content || expanded) return;
+    const measure = () => setOverflowing(content.scrollHeight > content.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [text, expanded]);
   return (
     <div data-entry-id={entryId} data-tool-chinese-excerpt="true" data-source-kind="tool-output" title={`来源：${toolName} 工具输出`}>
-      {visible.map((text, index) => <p key={index} style={{ margin: "4px 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{text}</p>)}
-      {phrases.length > 6 && (
+      <div ref={contentRef} data-tool-excerpt-content="true" style={{ margin: "4px 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere", display: expanded ? "block" : "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: expanded ? "unset" : 2, overflow: "hidden" }}>{text}</div>
+      {overflowing && (
         <button type="button" className="pw-think-fold" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
-          {expanded ? "收起摘录" : `展开其余 ${phrases.length - 6} 段`}
+          {expanded ? "收起摘录" : "展开摘录"}
         </button>
       )}
     </div>

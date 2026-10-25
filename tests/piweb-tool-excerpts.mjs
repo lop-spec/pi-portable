@@ -90,7 +90,7 @@ function loadTs(text, imports, filename) {
   const ts = require('typescript');
   const js = ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports = {};
-  vm.runInNewContext(js, { exports, require: id => imports[id] ?? require(id), console, setInterval, clearInterval, setTimeout, clearTimeout }, { filename });
+  vm.runInNewContext(js, { exports, require: id => imports[id] ?? require(id), console, setInterval, clearInterval, setTimeout, clearTimeout, ResizeObserver: imports.ResizeObserver }, { filename });
   return exports;
 }
 test('timeline emits excerpts for hidden tool calls, not narration/thinking; live replacements update', { skip: !source }, () => {
@@ -115,7 +115,7 @@ test('timeline emits excerpts for hidden tool calls, not narration/thinking; liv
 });
 test('manual expansion survives tool updates, resets once on reply completion, and can reopen afterwards', { skip: !source }, () => {
   const values = []; let cursor = 0, dirty = false;
-  const react = { memo: fn => fn, useState(initial) {
+  const react = { memo: fn => fn, useRef: () => ({ current: null }), useLayoutEffect() {}, useState(initial) {
     const index = cursor++;
     if (!(index in values)) values[index] = initial;
     return [values[index], value => { const next = typeof value === 'function' ? value(values[index]) : value; if (next !== values[index]) { values[index] = next; dirty = true; } }];
@@ -123,6 +123,8 @@ test('manual expansion survives tool updates, resets once on reply completion, a
   const jsx = (type, props) => ({ type, props });
   const { ToolChineseExcerpt } = loadTs(integratedFixture().get('components/ToolChineseExcerpt.tsx'), { react, 'react/jsx-runtime': { jsx, jsxs: jsx } }, 'ToolChineseExcerpt.tsx');
   const phrases = Array.from({ length: 9 }, (_, i) => `检查结果已经通过${i}`);
+  // Layout itself is covered in the daily-browser test; keep overflow available here.
+  values[2] = true;
   const render = replyActive => { let tree; do { cursor = 0; dirty = false; tree = ToolChineseExcerpt({ phrases, toolName: 'read', replyActive }); } while (dirty); return tree; };
   const button = tree => tree.props.children[1];
   let tree = render(true); assert.equal(button(tree).props['aria-expanded'], false);
@@ -133,14 +135,41 @@ test('manual expansion survives tool updates, resets once on reply completion, a
   tree = render(false); assert.equal(button(tree).props['aria-expanded'], true);
   tree = render(true); tree = render(false); assert.equal(button(tree).props['aria-expanded'], false);
 });
-test('real React shows complete paragraphs without repeated visible source labels; provenance is hover-only', { skip: !source }, () => {
+test('real React clamps each tool output to two visual lines, preserving all source text for expansion', { skip: !source }, () => {
   const require = createRequire(path.join(source, 'package.json'));
   const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
   const { ToolChineseExcerpt } = loadTs(integratedFixture().get('components/ToolChineseExcerpt.tsx'), {}, 'ToolChineseExcerpt.tsx');
   const phrases = Array.from({ length: 10 }, (_, i) => '检查结果已经通过' + String.fromCharCode(0x4e00 + i));
   const html = renderToStaticMarkup(React.createElement(ToolChineseExcerpt, { phrases, toolName: 'read' }));
-  assert.doesNotMatch(html, /工具中文摘录/); assert.match(html, /展开其余 4 段/);
+  assert.doesNotMatch(html, /工具中文摘录|展开其余/);
   assert.match(html, /title="来源：read 工具输出"/);
-  assert.equal((html.match(/<p /gu) ?? []).length, 6);
-  assert.ok(html.includes(phrases[5])); assert.ok(!html.includes(phrases[6]));
+  assert.match(html, /data-tool-excerpt-content="true"/);
+  assert.match(html, /display:-webkit-box/);
+  assert.match(html, /-webkit-line-clamp:2/);
+  assert.match(html, /white-space:pre-wrap/);
+  for (const phrase of phrases) assert.ok(html.includes(phrase));
+});
+test('overflow reacts to long single paragraphs, streaming replacements and viewport resize', { skip: !source }, () => {
+  const values = []; let cursor = 0, dirty = false, effect, resized;
+  const content = { scrollHeight: 60, clientHeight: 40 };
+  const react = { memo: fn => fn, useRef: () => ({ current: content }), useLayoutEffect: callback => { effect = callback; }, useState(initial) {
+    const index = cursor++;
+    if (!(index in values)) values[index] = initial;
+    return [values[index], value => { const next = typeof value === 'function' ? value(values[index]) : value; if (next !== values[index]) { values[index] = next; dirty = true; } }];
+  } };
+  const jsx = (type, props) => ({ type, props });
+  const component = loadTs(integratedFixture().get('components/ToolChineseExcerpt.tsx'), {
+    react, 'react/jsx-runtime': { jsx, jsxs: jsx }, ResizeObserver: class { constructor(callback) { resized = callback; } observe() {} disconnect() {} },
+  }, 'ToolChineseExcerpt.tsx').ToolChineseExcerpt;
+  const render = text => { let tree; do { cursor = 0; dirty = false; tree = component({ phrases: [text], toolName: 'read' }); effect(); } while (dirty); return tree; };
+  let tree = render('这是一段没有空行但会换行的超长工具输出。');
+  assert.equal(tree.props.children[0].props.style.WebkitLineClamp, 2);
+  assert.equal(tree.props.children[1].props['aria-expanded'], false);
+  tree.props.children[1].props.onClick(); tree = render('更新后的完整工具输出。');
+  assert.equal(tree.props.children[0].props.style.WebkitLineClamp, 'unset');
+  assert.equal(tree.props.children[1].props['aria-expanded'], true);
+  tree.props.children[1].props.onClick(); content.scrollHeight = 40; tree = render('只有两行以内的工具输出。');
+  assert.equal(tree.props.children[1], false);
+  content.scrollHeight = 80; resized(); tree = render('窄屏重新换行后的工具输出。');
+  assert.equal(tree.props.children[1].props['aria-expanded'], false);
 });
