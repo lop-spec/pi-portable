@@ -1,10 +1,11 @@
-param([Parameter(Mandatory=$true)][string]$Helper,[Parameter(Mandatory=$true)][string]$AuditRoot,[Parameter(Mandatory=$true)][string]$Node)
+param([Parameter(Mandatory=$true)][string]$Helper,[Parameter(Mandatory=$true)][string]$AuditRoot,[Parameter(Mandatory=$true)][string]$Node,[string]$DataRoot='')
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $root=Split-Path -Parent $PSScriptRoot
 $name='PiWeb-AutoArchive-0500'
 . $Helper
-$arguments='"'+$root+'/src/piweb-auto-archive.mjs"'
+if(-not $DataRoot){$DataRoot=$root+'/data'}
+$arguments='"'+$root+'/src/piweb-auto-archive.mjs" "'+$DataRoot+'"'
 $action=New-SilentScheduledTaskAction -Executable $Node -Arguments $arguments -WorkingDirectory $root
 $old=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
 if($old){throw 'Auto archive task already exists; inspect before replacing'}

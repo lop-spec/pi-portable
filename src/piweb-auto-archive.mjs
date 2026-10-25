@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { runAutoArchive } from '../assets/piweb-overlay/redesign/files/lib/portable-auto-archive.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const data = process.env.PI_PORTABLE_DATA || path.join(root, 'data');
+const data = process.argv[2] || process.env.PI_PORTABLE_DATA || path.join(root, 'data');
 const agentDir = path.join(data, '.pi', 'agent');
 const logFile = path.join(data, 'piweb-auto-archive.log');
 const log = (record) => { fs.mkdirSync(data, { recursive: true }); fs.appendFileSync(logFile, JSON.stringify({ at: new Date().toISOString(), host: os.hostname(), ...record }) + '\n'); };
