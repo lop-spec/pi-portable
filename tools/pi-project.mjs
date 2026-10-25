@@ -8,7 +8,7 @@ import { atomicWrite } from '../assets/piweb-overlay/portable-project-store.mjs'
 export async function run(argv = process.argv.slice(2)) {
   const [action] = argv;
   const arg = name => { const i = argv.indexOf('--' + name); return i < 0 ? undefined : argv[i + 1]; };
-  if (!['create', 'move', 'list'].includes(action)) throw new Error('用法：pi-project.mjs create --project 名称 | move --session ID --project 名称 [--defer] [--preserve-cwd] | list');
+  if (!['create', 'move', 'merge', 'list'].includes(action)) throw new Error('用法：pi-project.mjs create --project 名称 | move --session ID --project 名称 [--defer] [--preserve-cwd] | merge --project 合并后的名称 | list');
   const agentDir = arg('agent-dir') ?? process.env.PI_CODING_AGENT_DIR ?? path.join(os.userInfo().homedir, '.pi', 'agent');
   let id = arg('session') ?? process.env.PI_SESSION_ID;
   if (id?.endsWith('.jsonl')) id = path.basename(id).replace(/^.*_([^_]+)\.jsonl$/, '$1');
@@ -26,12 +26,12 @@ export async function run(argv = process.argv.slice(2)) {
       const raw = await response.text();
       let data; try { data = JSON.parse(raw); } catch { throw new Error('项目路由尚未上线，HTTP ' + response.status); }
       if (!response.ok) {
-        if (!deferred || ![404, 409, 503].includes(response.status)) throw new Error(data.error ?? 'HTTP ' + response.status);
+        if (!deferred || ![404, 409, 503].includes(response.status) || response.status === 409 && data.retryable === false) throw Object.assign(new Error(data.error ?? 'HTTP ' + response.status), { permanent: true });
       } else {
         if (queueFile) fs.rmSync(queueFile, { force: true });
         return data;
       }
-    } catch (error) { if (!deferred || Date.now() >= until) throw error; }
+    } catch (error) { if (error.permanent || !deferred || Date.now() >= until) throw error; }
     await new Promise(resolve => setTimeout(resolve, 2000));
   } while (Date.now() < until);
   throw new Error('归属仍在队列中：' + queueFile);

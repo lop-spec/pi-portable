@@ -1,15 +1,18 @@
 # 项目与对话
 
-左侧直接展开项目和对话；新对话先进入独立收件区，收件区不登记为项目。
+左侧直接展开项目和对话；新对话先进入独立收件区，收件区不登记为项目。项目总数最多 8 个，包含隐藏项目。
 首轮正常回复末尾的 `<归属 项目="项目名">对话标题</归属>` 由扩展收走，回复完成后运行脚本；不新增模型调用或工具轮次。
 
 ```sh
 node tools/pi-project.mjs create --project "极速浏览器"
 node tools/pi-project.mjs move --session 会话ID --project "极速浏览器" --title "调整标签页长度与样式"
 node tools/pi-project.mjs move --session 会话ID --project "Android" --title "恢复无线调试连接" --defer
+node tools/pi-project.mjs merge --project "Windows与Android"
 node tools/pi-project.mjs list
 ```
 
+- 满 8 个后，新名称按覆盖范围自动选择现有项目合并并重命名，不创建第 9 个；模型只提供合并后的准确名称，目录、会话、归档和索引由脚本处理。
+- `merge` 可显式执行同一操作；相近范围只有一个项目时，将新增主题归并进去并改名，仍保持 8 个。
 - `--defer`：先落持久队列，等待当前回复结束再执行；不打断运行中的对话。
 - `--preserve-cwd`：供自动巡检等固定工作目录使用，仅调整项目归属与会话物理位置。
 - JSONL 的物理位置为 `项目根/项目名/会话/文件.jsonl`，相对项目根最多三层；SDK 的会话目录只保留一级索引联接，不另存副本。

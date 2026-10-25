@@ -2,6 +2,7 @@
 export function integrateProjectTree({ get, set, change, prepend, template }) {
   set('components/ProjectTree.tsx', template('ProjectTree.tsx'));
   set('lib/project-routing.mjs', template('project-routing.mjs'));
+  set('lib/project-capacity.mjs', template('project-capacity.mjs'));
   set('app/api/project-routing/route.ts', template('project-routing-route.ts'));
   set('app/redesign-sidebar.css', get('app/redesign-sidebar.css') + '\n' + template('project-tree.css'));
   const sidebar = 'components/SessionSidebar.tsx';
@@ -73,6 +74,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   change(projectRoute, "if (body.action === 'rename') result = await renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });", "if (body.action === 'rename') result = registry.read().managed ? await renameManagedProject({ agentDir: getAgentDir(), root: cwd, name: body.name, sessions: all }) : await renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });");
   // Include preserved-cwd automations in busy checks and wrapper shutdown on a physical rename.
   change(projectRoute, 'const affected = all.filter(s => pathWithin(cwd, s.cwd));', 'const affected = all.filter(s => pathWithin(cwd, s.cwd) || s.projectRoot && projectIdentityKey(s.projectRoot) === projectIdentityKey(cwd));');
+  change(projectRoute, '...registry.remove(cwd), deletedPath: cwd', '...registry.forget(cwd), deletedPath: cwd');
   const context = 'components/PortableContextActions.tsx';
   change(context, '对话记录保留，可另行移动或删除。', '项目内仍有对话时禁止删除，请先移动或删除对话。');
   change(context, '保留全部历史、ID 和关联子代理，下次继续时在目标目录工作；不移动项目文件。', '会话 JSONL 物理移入目标项目，保留历史、图片、ID 和关联子代理；下次在目标目录继续。');

@@ -45,6 +45,7 @@ export class ProjectStore {
     return data;
   }
   save(data) {
+    if (data.managed && data.projects.length > 8) throw new Error('项目总数不得超过 8 个，请通过 pi-project.mjs 合并并重命名');
     if (fs.existsSync(this.file)) backupFile(this.file);
     const text = JSON.stringify(data, null, 2) + '\n';
     atomicWrite(this.file, text);
@@ -53,10 +54,12 @@ export class ProjectStore {
   }
   add(cwd, root = cwd, create = false) {
     cwd = directoryPath(cwd);
-    if (create) fs.mkdirSync(cwd, { recursive: true });
-    if (!fs.statSync(cwd).isDirectory()) throw new Error('路径不是文件夹');
     const data = this.read(), key = projectKey(root);
     const existing = data.projects.some(item => item.key === key);
+    if (data.managed && !existing && data.projects.length >= 8) throw new Error('项目已满 8 个，请通过 pi-project.mjs 合并并重命名');
+    if (data.managed && !existing && data.baseRoot && projectKey(path.dirname(directoryPath(root))) !== projectKey(data.baseRoot)) throw new Error('受管项目须位于项目根目录下一层，请使用 pi-project.mjs');
+    if (create) fs.mkdirSync(cwd, { recursive: true });
+    if (!fs.statSync(cwd).isDirectory()) throw new Error('路径不是文件夹');
     if (existing && !data.hidden.includes(key)) return data;
     data.projects = [{ key, root }, ...data.projects.filter(item => item.key !== key)];
     data.hidden = data.hidden.filter(item => item !== key);
@@ -70,13 +73,18 @@ export class ProjectStore {
     data.projects = data.projects.map(p => within(p.root) ? { ...p, root: remap(p.root), key: projectKey(remap(p.root)), ...(p.key === projectKey(root) ? { name } : {}) } : p);
     if (!existing) data.projects.unshift({ key: projectKey(target), root: target, name });
     data.projects = [...new Map(data.projects.map(p => [p.key, p])).values()];
-    data.hidden = [...new Set([...data.hidden.map(remap).map(projectKey), projectKey(root)])].filter(p => p !== projectKey(target));
+    data.hidden = [...new Set([...data.hidden.map(remap).map(projectKey), ...(data.managed ? [] : [projectKey(root)])])].filter(p => p !== projectKey(target));
+    return this.save(data);
+  }
+  forget(root) {
+    const data = this.read(), key = projectKey(directoryPath(root));
+    data.projects = data.projects.filter(item => item.key !== key); data.hidden = data.hidden.filter(item => item !== key);
     return this.save(data);
   }
   remove(root) {
     const data = this.read(), key = projectKey(directoryPath(root));
     if (data.hidden.includes(key)) return data;
-    data.projects = data.projects.filter(item => item.key !== key);
+    if (!data.managed) data.projects = data.projects.filter(item => item.key !== key);
     data.hidden.push(key);
     return this.save(data);
   }

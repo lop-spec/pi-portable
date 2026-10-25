@@ -5,12 +5,13 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { ProjectStore, atomicWrite, projectKey, relocateSessionHeaders, isManagedSessionPath, prepareSessionHeader, commitSessionHeaders, restoreSessionHeaders, writeHeaderJournal } from './portable-project-store.mjs';
 
-export const STANDARD_PROJECTS = ['极速浏览器', 'pi-web性能优化', 'Windows', 'Android', '股票回测', '视频画质增强', '图文生成', 'Pi规则与扩展', '远程桌面', '购物选品', '数据运维', '每日创意'];
+export const STANDARD_PROJECTS = ['极速浏览器', 'Pi与pi-web', 'Windows', 'Android', '股票回测', '图像与视频', '数据运维', '生活事务'];
+const projectAliases = { 'pi-web性能优化': 'Pi与pi-web', 'Pi规则与扩展': 'Pi与pi-web', '远程桌面': 'Windows', '视频画质增强': '图像与视频', '图文生成': '图像与视频', '每日创意': '图像与视频', '购物选品': '生活事务', '社交生活': '生活事务' };
 export function validProjectName(value) {
   if (typeof value !== 'string') throw new Error('需要准确的项目名称');
   const name = value.trim().normalize('NFC');
   if (!name || name.length > 40 || /[<>:"/\\|?*\x00-\x1f]/u.test(name) || /[. ]$/u.test(name) || /^(?:\.{1,2}|con|prn|aux|nul|com[1-9]|lpt[1-9]|未分类|未归属|收件箱|新项目|综合工作台|其他)(?:\..*)?$/iu.test(name)) throw new Error('项目名称必须具体、单层且不含路径或保留名称');
-  return STANDARD_PROJECTS.find(p => p.toLowerCase() === name.toLowerCase()) ?? name;
+  return projectAliases[name] ?? STANDARD_PROJECTS.find(p => p.toLowerCase() === name.toLowerCase()) ?? name;
 }
 export function routingLayout(agentDir) {
   const registry = new ProjectStore(path.join(agentDir, 'web-projects.json'));
@@ -53,6 +54,7 @@ export function ensureInbox(agentDir) {
 export function createProject(agentDir, value) {
   const name = validProjectName(value), layout = routingLayout(agentDir);
   const existing = layout.data.projects.find(p => (p.name ?? path.basename(p.root)).toLowerCase() === name.toLowerCase());
+  if (!existing && layout.data.managed && layout.data.projects.length >= 8) throw new Error('项目已满 8 个，请先合并并重命名');
   const cwd = existing?.root ?? path.join(layout.baseRoot, name);
   // Managed project names occupy exactly one level beneath the base.
   if (path.dirname(path.resolve(cwd)) !== layout.baseRoot) throw new Error('请先将同名旧项目整理到项目根目录：' + cwd);

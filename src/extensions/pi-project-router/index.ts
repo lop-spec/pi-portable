@@ -19,7 +19,7 @@ export default function projectRouter(pi: ExtensionAPI) {
       const registryFile = path.join(agentDir, 'web-projects.json');
       if (!assigned(ctx.sessionManager.getSessionId()) && fs.existsSync(registryFile)) {
         const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
-        event.systemPromptOptions.sections.pi_projects = registry.projects.map((p: any) => p.name ?? path.basename(p.root)).join('、');
+        event.systemPromptOptions.sections.pi_projects = `${registry.projects.length}/8（含隐藏项目）：${registry.projects.map((p: any) => p.name ?? path.basename(p.root)).join('、')}`;
       } else delete event.systemPromptOptions.sections.pi_projects;
     } catch (error) { console.error('[pi-project] catalogue unavailable', error); }
   });
