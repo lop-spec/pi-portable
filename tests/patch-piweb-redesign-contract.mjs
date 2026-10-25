@@ -167,13 +167,16 @@ test('integrate() twice gives byte-identical results, with pinned templates and 
   assert.equal(excerpts.stage, 'tool-excerpts-after-immediate-stop');
   const projects = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/project-tree/manifest.json'), 'utf8'));
   assert.equal(projects.stage, 'project-tree-after-excerpts');
-  for (const [name, expected] of Object.entries(projects.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its project-tree-stage output hash`);
-  for (const [name, expected] of Object.entries(excerpts.files)) assert.equal(sha(first.get(name)), projects.files[name] ?? expected, `${name} matches its final output hash`);
-  for (const [name, expected] of Object.entries(stop.files)) assert.equal(sha(first.get(name)), projects.files[name] ?? excerpts.files[name] ?? expected, `${name} matches its final output hash`);
+  const askBack = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/ask-back/manifest.json'), 'utf8'));
+  assert.equal(askBack.stage, 'ask-back-after-project-tree');
+  for (const [name, expected] of Object.entries(askBack.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its ask-back-stage output hash`);
+  for (const [name, expected] of Object.entries(projects.files)) assert.equal(sha(first.get(name)), askBack.files[name] ?? expected, `${name} matches its final output hash`);
+  for (const [name, expected] of Object.entries(excerpts.files)) assert.equal(sha(first.get(name)), askBack.files[name] ?? projects.files[name] ?? expected, `${name} matches its final output hash`);
+  for (const [name, expected] of Object.entries(stop.files)) assert.equal(sha(first.get(name)), askBack.files[name] ?? projects.files[name] ?? excerpts.files[name] ?? expected, `${name} matches its final output hash`);
   for (const [name, entry] of Object.entries(readRedesignManifest().files)) {
-    assert.equal(sha(first.get(name)), projects.files[name] ?? excerpts.files[name] ?? stop.files[name] ?? history.files[name] ?? entry.sha, `${name} is pinned at the final overlay stage`);
+    assert.equal(sha(first.get(name)), askBack.files[name] ?? projects.files[name] ?? excerpts.files[name] ?? stop.files[name] ?? history.files[name] ?? entry.sha, `${name} is pinned at the final overlay stage`);
   }
-  for (const [name, expected] of Object.entries(history.files)) assert.equal(sha(first.get(name)), projects.files[name] ?? excerpts.files[name] ?? stop.files[name] ?? expected, `${name} matches its final output hash`);
+  for (const [name, expected] of Object.entries(history.files)) assert.equal(sha(first.get(name)), askBack.files[name] ?? projects.files[name] ?? excerpts.files[name] ?? stop.files[name] ?? expected, `${name} matches its final output hash`);
 });
 
 test('integrate() refuses a drifted base of a templated file with zero writes', { skip }, () => {

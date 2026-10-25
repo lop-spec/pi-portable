@@ -4,7 +4,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { integrateAskBack } from '../tools/patch-piweb-ask-back.mjs';
 const root = process.env.PIWEB_SOURCE || path.resolve('upstream');
-let source = fs.readFileSync(path.join(root, 'components/ChatWindow.tsx'), 'utf8').replaceAll('\r\n', '\n');
+const stateFile = path.join(root, '.pi-portable-overlay.json');
+const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : null;
+const base = state?.files['components/ChatWindow.tsx']?.backup || path.join(root, 'components/ChatWindow.tsx');
+let source = fs.readFileSync(base, 'utf8').replaceAll('\r\n', '\n');
 integrateAskBack({ change(name, old, next) {
   assert.equal(name, 'components/ChatWindow.tsx');
   assert.equal(source.split(old).length - 1, 1, 'unique anchor: ' + old.slice(0, 70));

@@ -1,0 +1,6 @@
+{
+  "stage": "ask-back-after-project-tree",
+  "files": {
+    "components/ChatWindow.tsx": "8c0afdf435a9a1dd68c3046e94dc466982eec4f8de3889bfedc3c2541f6c9309"
+  }
+}
