@@ -79,6 +79,7 @@ function integratedFixture() {
 test('history and live views share the labelled renderer, memo observes new tool results', () => {
   const files = integratedFixture(), timeline = files.get('components/PortableProcessTimeline.tsx');
   assert.match(timeline, /toolName=\{item.toolName\}/);
+  assert.match(timeline, /replyActive=\{Boolean\(live\)\}/);
   assert.match(timeline, /modelNames, toolResults\), \[entries, searchBlock, modelNames, toolResults\]/);
   assert.match(files.get('lib/session-reader.ts'), /chineseExcerpts: toolChineseExcerpts\(result\)/);
   assert.doesNotMatch(files.get('components/ToolChineseExcerpt.tsx'), /innerHTML|MarkdownBody|fetch\(/);
@@ -111,6 +112,26 @@ test('timeline emits excerpts for hidden tool calls, not narration/thinking; liv
   results.set('call', result('新增第二条检查结果'));
   items = component.buildTimelineItems(entries, () => false, undefined, results);
   assert.deepEqual([...items[0].phrases], ['新增第二条检查结果']);
+});
+test('manual expansion survives tool updates, resets once on reply completion, and can reopen afterwards', { skip: !source }, () => {
+  const values = []; let cursor = 0, dirty = false;
+  const react = { memo: fn => fn, useState(initial) {
+    const index = cursor++;
+    if (!(index in values)) values[index] = initial;
+    return [values[index], value => { const next = typeof value === 'function' ? value(values[index]) : value; if (next !== values[index]) { values[index] = next; dirty = true; } }];
+  } };
+  const jsx = (type, props) => ({ type, props });
+  const { ToolChineseExcerpt } = loadTs(integratedFixture().get('components/ToolChineseExcerpt.tsx'), { react, 'react/jsx-runtime': { jsx, jsxs: jsx } }, 'ToolChineseExcerpt.tsx');
+  const phrases = Array.from({ length: 9 }, (_, i) => `检查结果已经通过${i}`);
+  const render = replyActive => { let tree; do { cursor = 0; dirty = false; tree = ToolChineseExcerpt({ phrases, toolName: 'read', replyActive }); } while (dirty); return tree; };
+  const button = tree => tree.props.children[1];
+  let tree = render(true); assert.equal(button(tree).props['aria-expanded'], false);
+  button(tree).props.onClick(); tree = render(true); assert.equal(button(tree).props['aria-expanded'], true);
+  tree = render(true); assert.equal(button(tree).props['aria-expanded'], true);
+  tree = render(false); assert.equal(button(tree).props['aria-expanded'], false);
+  button(tree).props.onClick(); tree = render(false); assert.equal(button(tree).props['aria-expanded'], true);
+  tree = render(false); assert.equal(button(tree).props['aria-expanded'], true);
+  tree = render(true); tree = render(false); assert.equal(button(tree).props['aria-expanded'], false);
 });
 test('real React shows complete paragraphs without repeated visible source labels; provenance is hover-only', { skip: !source }, () => {
   const require = createRequire(path.join(source, 'package.json'));

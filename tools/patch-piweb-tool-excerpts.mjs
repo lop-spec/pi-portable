@@ -15,7 +15,7 @@ export function integrateToolExcerpts({ get, set, change, prepend, template }) {
         if (!showTool(block)) return;`);
   change(view, 'buildTimelineItems(entries, block => block === searchBlock, modelNames), [entries, searchBlock, modelNames]', 'buildTimelineItems(entries, block => block === searchBlock, modelNames, toolResults), [entries, searchBlock, modelNames, toolResults]');
   change(view, '            if (item.type === "tools") {', `            if (item.type === "tool-excerpt") {
-              return <li key={item.key} className="pw-proc-item pw-proc-narr"><ToolChineseExcerpt phrases={item.phrases} toolName={item.toolName} entryId={item.entryId} /></li>;
+              return <li key={item.key} className="pw-proc-item pw-proc-narr"><ToolChineseExcerpt phrases={item.phrases} toolName={item.toolName} entryId={item.entryId} replyActive={Boolean(live)} /></li>;
             }
             if (item.type === "tools") {`);
   // Extract from the full result BEFORE history previews are shortened, without shipping the raw output.
