@@ -102,13 +102,15 @@ test('ModelSelector renders the primary list with "更多模型" and a server-ke
   // template no longer caps its width (the old maxWidth: 150); see the hand-off notes.
   assert.match(selector, /className="pw-model-panel-current" title=\{currentName\}/);
   assert.match(files.get('app/redesign-chrome.css'), /\.pw-model-panel-current-name \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
-  // Hidden models: the eye on a row, a third level at the bottom of 更多模型, and the bulk archive button.
+  // Hidden models stay in the model menu; automatic archiving belongs in Settings.
   assert.match(list, /隐藏模型/); assert.match(list, /aria-label="隐藏模型"/);
   assert.match(list, /placeNestedPanel\(panel, \{ width: viewportWidth \}, place\.side\)/, 'the third level is placed from the second-level panel\'s real box');
   assert.match(list, /splitModelMenu\(options, menu\.primary, menu\.hidden\)/);
   assert.match(list, /body: JSON\.stringify\(\{ primary: next\.primary, hidden: next\.hidden \}\)/, 'both lists are saved together, or one would erase the other');
-  assert.match(list, /window\.__piArchiveOlder/); assert.match(list, /一键归档超过/);
-  assert.match(list, /归档组件未就绪/, 'a missing page script is reported to the user, not swallowed');
+  assert.doesNotMatch(list, /ArchiveOlderButton|一键归档超过/);
+  assert.match(files.get('components/SettingsPanel.tsx'), /<AutoArchiveSetting \/>/);
+  assert.match(files.get('app/api/settings/auto-archive/route.ts'), /projectMutationAllowed\(req\)/);
+  assert.match(files.get('lib/portable-auto-archive.mjs'), /enabled: true, days: 7, hour: 5/);
   assert.match(route, /hidden: menu\.hidden/, 'the route saves both lists');
 });
 
