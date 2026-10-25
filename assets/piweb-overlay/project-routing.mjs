@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import { ProjectStore, atomicWrite, projectKey, relocateSessionHeaders, isManagedSessionPath, prepareSessionHeader, commitSessionHeaders, restoreSessionHeaders, writeHeaderJournal } from './portable-project-store.mjs';
 
 export const STANDARD_PROJECTS = ['极速浏览器', 'Pi工作台', 'Windows', 'Android', '股票回测', '图像视频', '数据运维', '生活事务'];
@@ -228,18 +229,57 @@ export function validSessionTitle(value) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > 80 || /[\x00-\x1f<>]/u.test(value)) throw new Error('对话标题须简短具体，不能含控制符或标签');
   return value.trim();
 }
-export function renameSessionTitle(file, value) {
-  const name = validSessionTitle(value), fd = fs.openSync(file, 'r');
-  let lines;
+// Locate the last complete physical record without imposing a line-size limit.
+// Large signatures/images stay on disk: only root-level type/id strings are retained.
+export function readLastSessionEntry(file) {
+  const fd = fs.openSync(file, 'r'), chunk = Buffer.alloc(65536);
   try {
-    const size = fs.fstatSync(fd).size, start = Math.max(0, size - 65536), bytes = Buffer.alloc(size - start);
-    fs.readSync(fd, bytes, 0, bytes.length, start);
-    if (bytes.at(-1) !== 10) throw new Error('会话尾部未完整写入，拒绝改名');
-    lines = bytes.toString('utf8').split('\n').filter(Boolean); if (start) lines.shift();
+    const size = fs.fstatSync(fd).size;
+    if (!size) throw new Error('会话尾部为空');
+    const lastByte = Buffer.alloc(1); fs.readSync(fd, lastByte, 0, 1, size - 1);
+    if (lastByte[0] !== 10) throw new Error('会话尾部未完整写入，拒绝改名');
+    let end = size;
+    outer: while (end > 0) {
+      const start = Math.max(0, end - chunk.length), n = fs.readSync(fd, chunk, 0, end - start, start);
+      for (let i = n - 1; i >= 0; i--) if (![9, 10, 13, 32].includes(chunk[i])) { end = start + i + 1; break outer; }
+      end = start;
+    }
+    if (!end) throw new Error('会话尾部无有效节点');
+    let cursor = end, begin = 0;
+    while (cursor > 0) {
+      const start = Math.max(0, cursor - chunk.length), n = fs.readSync(fd, chunk, 0, cursor - start, start), index = chunk.subarray(0, n).lastIndexOf(10);
+      if (index >= 0) { begin = start + index + 1; break; } cursor = start;
+    }
+    const length = end - begin;
+    if (length <= chunk.length) { fs.readSync(fd, chunk, 0, length, begin); return JSON.parse(chunk.subarray(0, length).toString('utf8')); }
+    const decoder = new StringDecoder('utf8'), record = {};
+    let depth = 0, inString = false, escaped = false, expectKey = false, key, capture = false, keyString = false, token = '';
+    for (let offset = begin; offset < end;) {
+      const n = fs.readSync(fd, chunk, 0, Math.min(chunk.length, end - offset), offset); if (!n) break; offset += n;
+      for (const ch of decoder.write(chunk.subarray(0, n))) {
+        if (inString) {
+          if (capture) { token += ch; if (token.length > 1024) throw new Error('会话根节点标识无效'); }
+          if (escaped) { escaped = false; continue; }
+          if (ch === '\\') { escaped = true; continue; }
+          if (ch !== '"') continue;
+          inString = false;
+          if (capture) { const value = JSON.parse(token); if (keyString) { key = value; expectKey = false; } else record[key] = value; }
+          if (typeof record.type === 'string' && typeof record.id === 'string') return record;
+          continue;
+        }
+        if (ch === '{' || ch === '[') { depth++; if (depth === 1) expectKey = true; }
+        else if (ch === '}' || ch === ']') depth--;
+        else if (ch === ',' && depth === 1) { expectKey = true; key = undefined; }
+        else if (ch === '"') { inString = true; escaped = false; keyString = depth === 1 && expectKey; capture = keyString || depth === 1 && (key === 'type' || key === 'id'); token = capture ? '"' : ''; }
+      }
+    }
+    throw new Error('会话尾部无有效节点');
   } finally { fs.closeSync(fd); }
-  const entries = lines.flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const last = entries.at(-1); if (!last?.id) throw new Error('会话尾部无有效节点');
-  if ([...entries].reverse().find(e => e.type === 'session_info')?.name === name) return;
+}
+export function renameSessionTitle(file, value) {
+  const name = validSessionTitle(value), last = readLastSessionEntry(file);
+  if (!last?.id) throw new Error('会话尾部无有效节点');
+  if (last.type === 'session_info' && last.name === name) return;
   fs.appendFileSync(file, JSON.stringify({ type: 'session_info', id: crypto.randomUUID(), parentId: last.type === 'session' ? null : last.id, timestamp: new Date().toISOString(), name }) + '\n');
 }
 export function projectTag(message) {
