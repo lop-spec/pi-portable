@@ -3,12 +3,16 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 export function readAutoArchive(agentDir) {
+  let monthly = false;
+  const registry = path.join(agentDir, 'web-projects.json');
+  if (fs.existsSync(registry)) monthly = JSON.parse(fs.readFileSync(registry, 'utf8')).monthly === true;
+  const policy = monthly ? { policy: 'monthly' } : {};
   try {
     const value = JSON.parse(fs.readFileSync(path.join(agentDir, 'web-auto-archive.json'), 'utf8'));
     if (typeof value.enabled !== 'boolean') throw new Error('自动归档设置无效');
-    return { enabled: value.enabled, days: 7, hour: 5 };
+    return { enabled: value.enabled, days: 7, hour: 5, ...policy };
   } catch (error) {
-    if (error.code === 'ENOENT') return { enabled: true, days: 7, hour: 5 };
+    if (error.code === 'ENOENT') return { enabled: true, days: 7, hour: 5, ...policy };
     throw error;
   }
 }
@@ -41,14 +45,14 @@ export async function runAutoArchive({ agentDir, url = 'http://127.0.0.1:30141',
   try { previous = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const day = archiveDay(now);
-  if (previous?.day === day) return { skipped: 'already-ran', day };
+  if (previous?.day === day && previous?.policy === setting.policy) return { skipped: 'already-ran', day };
   const response = await fetchImpl(url + '/__pi_archive_older', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ days: setting.days, keep: [] }), signal: AbortSignal.timeout(120000),
+    body: JSON.stringify({ days: setting.days, keep: [], ...(setting.policy ? { policy: setting.policy } : {}) }), signal: AbortSignal.timeout(120000),
   });
   const result = await response.json();
   if (!response.ok || !result.ok || result.failed) throw new Error(result.error || `归档失败：${result.failed ?? response.status}`);
-  const record = { day, completedAt: now.toISOString(), ...result };
+  const record = { day, ...(setting.policy ? { policy: setting.policy } : {}), completedAt: now.toISOString(), ...result };
   fs.mkdirSync(agentDir, { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(record, null, 2) + '\n');
   return record;

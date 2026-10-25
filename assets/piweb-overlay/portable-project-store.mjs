@@ -45,6 +45,8 @@ export class ProjectStore {
     return data;
   }
   save(data) {
+    if (data.managed) data = { ...data, hidden: [] };
+    if (data.managed && data.projects.some(p => [...(p.name ?? path.basename(p.root))].length > 7)) throw new Error('项目名称不得超过7字');
     if (data.managed && data.projects.length > 8) throw new Error('项目总数不得超过 8 个，请通过 pi-project.mjs 合并并重命名');
     if (fs.existsSync(this.file)) backupFile(this.file);
     const text = JSON.stringify(data, null, 2) + '\n';
@@ -84,7 +86,8 @@ export class ProjectStore {
   remove(root) {
     const data = this.read(), key = projectKey(directoryPath(root));
     if (data.hidden.includes(key)) return data;
-    if (!data.managed) data.projects = data.projects.filter(item => item.key !== key);
+    if (data.managed) throw new Error('不支持隐藏项目；请合并项目或删除无价值内容');
+    data.projects = data.projects.filter(item => item.key !== key);
     data.hidden.push(key);
     return this.save(data);
   }
@@ -161,7 +164,7 @@ export function isManagedSessionPath(file, sessionRoot) {
     if (path.extname(realFile) !== '.jsonl' || !fs.statSync(realFile).isFile()) return false;
     if (inside(realRoot, realFile)) return true;
     const registry = new ProjectStore(path.join(path.dirname(sessionRoot), 'web-projects.json')).read();
-    return [...registry.projects.map(p => p.root), registry.inbox].filter(Boolean).some(root => projectKey(path.dirname(realFile)) === projectKey(path.join(root, '会话')));
+    return [...registry.projects.map(p => p.root), registry.inbox].filter(Boolean).some(root => /^\d{4}-\d{2}$/.test(path.basename(path.dirname(realFile))) && projectKey(path.dirname(path.dirname(realFile))) === projectKey(root));
   } catch { return false; }
 }
 export function prepareSessionHeader(file, id, cwd, sessionRoot, validateDirectory = true) {

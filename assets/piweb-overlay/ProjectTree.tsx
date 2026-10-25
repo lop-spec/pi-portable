@@ -4,7 +4,7 @@ import type { SessionInfo } from '@/lib/types';
 import { listSessionFamilies } from '@/lib/session-family';
 import { workspaceKeyOf } from '@/lib/workspace-memory';
 import { SessionSearch } from './SessionSearch';
-import { SessionContextActions, ProjectActionMenu, ProjectActionDialog, NoticeDialog, setProjectHidden, type ProjectActionKind } from './PortableContextActions';
+import { SessionContextActions, ProjectActionMenu, ProjectActionDialog, NoticeDialog, type ProjectActionKind } from './PortableContextActions';
 import { projectRequest, type ProjectRegistry, type NamedProject } from './PortableProjects';
 import { SessionRow } from './sidebar/SessionRow';
 import { Icon } from './sidebar/icons';
@@ -24,6 +24,8 @@ interface Props {
   onCreated: (cwd: string, registry: ProjectRegistry) => void;
 }
 const foldKey = 'pi-web:project-tree-folds';
+const monthFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit' });
+const monthOf = (session: SessionInfo) => { const date = new Date(session.created); return Number.isFinite(date.getTime()) ? monthFormatter.format(date) : '未知月份'; }; 
 function readFolds(): Set<string> { try { return new Set(JSON.parse(localStorage.getItem(foldKey) ?? '[]')); } catch { return new Set(); } }
 export function ProjectTree(props: Props) {
   const { sessions, projects, hiddenProjects, registry, selectedSessionId, runningSessionIds, unreadSessionIds } = props;
@@ -34,7 +36,6 @@ export function ProjectTree(props: Props) {
   const [projectMenu, setProjectMenu] = useState<{ project: NamedProject; anchor: MenuAnchor; element: HTMLElement } | null>(null);
   const [projectDialog, setProjectDialog] = useState<{ project: NamedProject; kind: ProjectActionKind } | null>(null);
   const [creating, setCreating] = useState(false), [newName, setNewName] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState<string | null>(null);
-  const [showHidden, setShowHidden] = useState(false);
   const root = useRef<HTMLDivElement>(null), search = useRef<HTMLInputElement>(null);
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions]);
   const groups = useMemo(() => {
@@ -112,6 +113,7 @@ export function ProjectTree(props: Props) {
       {props.loading && sessions.length === 0 && <div className="pw-sess-state" role="status">正在加载项目…</div>}
       {groups.map(({ project, families }) => {
         const closed = folds.has(project.key), count = families.length;
+        const ordered = [...families].sort((a, b) => monthOf(b.root).localeCompare(monthOf(a.root)) || Date.parse(b.latestModified) - Date.parse(a.latestModified));
         const members = families.flatMap(f => [f.root, ...f.subagents]);
         const running = members.some(s => runningSessionIds.has(s.id)), unread = members.some(s => unreadSessionIds.has(s.id));
         return <section className="pw-tree-project" key={project.key} data-project-key={project.key}>
@@ -121,16 +123,15 @@ export function ProjectTree(props: Props) {
           </button>{project.key !== '__inbox' && <button type="button" className="pw-icon-btn pw-icon-btn--sm pw-tree-more" aria-label={`${project.name ?? '项目'}操作`} title="项目操作" onClick={e => setProjectMenu({ project, anchor: anchorFromElement(e.currentTarget, { align: 'end' }), element: e.currentTarget })}><Icon name="more" /></button>}</div>
           {!closed && <div id={`tree-${project.key}`} className="pw-tree-children">
             {count === 0 && <p className="pw-tree-empty">{project.key === '__inbox' ? '新对话自动归属项目' : '暂无对话'}</p>}
-            {(more.has(project.key) ? families : families.slice(0, 5)).map(family => <div key={family.root.id}>{row(family.root, false, family)}{children.has(family.root.id) && family.subagents.map(s => row(s, true, family))}</div>)}
+            {(more.has(project.key) ? ordered : ordered.slice(0, 5)).map((family, index, visible) => <div key={family.root.id}>{(index === 0 || monthOf(visible[index - 1].root) !== monthOf(family.root)) && <div className="pw-tree-month">{monthOf(family.root)}</div>}{row(family.root, false, family)}{children.has(family.root.id) && family.subagents.map(s => row(s, true, family))}</div>)}
             {count > 5 && <button className="pw-tree-show-more" type="button" onClick={() => setMore(prev => { const next = new Set(prev); next.has(project.key) ? next.delete(project.key) : next.add(project.key); return next; })}>{more.has(project.key) ? '收起对话' : `显示全部 ${count} 个`}</button>}
           </div>}
         </section>;
       })}
-      {hiddenProjects.length > 0 && <><button className="pw-tree-show-more" type="button" aria-expanded={showHidden} onClick={() => setShowHidden(v => !v)}>已隐藏 · {hiddenProjects.length}</button>{showHidden && hiddenProjects.map(project => <div className="pw-tree-hidden" key={project.key}><span className="pw-truncate">{project.name ?? project.root.split(/[/\\]/).at(-1)}</span><button className="pw-btn pw-btn--sm" onClick={() => void setProjectHidden(project, false).then(next => props.onRegistryChange(next, null)).catch(e => setNotice(String(e)))}>恢复</button></div>)}</>}
     </nav>
     <SessionContextActions resolveSession={id => byId.get(id)} isRunning={id => runningSessionIds.has(id)} projects={projects} onRename={id => setRenaming(id)} onMenuChange={setMenuId} onMoved={props.onMoved} onDeleted={props.onDeleted} />
     {projectMenu && <ProjectActionMenu project={projectMenu.project} hidden={false} anchor={projectMenu.anchor} returnFocus={projectMenu.element} onClose={() => setProjectMenu(null)}
-      onAction={kind => { setProjectDialog({ project: projectMenu.project, kind }); setProjectMenu(null); }} onHide={() => { const project = projectMenu.project; setProjectMenu(null); void setProjectHidden(project, true).then(next => props.onRegistryChange(next, project.key)).catch(e => setNotice(String(e))); }} onRestore={() => {}} />}
+      onAction={kind => { setProjectDialog({ project: projectMenu.project, kind }); setProjectMenu(null); }} onHide={() => {}} onRestore={() => {}} />}
     {projectDialog && <ProjectActionDialog kind={projectDialog.kind} project={projectDialog.project} onClose={() => setProjectDialog(null)} onChanged={(next, removed) => props.onRegistryChange(next, removed ? projectDialog.project.key : null, projectDialog.kind === 'delete')} />}
     {notice && <NoticeDialog title="操作失败" message={notice} onClose={() => setNotice(null)} />}
   </div>;

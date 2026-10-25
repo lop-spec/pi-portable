@@ -4,14 +4,14 @@ import { listAllSessions, mergeSessionLists, invalidateSessionListCache, invalid
 import { getRpcSession, getRpcSessionInfos, isRpcSessionStarting, hasBusyRpcSessionInProject } from '@/lib/rpc-manager';
 import { projectMutationAllowed, withSessionMoveLock } from '@/lib/portable-project-store.mjs';
 import { withProjectDeletionLock } from '@/lib/portable-context-store.mjs';
-import { createProject, ensureInbox, routingLayout, moveProjectSessions, validProjectName } from '@/lib/project-routing.mjs';
+import { createProject, ensureInbox, routingLayout, moveProjectSessions, validProjectName, routingReport } from '@/lib/project-routing.mjs';
 import { MAX_PROJECTS, planProjectMerge, mergeManagedProjects } from '@/lib/project-capacity.mjs';
 import { allowFileRoot } from '@/lib/file-access';
 export const dynamic = 'force-dynamic';
 const catalogue = async () => mergeSessionLists(await listAllSessions({ force: true }), getRpcSessionInfos());
 export async function GET() {
   const agentDir = getAgentDir(), layout = routingLayout(agentDir), inbox = ensureInbox(agentDir);
-  return Response.json({ ...layout.data, baseRoot: layout.baseRoot, inbox, maxProjects: MAX_PROJECTS }, { headers: { 'Cache-Control': 'no-store' } });
+  return Response.json({ ...layout.data, baseRoot: layout.baseRoot, inbox, ...routingReport(agentDir) }, { headers: { 'Cache-Control': 'no-store' } });
 }
 async function consolidate(agentDir: string, name: string) {
   const layout = routingLayout(agentDir), plan = planProjectMerge({ ...layout.data, baseRoot: layout.baseRoot }, name), all = await catalogue();
@@ -29,14 +29,16 @@ async function consolidate(agentDir: string, name: string) {
 export async function POST(req: Request) {
   if (!projectMutationAllowed(req)) return Response.json({ error: 'Cross-origin request rejected' }, { status: 403 });
   try {
-    const body = await req.json(), agentDir = getAgentDir(), name = validProjectName(body.project), layout = routingLayout(agentDir);
+    const body = await req.json(), agentDir = getAgentDir();
+    if (body.action === 'verify') return Response.json(routingReport(agentDir, { id: body.id }));
+    const name = validProjectName(body.project), layout = routingLayout(agentDir);
     if (!['create', 'move', 'merge'].includes(body.action)) return Response.json({ error: 'Unknown action' }, { status: 400 });
     const exists = layout.data.projects.some((p: { root: string; name?: string }) => (p.name ?? path.basename(p.root)).toLowerCase() === name.toLowerCase());
     if (body.action === 'merge' || !exists && layout.data.managed && layout.data.projects.length >= MAX_PROJECTS) {
       const result = await consolidate(agentDir, name);
-      if (body.action !== 'move') return Response.json(result);
+      if (body.action !== 'move') return Response.json({ ...result as object, ...routingReport(agentDir) });
     }
-    if (body.action === 'create') { const result = createProject(agentDir, name); allowFileRoot(result.cwd); invalidateSessionListCache(); return Response.json(result); }
+    if (body.action === 'create') { const result = createProject(agentDir, name); allowFileRoot(result.cwd); invalidateSessionListCache(); return Response.json({ ...result, ...routingReport(agentDir) }); }
     const all = await catalogue(), target = all.find(s => s.id === body.id);
     if (!target) return Response.json({ error: 'Session not found' }, { status: 404 });
     if (target.relation?.kind === 'subagent') throw new Error('请移动主对话，关联子会话会一起移动');
@@ -47,7 +49,10 @@ export async function POST(req: Request) {
       for (const id of ids) await getRpcSession(id)?.shutdown();
       const family = [target, ...all.filter(s => s.id !== target.id && ids.has(s.id))];
       const result = await moveProjectSessions({ agentDir, sessions: family, name, title: body.title, preserveCwd: Boolean(body.preserveCwd) });
-      ids.forEach(id => invalidateSessionPathCache(id)); invalidateSessionListCache(); allowFileRoot(result.cwd); return Response.json(result);
+      ids.forEach(id => invalidateSessionPathCache(id)); invalidateSessionListCache(); allowFileRoot(result.cwd);
+      const report = routingReport(agentDir, { id: target.id, file: result.info.path, title: body.title });
+      if (!report.verification.ok) throw new Error('归档验证失败：' + report.verification.errors.join('；'));
+      return Response.json({ ...result, ...report });
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error), retryable = /正在运行|正在移动|正在物理删除/.test(message);

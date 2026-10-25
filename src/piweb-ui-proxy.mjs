@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { isManagedSessionPath } from '../assets/piweb-overlay/portable-project-store.mjs';
-import { indexedSessionPath } from '../assets/piweb-overlay/project-routing.mjs';
+import { indexedSessionPath, routingLayout, sessionMonth } from '../assets/piweb-overlay/project-routing.mjs';
 import path from "node:path";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
@@ -1339,7 +1339,8 @@ export class PiWebUiProxy {
    * or one with an unreadable date is left alone; each skip is counted so nothing is silent.
    */
   archiveOlderPlan(catalogue, activeSessions, { days, running, keep }) {
-    const cutoff = this.now() - days * DAY_MS;
+    const monthly = routingLayout(path.dirname(this.sessionRoot)).data.monthly === true;
+    const cutoff = monthly ? Date.parse(sessionMonth(this.now()) + '-01T00:00:00+08:00') : this.now() - days * DAY_MS;
     const known = new Set(catalogue.map((session) => String(session?.id || "")));
     const families = [];
     const skipped = { running: 0, kept: 0, unknownAge: 0 };

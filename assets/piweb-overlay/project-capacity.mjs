@@ -1,7 +1,7 @@
 // Deterministic bounded consolidation. The model supplies only the resulting name.
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
 import { atomicWrite, projectKey, prepareSessionHeader, commitSessionHeaders, restoreSessionHeaders, writeHeaderJournal } from './portable-project-store.mjs';
-import { routingLayout, validProjectName, sessionIndex, ensureSessionIndex, sessionAssignments, pathAliases } from './project-routing.mjs';
+import { routingLayout, validProjectName, sessionIndex, ensureSessionIndex, sessionAssignments, pathAliases, sessionMonth, removeProjectSessionIndexes } from './project-routing.mjs';
 export const MAX_PROJECTS = 8;
 export function projectScope(name) {
  const tags=new Set(),text=String(name).toLowerCase();
@@ -32,8 +32,8 @@ export async function mergeManagedProjects({agentDir,name,sessions,projects}) {
  if(!sources.length)return {...layout.data,cwd:target,changed:false,sessionIds:[]};
  const assigned=sessionAssignments(agentDir),aliases=pathAliases(agentDir);
  const affected=sessions.filter(s=>projects.some(p=>inside(p.root,s.cwd))||assigned[s.id]&&selected.has(projectKey(assigned[s.id].root)));
- const records=affected.map(s=>({s,real:fs.realpathSync(s.path),target:path.join(target,'会话',path.basename(s.path))}));
- for(const p of projects){const dir=path.join(p.root,'会话');if(fs.existsSync(dir))for(const file of fs.readdirSync(dir).filter(file=>file.endsWith('.jsonl')))if(!records.some(r=>projectKey(r.real)===projectKey(fs.realpathSync(path.join(dir,file)))))throw Error('项目有尚未识别的会话，拒绝遗漏：'+file);}
+ const records=affected.map(s=>{const real=fs.realpathSync(s.path),parent=path.basename(path.dirname(real)),month=/^\d{4}-\d{2}$/.test(parent)?parent:sessionMonth(s.created??Date.now());return{s,real,month,target:path.join(target,month,path.basename(s.path))};});
+ for(const p of projects)for(const month of fs.readdirSync(p.root).filter(name=>/^\d{4}-\d{2}$/.test(name))){const dir=path.join(p.root,month);for(const file of fs.readdirSync(dir).filter(file=>file.endsWith('.jsonl')))if(!records.some(r=>projectKey(r.real)===projectKey(fs.realpathSync(path.join(dir,file)))))throw Error('项目有尚未识别的会话，拒绝遗漏：'+file);}
  const targetNames=new Set();for(const r of records){const key=projectKey(r.target);if(targetNames.has(key))throw Error('会话文件名冲突，拒绝覆盖');targetNames.add(key);if(fs.existsSync(r.target)&&projectKey(r.real)!==key)throw Error('目标已有同名会话，拒绝覆盖');}
  const folders=sources.map(p=>({from:p.root,to:path.join(target,'资料-'+path.basename(p.root))}));
  for(const f of folders)if(fs.existsSync(f.to))throw Error('资料目录冲突，拒绝覆盖：'+f.to);
@@ -46,27 +46,28 @@ export async function mergeManagedProjects({agentDir,name,sessions,projects}) {
  const archive=snapshots[3].bytes?JSON.parse(snapshots[3].bytes.toString('utf8')):null;
  const movedFolders=[],movedFiles=[],links=[];
  try{
-  fs.mkdirSync(path.join(target,'会话'),{recursive:true});
+  fs.mkdirSync(target,{recursive:true});
+  for(const month of new Set([sessionMonth(),...records.map(r=>r.month)]))fs.mkdirSync(path.join(target,month),{recursive:true});
   for(const f of folders){fs.renameSync(f.from,f.to);movedFolders.push(f);}
   for(const r of records){
    const f=folders.find(f=>inside(f.from,r.real));const current=f?path.join(f.to,path.relative(f.from,r.real)):r.real;
    if(projectKey(current)!==projectKey(r.target)){fs.renameSync(current,r.target);movedFiles.push({from:current,to:r.target});}
   }
-  for(const item of prepared)item.file=path.join(target,'会话',path.basename(item.file));
+  for(const item of prepared)item.file=records.find(r=>r.s.id===item.current.header.id).target;
   await commitSessionHeaders(prepared,journal);
   const key=projectKey(target),data={...layout.data,projects:[...layout.data.projects.filter(p=>!selected.has(p.key)),{key,root:target,name:path.basename(target)}],hidden:layout.data.hidden.filter(k=>!selected.has(k))};
   if(data.projects.length>MAX_PROJECTS)throw Error('项目总数仍超过 8 个');
   layout.registry.save(data);
-  ensureSessionIndex(agentDir,target,path.join(target,'会话'));
+  for(const month of fs.readdirSync(target).filter(name=>/^\d{4}-\d{2}$/.test(name)))ensureSessionIndex(agentDir,target,path.join(target,month));
   for(const r of records){
    const previous=assigned[r.s.id];assigned[r.s.id]={...previous,root:target,path:r.target,originalCwd:previous?.originalCwd??r.s.cwd};
    aliases[r.s.path]=r.target;aliases[r.real]=r.target;
-   if(archive?.sessions?.[r.s.id])Object.assign(archive.sessions[r.s.id],{relativePath:path.relative(sessionRoot,path.join(sessionIndex(agentDir,target),path.basename(r.target))).split(path.sep).join('/'),cwd:remapCwd(r.s.cwd)});
+   if(archive?.sessions?.[r.s.id])Object.assign(archive.sessions[r.s.id],{relativePath:path.relative(sessionRoot,path.join(sessionIndex(agentDir,target,r.month),path.basename(r.target))).split(path.sep).join('/'),cwd:remapCwd(r.s.cwd)});
   }
   for(const [old,value]of Object.entries(aliases)){const match=records.find(r=>projectKey(r.real)===projectKey(value)||projectKey(r.s.path)===projectKey(value));if(match)aliases[old]=match.target;}
   atomicWrite(stateFiles[1],JSON.stringify(assigned,null,2));atomicWrite(stateFiles[2],JSON.stringify(aliases,null,2));if(archive)atomicWrite(stateFiles[3],JSON.stringify(archive,null,2));
-  for(const f of folders){const oldSessions=path.join(f.to,'会话');if(fs.existsSync(oldSessions)&&!fs.readdirSync(oldSessions).length)fs.rmdirSync(oldSessions);fs.symlinkSync(path.resolve(f.to),f.from,process.platform==='win32'?'junction':'dir');links.push(f.from);}
-  for(const p of sources){const index=sessionIndex(agentDir,p.root);try{if(fs.lstatSync(index).isSymbolicLink())fs.unlinkSync(index);}catch(e){if(e.code!=='ENOENT')throw e;}}
+  for(const f of folders){for(const month of fs.readdirSync(f.to).filter(name=>/^\d{4}-\d{2}$/.test(name))){const oldSessions=path.join(f.to,month);if(!fs.readdirSync(oldSessions).length)fs.rmdirSync(oldSessions);}fs.symlinkSync(path.resolve(f.to),f.from,process.platform==='win32'?'junction':'dir');links.push(f.from);}
+  for(const p of sources)removeProjectSessionIndexes(agentDir,p.root);
   return {...data,cwd:target,previousRoots:projects.map(p=>p.root),sessionIds:affected.map(s=>s.id),merged:projects.map(p=>p.name??path.basename(p.root)),changed:true,preserved:true};
  }catch(error){
   for(const link of links.reverse())fs.unlinkSync(link);
@@ -74,7 +75,7 @@ export async function mergeManagedProjects({agentDir,name,sessions,projects}) {
   for(const f of movedFiles.reverse()){fs.mkdirSync(path.dirname(f.from),{recursive:true});fs.renameSync(f.to,f.from);}
   for(const f of movedFolders.reverse())fs.renameSync(f.to,f.from);
   for(const saved of snapshots){if(saved.bytes)atomicWrite(saved.file,saved.bytes);else fs.rmSync(saved.file,{force:true});}
-  if(!existingTarget){try{const index=sessionIndex(agentDir,target);if(fs.lstatSync(index).isSymbolicLink())fs.unlinkSync(index);}catch{}try{fs.rmdirSync(path.join(target,'会话'));fs.rmdirSync(target);}catch{}}
+  if(!existingTarget){try{removeProjectSessionIndexes(agentDir,target);}catch{}try{for(const month of fs.readdirSync(target).filter(name=>/^\d{4}-\d{2}$/.test(name)))fs.rmdirSync(path.join(target,month));fs.rmdirSync(target);}catch{}}
   throw error;
  }
 }

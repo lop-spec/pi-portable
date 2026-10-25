@@ -16,10 +16,14 @@ export default function projectRouter(pi: ExtensionAPI) {
   };
   pi.on('before_agent_start', (event, ctx) => {
     try {
+      const resultFile = path.join(agentDir, 'project-routing-results', ctx.sessionManager.getSessionId() + '.json');
+      if (fs.existsSync(resultFile)) event.systemPromptOptions.sections.pi_project_result = fs.readFileSync(resultFile, 'utf8');
+      else delete event.systemPromptOptions.sections.pi_project_result;
       const registryFile = path.join(agentDir, 'web-projects.json');
       if (!assigned(ctx.sessionManager.getSessionId()) && fs.existsSync(registryFile)) {
         const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
-        event.systemPromptOptions.sections.pi_projects = `${registry.projects.length}/8（含隐藏项目）：${registry.projects.map((p: any) => p.name ?? path.basename(p.root)).join('、')}`;
+        const month = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit' }).format(new Date());
+        event.systemPromptOptions.sections.pi_projects = JSON.stringify({ projectCount: registry.projects.length, maxProjects: 8, maxNameLength: 7, projects: registry.projects.map((p: any) => ({ name: p.name ?? path.basename(p.root), root: p.root, sessionDirectory: path.join(p.root, month) })), newSessionDirectory: registry.inbox ? path.join(registry.inbox, month) : null, currentSessionFile: ctx.sessionManager.getSessionFile(), command: `"${process.execPath}" "${script}" move --session ${ctx.sessionManager.getSessionId()} --project "项目名" --title "对话名" --verify` });
       } else delete event.systemPromptOptions.sections.pi_projects;
     } catch (error) { console.error('[pi-project] catalogue unavailable', error); }
   });
@@ -44,7 +48,7 @@ export default function projectRouter(pi: ExtensionAPI) {
       const logs = path.join(agentDir, 'project-routing-queue'); fs.mkdirSync(logs, { recursive: true });
       const log = fs.openSync(path.join(logs, 'router.log'), 'a');
       try {
-        const child = spawn(process.execPath, [script, 'move', '--session', request.id, '--project', request.name, '--title', request.title, '--defer', ...(request.preserveCwd ? ['--preserve-cwd'] : [])], {
+        const child = spawn(process.execPath, [script, 'move', '--session', request.id, '--project', request.name, '--title', request.title, '--verify', '--defer', ...(request.preserveCwd ? ['--preserve-cwd'] : [])], {
           windowsHide: true, detached: true, shell: false, stdio: ['ignore', log, log], env: process.env,
         });
         child.on('error', error => console.error('[pi-project] launch failed', error.message)); child.unref();

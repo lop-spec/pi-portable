@@ -34,8 +34,10 @@ export function validateProjectDeletion(root, confirmation, { knownRoots, protec
 }
 export async function deleteProjectDirectory(root, confirmation, options) {
   const target = validateProjectDeletion(root, confirmation, options);
-  const transcripts = path.join(target, '会话');
-  if (fs.existsSync(transcripts) && fs.readdirSync(transcripts).some(name => name.endsWith('.jsonl'))) throw new Error('项目仍有对话，请先移动或删除对话后再删除文件夹');
+  for (const month of fs.readdirSync(target).filter(name => /^\d{4}-\d{2}$/.test(name) || name === '会话')) {
+    const transcripts = path.join(target, month);
+    if (fs.statSync(transcripts).isDirectory() && fs.readdirSync(transcripts).some(name => name.endsWith('.jsonl'))) throw new Error('项目仍有对话，请先移动或删除对话后再删除文件夹');
+  }
   // Explicitly confirmed physical deletion only. Node rm does not follow child symlinks.
   await fs.promises.rm(target, { recursive: true, force: false, maxRetries: 0 });
   if (fs.existsSync(target)) throw new Error('目录删除未完成：' + target);

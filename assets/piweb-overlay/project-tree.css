@@ -14,6 +14,7 @@
 .pw-tree-project-head:hover .pw-tree-more,.pw-tree-project-head:focus-within .pw-tree-more { opacity:1; }
 .pw-tree-children { padding-left:15px; }
 .pw-tree-children .pw-sess-row { min-height:30px; }
+.pw-tree-month { padding:4px 10px 2px; color:var(--text-dim); font-size:var(--fs-small); }
 .pw-tree-empty { padding:3px 12px 6px; color:var(--text-dim); font-size:var(--fs-small); }
 .pw-tree-show-more { border:0; background:none; color:var(--text-muted); padding:5px 12px; font:inherit; font-size:var(--fs-small); cursor:pointer; }
 .pw-tree-show-more:hover { color:var(--text); }

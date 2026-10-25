@@ -4,7 +4,10 @@ export function integrateProjectTree({ get, set, change, prepend, template }) {
   set('lib/project-routing.mjs', template('project-routing.mjs'));
   set('lib/project-capacity.mjs', template('project-capacity.mjs'));
   set('app/api/project-routing/route.ts', template('project-routing-route.ts'));
+  prepend('lib/rpc-manager.ts', 'import { monthlySessionDir } from "@/lib/project-routing.mjs";\n');
+  change('lib/rpc-manager.ts', 'SessionManager.create(cwd, undefined)', 'SessionManager.create(cwd, monthlySessionDir(getAgentDir(), cwd))');
   set('app/redesign-sidebar.css', get('app/redesign-sidebar.css') + '\n' + template('project-tree.css'));
+  change('components/SettingsPanel.tsx', '每天凌晨 5 点（本机时间），归档超过 7 天未更新的会话；跳过运行中会话，可在侧栏“归档”中恢复。', '每天凌晨5点按月归档：归档上月及更早未更新的会话，跳过运行中会话；可在侧栏“归档”中恢复。');
   const sidebar = 'components/SessionSidebar.tsx';
   prepend(sidebar, 'import { ProjectTree } from "./ProjectTree";\n');
   const source = get(sidebar), a = source.indexOf('      <ProjectSwitcher\n'), b = source.indexOf('\n      {drawerCwd && (', a);
@@ -63,19 +66,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 `);
   // Assignment metadata separates project identity from automation execution cwd.
   const reader = 'lib/session-reader.ts';
-  prepend(reader, 'import { sessionAssignments, pathAliases } from "./project-routing.mjs";\n');
+  prepend(reader, 'import { sessionAssignments, pathAliases, indexedSessionPath } from "./project-routing.mjs";\n');
   change(reader, '  return sessions.map((session) => {\n    const project = session.cwd', '  const assigned = sessionAssignments(getAgentDir());\n  return sessions.map((session) => {\n    const project = session.cwd');
   change(reader, 'const projectRoot = project?.projectRoot ?? session.cwd;', 'const projectRoot = assigned[session.id]?.root ?? project?.projectRoot ?? session.cwd;');
   // Fork headers refer to original paths; resolve aliases for relationship identity, not content edits.
-  change(reader, '  const originSessionId = scanned.parentSessionPath\n    ? pathToId.get(sessionPathKey(scanned.parentSessionPath))', '  const alias = scanned.parentSessionPath ? pathAliases(getAgentDir())[scanned.parentSessionPath] : null;\n  const originSessionId = scanned.parentSessionPath\n    ? pathToId.get(sessionPathKey(alias ?? scanned.parentSessionPath))');
+  change(reader, '  const originSessionId = scanned.parentSessionPath\n    ? pathToId.get(sessionPathKey(scanned.parentSessionPath))', '  const alias = scanned.parentSessionPath ? pathAliases(getAgentDir())[scanned.parentSessionPath] : null;\n  let parentPath = alias ?? scanned.parentSessionPath;\n  if (alias) { try { parentPath = indexedSessionPath(getAgentDir(), alias); } catch {} }\n  const originSessionId = scanned.parentSessionPath\n    ? pathToId.get(sessionPathKey(parentPath))');
   const projectRoute = 'app/api/projects/route.ts';
-  prepend(projectRoute, 'import { renameManagedProject } from "@/lib/project-routing.mjs";\nimport { isRpcSessionStarting } from "@/lib/rpc-manager";\n');
+  prepend(projectRoute, 'import { POST as routeProject } from "@/app/api/project-routing/route";\nimport path from "node:path";\nimport { renameManagedProject } from "@/lib/project-routing.mjs";\nimport { isRpcSessionStarting } from "@/lib/rpc-manager";\n');
+  change(projectRoute, '    registry.read(); // fail before filesystem changes if state is corrupt', `    registry.read(); // fail before filesystem changes if state is corrupt
+    if (registry.read().managed && (body.action === 'create' || body.action === 'add')) return routeProject(new Request(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify({ action: 'create', project: path.basename(cwd) }) }));`);
   change(projectRoute, 'if (hasBusyRpcSessionInProject(cwd) || hasBusyRpcSessionInProject(target))', 'if (hasBusyRpcSessionInProject(cwd) || hasBusyRpcSessionInProject(target) || ids.some(id => isRpcSessionStarting(id) || getRpcSession(id)?.isBusyForProjectMove()))');
   change(projectRoute, "if (body.action === 'rename') result = await renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });", "if (body.action === 'rename') result = registry.read().managed ? await renameManagedProject({ agentDir: getAgentDir(), root: cwd, name: body.name, sessions: all }) : await renamePhysicalProject({ root: cwd, name: body.name, registry, sessions: affected, sessionRoot: join(getAgentDir(), 'sessions'), knownRoots, protectedRoots: [getAgentDir()] });");
   // Include preserved-cwd automations in busy checks and wrapper shutdown on a physical rename.
   change(projectRoute, 'const affected = all.filter(s => pathWithin(cwd, s.cwd));', 'const affected = all.filter(s => pathWithin(cwd, s.cwd) || s.projectRoot && projectIdentityKey(s.projectRoot) === projectIdentityKey(cwd));');
   change(projectRoute, '...registry.remove(cwd), deletedPath: cwd', '...registry.forget(cwd), deletedPath: cwd');
   const context = 'components/PortableContextActions.tsx';
+  const menu = get(context), hideStart = menu.indexOf('      {hidden ? ('), hideEnd = menu.indexOf('      <div className="pw-menu-sep"', hideStart);
+  if (hideStart < 0 || hideEnd < hideStart) throw new Error('Hide-project menu anchor missing');
+  change(context, menu.slice(hideStart, hideEnd), '');
   change(context, '对话记录保留，可另行移动或删除。', '项目内仍有对话时禁止删除，请先移动或删除对话。');
   change(context, '保留全部历史、ID 和关联子代理，下次继续时在目标目录工作；不移动项目文件。', '会话 JSONL 物理移入目标项目，保留历史、图片、ID 和关联子代理；下次在目标目录继续。');
   const projects = 'components/PortableProjects.tsx';

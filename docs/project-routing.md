@@ -1,21 +1,16 @@
-# 项目与对话
+# 会话整理
 
-左侧直接展开项目和对话；新对话先进入独立收件区，收件区不登记为项目。项目总数最多 8 个，包含隐藏项目。
-首轮正常回复末尾的 `<归属 项目="项目名">对话标题</归属>` 由扩展收走，回复完成后运行脚本；不新增模型调用或工具轮次。
+只填写项目名和对话名，其他操作交给脚本；成功即结束，只有报错才介入。不搜索目录、不读历史、不另做分析或重复验证。
+
+1. `<pi_projects>` 已给出项目名称、个数、各项目绝对路径、当前会话与新会话目录；无需再查文件。
+2. 项目最多 8 个，不设隐藏项目，名称最多 7 字。满额时只给能覆盖已有范围的合并后名称，脚本自动选择并合并、重命名，不创建第 9 个。
+3. 会话物理位置为 `项目根/项目名/YYYY-MM/会话.jsonl`；按建档月份保存，最多三级。每日5点将上月及更早未更新的会话归档，运行中的会话跳过。
+4. 首轮正常回复末尾附 `<归属 项目="项目名">对话名</归属>`。结束钩子只调用一次脚本，携带当前ID和两个名称；不新增模型请求或工具轮次。
+5. 脚本返回项目清单与数量、绝对路径、当前月、会话目录和验证结果。结果存到 agent 的 `project-routing-results/会话ID.json`。
+6. `create --project 名称`、`move --project 名称 --title 对话名`、`merge --project 合并名`、`list`、`verify --session ID` 共用一个脚本。`--defer` 等当前回复结束；`--preserve-cwd` 保留自动巡检等任务原有工作目录。
+
+最后一条就是验证命令：正常流程由钩子填入实际绝对路径和ID，执行一次，末尾 `--verify` 已在同次调用中完成验证，禁止再单独调用验证工具。
 
 ```sh
-node tools/pi-project.mjs create --project "极速浏览器"
-node tools/pi-project.mjs move --session 会话ID --project "极速浏览器" --title "调整标签页长度与样式"
-node tools/pi-project.mjs move --session 会话ID --project "Android" --title "恢复无线调试连接" --defer
-node tools/pi-project.mjs merge --project "Windows与Android"
-node tools/pi-project.mjs list
+node tools/pi-project.mjs move --project "Pi工作台" --title "整理项目与对话" --verify
 ```
-
-- 满 8 个后，新名称按覆盖范围自动选择现有项目合并并重命名，不创建第 9 个；模型只提供合并后的准确名称，目录、会话、归档和索引由脚本处理。
-- `merge` 可显式执行同一操作；相近范围只有一个项目时，将新增主题归并进去并改名，仍保持 8 个。
-- `--defer`：先落持久队列，等待当前回复结束再执行；不打断运行中的对话。
-- `--preserve-cwd`：供自动巡检等固定工作目录使用，仅调整项目归属与会话物理位置。
-- JSONL 的物理位置为 `项目根/项目名/会话/文件.jsonl`，相对项目根最多三层；SDK 的会话目录只保留一级索引联接，不另存副本。
-- 移动保留 ID、历史正文、图片、子代理关系和归档状态；改名使用原生 `session_info` 节点。
-- 项目重命名会改物理文件夹并更新索引、归属、工作目录与关联路径；含会话的项目不能直接删除。
-- 迁移日志与原始会话头位于 agent 的 `project-migrations/`、`session-header-backups/`；不随源码同步会话数据。
