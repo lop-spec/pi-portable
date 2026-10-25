@@ -219,7 +219,7 @@
     },
     "components/PortableModelList.tsx": {
       "baseSha": "9f83462f072a7a11dd28c265f7426a7235bc9a8695b2f64097ad7b64a5551f6a",
-      "sha": "899c2c2133992cd621e4082594e05487d5ebfdfb41f93dfc9ec1f765680ca1a9"
+      "sha": "c6951544674c39632c0a6cc67cd236b9326faa8bc29095d28be3a6a159828506"
     },
     "components/PortableNodes.tsx": {
       "baseSha": "4bd0a60fc69c3d9409d3f22860905a5fa1d6d706cdcce1f1cd1aaa750eeaa9ef",
@@ -271,7 +271,7 @@
     },
     "components/SettingsPanel.tsx": {
       "baseSha": "26620bfd84ba63245353f8e9754800708e2f9ab7153968e4a2cd4f2f059e6405",
-      "sha": "e8f173867aeb9eb86dbc275b2123abea486fb49a1923beb27de9f206cb72a4c6"
+      "sha": "0a89b75b29804293963940405947df34b6e53e1f4cb14fa9522cf0ba893ad8ed"
     },
     "components/SettingsUi.test.mjs": {
       "baseSha": "d08e3413cfb885f3d82289ba8ab819c67c2a092838f231ebcee9b1794f6dd6ed",
@@ -508,6 +508,14 @@
     "public/sw.test.mjs": {
       "baseSha": "c9de6074363c09e0bcd1e6518da9d15e73499eb9fd509da56afcbaf5c128bea1",
       "sha": "f033b9fa062ba0a0d22866168bff8f59480cda81a5981982f8b68a008ac7ea3b"
+    },
+    "app/api/settings/auto-archive/route.ts": {
+      "baseSha": null,
+      "sha": "9ee7fec3f9644a2ceb9341f83695f44852e103cdfb947ca771351bffb36e265d"
+    },
+    "lib/portable-auto-archive.mjs": {
+      "baseSha": null,
+      "sha": "66f5e5f2ff285fd5421abecb0e2c9d2df270cf4e742667e35b082dd22e753430"
     }
   }
 }

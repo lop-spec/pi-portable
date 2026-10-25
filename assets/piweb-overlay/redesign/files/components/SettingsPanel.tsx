@@ -44,6 +44,45 @@ interface Props {
   onQuoteSelectionChange: (enabled: boolean) => void;
 }
 
+function AutoArchiveSetting() {
+  const [enabled, setEnabled] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/settings/auto-archive", { cache: "no-store" }).then(async (response) => {
+      const data = await response.json();
+      if (!response.ok || typeof data.enabled !== "boolean") throw new Error(data.error || "读取失败");
+      if (!cancelled) { setEnabled(data.enabled); setLoaded(true); }
+    }).catch(() => { if (!cancelled) setError("自动归档设置读取失败，请重新打开设置"); });
+    return () => { cancelled = true; };
+  }, []);
+  const save = async (next: boolean) => {
+    setSaving(true); setError("");
+    try {
+      const response = await fetch("/api/settings/auto-archive", {
+        method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: next }),
+      });
+      const data = await response.json();
+      if (!response.ok || typeof data.enabled !== "boolean") throw new Error(data.error || "保存失败");
+      setEnabled(data.enabled);
+    } catch { setError("自动归档设置未保存，请重试"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <section className="settings-general-section" data-auto-archive-setting>
+      <h3 className="settings-general-heading">会话归档</h3>
+      <div className="settings-chat-option settings-chat-switch-option">
+        <span>自动归档</span>
+        <ConfigSwitch checked={enabled} disabled={!loaded} loading={saving} label="自动归档" onChange={(next) => void save(next)} />
+      </div>
+      <p className="settings-general-description">每天凌晨 5 点（本机时间），归档超过 7 天未更新的会话；跳过运行中会话，可在侧栏“归档”中恢复。</p>
+      {error && <p role="alert" className="settings-general-error">{error}</p>}
+    </section>
+  );
+}
+
 function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
@@ -249,6 +288,8 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           </div>
         </div>
       </section>
+
+      <AutoArchiveSetting />
 
       {shellSettings?.isWindows && (
         <section className="settings-general-section">

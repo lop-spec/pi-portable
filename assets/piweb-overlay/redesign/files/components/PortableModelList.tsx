@@ -4,9 +4,9 @@
 // "更多模型" (a side panel on desktop, inline on phones). The star on a row pins or unpins
 // that model; the choice is kept by /api/model-menu for every browser of this pi-web.
 // 2026-10-04: the eye on a row hides it into "隐藏模型", a third level at the bottom of
-// "更多模型", and the same panel carries "一键归档超过 7 天的对话".
+// "更多模型". Automatic conversation archiving lives in Settings.
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ARCHIVE_OLDER_DAYS, archiveOlderSummary, hideModel, modelMenuKey, normalizeModelMenu, pinModel, placeNestedPanel, placeSidePanel, splitModelMenu } from "@/lib/portable-model-menu.mjs";
+import { hideModel, modelMenuKey, normalizeModelMenu, pinModel, placeNestedPanel, placeSidePanel, splitModelMenu } from "@/lib/portable-model-menu.mjs";
 import type { ModelSelectorOption } from "./ModelSelector";
 
 declare global {
@@ -85,7 +85,6 @@ const Icon = ({ children, size = 12, fill = "none", width = 2 }: { children: Rea
 const StarIcon = ({ filled }: { filled: boolean }) => <Icon fill={filled ? "currentColor" : "none"}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></Icon>;
 const EyeIcon = ({ size = 12 }: { size?: number }) => <Icon size={size}><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></Icon>;
 const EyeOffIcon = ({ size = 12 }: { size?: number }) => <Icon size={size}><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" /><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" /><line x1="2" y1="2" x2="22" y2="22" /></Icon>;
-const ArchiveIcon = () => <Icon size={12}><path d="M3 8h18v13H3z" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></Icon>;
 const CheckIcon = () => <span className="pw-model-row-check" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg></span>;
 const NoCheck = () => <span className="pw-model-row-check" aria-hidden="true" />;
 const Arrow = ({ turned }: { turned: boolean }) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`pw-model-arrow${turned ? " is-turned" : ""}`}><polyline points="9 6 15 12 9 18" /></svg>;
@@ -113,50 +112,6 @@ function RowAction({ label, pressed, accent, first, onToggle, className, childre
 }
 
 // The side panel lists every other model, so its rows are tighter than the main menu's: see .pw-model-side in app/redesign-chrome.css.
-
-/** "一键归档超过 7 天的对话": the UI proxy archives them (running and the open one excepted); the answer shows in the button. */
-function ArchiveOlderButton({ onEnter }: { onEnter?: () => void }) {
-  const [status, setStatus] = useState({ busy: false, text: "", error: false });
-  const timer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-  const finish = (text: string, error: boolean) => {
-    setStatus({ busy: false, text, error });
-    timer.current = window.setTimeout(() => setStatus({ busy: false, text: "", error: false }), error ? 8000 : 4000);
-  };
-  const run = async () => {
-    if (status.busy) return;
-    window.clearTimeout(timer.current);
-    const archive = window.__piArchiveOlder;
-    if (!archive) {
-      console.error("[pi-web model menu] archive-older unavailable: the page's archive script is not loaded");
-      finish("归档组件未就绪，请刷新页面后重试", true);
-      return;
-    }
-    setStatus({ busy: true, text: "", error: false });
-    try {
-      const summary = archiveOlderSummary(await archive(ARCHIVE_OLDER_DAYS));
-      finish(summary.text, summary.error);
-    } catch (error) {
-      console.error("[pi-web model menu] archive-older failed", error);
-      finish(error instanceof Error ? error.message : String(error), true);
-    }
-  };
-  return (
-    <button
-      type="button"
-      disabled={status.busy}
-      title={`把超过 ${ARCHIVE_OLDER_DAYS} 天没有更新的对话全部归档（运行中的和当前打开的除外，可在“查看归档会话”里恢复）`}
-      onClick={() => void run()}
-      onMouseEnter={() => onEnter?.()}
-      className="pw-model-foot is-wrap"
-      data-tone={status.error ? "danger" : undefined}
-      aria-busy={status.busy || undefined}
-    >
-      <span className="pw-model-foot-icon"><ArchiveIcon /></span>
-      <span className="pw-model-foot-text">{status.busy ? "归档中…" : status.text || `一键归档超过 ${ARCHIVE_OLDER_DAYS} 天的对话`}</span>
-    </button>
-  );
-}
 
 interface PortableModelListProps {
   /** Every model, sorted. */
@@ -299,7 +254,6 @@ export function PortableModelList({ options, filtered, filterActive, isMobile, h
             <div className="pw-model-sep" role="separator" />
             {hiddenRow}
             {hiddenInline && <div className="pw-model-nested">{split.hidden.length ? groups(split.hidden, false) : hiddenEmpty}</div>}
-            <ArchiveOlderButton />
           </div>
         : <>
             <div ref={sideRef} role="group" aria-label="更多模型" className="pw-model-side" style={sideStyle}>
@@ -308,7 +262,6 @@ export function PortableModelList({ options, filtered, filterActive, isMobile, h
               {hiddenInline && <div className="pw-model-nested is-flat has-border">{split.hidden.length ? groups(split.hidden, false, true) : hiddenEmpty}</div>}
               <div className="pw-model-side-foot">
                 {hiddenRow}
-                <ArchiveOlderButton onEnter={closeHidden} />
                 <div className="pw-model-legend" onMouseEnter={closeHidden}>星标 = 设为主力 · 眼睛 = 隐藏</div>
               </div>
             </div>
