@@ -28,6 +28,9 @@ export async function run(argv = process.argv.slice(2)) {
       if (!response.ok) {
         if (!deferred || ![404, 409, 503].includes(response.status) || response.status === 409 && data.retryable === false) throw Object.assign(new Error(data.error ?? 'HTTP ' + response.status), { permanent: true });
       } else {
+        if (data.info) data.info = Object.fromEntries(['id', 'name', 'path', 'cwd', 'projectRoot', 'projectKey', 'created', 'modified', 'messageCount'].filter(key => data.info[key] !== undefined).map(key => [key, data.info[key]]));
+        if (Array.isArray(data.projects)) data.projects = data.projects.map(project => Object.fromEntries(['name', 'root', 'sessionDirectory'].filter(key => project[key] !== undefined).map(key => [key, project[key]])));
+        delete data.sessionIds; delete data.hidden; delete data.categories;
         if (action !== 'list' && data.verification?.ok === false) throw Object.assign(new Error('验证失败：' + data.verification.errors.join('；')), { permanent: true });
         if (action === 'move' && id) atomicWrite(path.join(agentDir, 'project-routing-results', id + '.json'), JSON.stringify(data, null, 2));
         if (queueFile) fs.rmSync(queueFile, { force: true });
