@@ -38,7 +38,8 @@ export async function run(argv = process.argv.slice(2)) {
   } while (Date.now() < until);
   throw new Error('归属仍在队列中：' + queueFile);
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const executablePath = value => { let real; try { real = fs.realpathSync(value); } catch { real = path.resolve(value); } return process.platform === 'win32' ? real.toLowerCase() : real; };
+if (process.argv[1] && executablePath(process.argv[1]) === executablePath(fileURLToPath(import.meta.url))) {
   try { console.log(JSON.stringify(await run())); }
   catch (error) {
     const index = process.argv.indexOf('--session'), id = index >= 0 ? process.argv[index + 1] : process.env.PI_SESSION_ID;
