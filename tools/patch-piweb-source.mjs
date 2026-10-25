@@ -19,6 +19,7 @@ import { integrateRedesign } from './patch-piweb-redesign.mjs';
 import { integrateHistory } from './patch-piweb-history.mjs';
 import { integrateImmediateStop } from './patch-piweb-immediate-stop.mjs';
 import { integrateToolExcerpts } from './patch-piweb-tool-excerpts.mjs';
+import { integrateAskBack } from './patch-piweb-ask-back.mjs';
 import { integrateProjectTree } from './patch-piweb-project-tree.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
@@ -357,6 +358,7 @@ export function integrate(getFile) {
   integrateHistory({ get, set, change, prepend, template });
   integrateImmediateStop({ change });
   integrateToolExcerpts({ get, set, change, prepend, template });
+  integrateAskBack({ change });
   // A steering interjection should not silently replace the work already in progress.
   // Leave normal sends, queued follow-ups and slash-command arguments unchanged.
   change(hook, `        message,
