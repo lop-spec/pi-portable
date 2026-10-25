@@ -1,0 +1,17 @@
+{
+  "stage": "project-tree-after-excerpts",
+  "files": {
+    "components/ProjectTree.tsx": "3e941f468d44b9bee6ea223276d1a750f8f1b3fdb40b8eb826a11036fa77751b",
+    "lib/project-routing.mjs": "5b19f7b95c26137028c4c06fa4d2e89ff1f1b87cf3371561214b3817ca619ee6",
+    "app/api/project-routing/route.ts": "df72fcea10f920eff138cf0c0b188277430d6621642460cbd9ea1ee75c526e11",
+    "app/redesign-sidebar.css": "3cd67c1b7b4617244769183d921ce3ae13fb026d4c2a803d28da75681956af0b",
+    "components/SessionSidebar.tsx": "28cf28231ca2a1aba4074d690503107bbd83066398ec463415c94075e6eabc2e",
+    "components/AppShell.tsx": "d75766fcf32009623a0251223686833da3416cc8d24514f6e0072e6987829aac",
+    "app/api/default-cwd/route.ts": "5f8a2aef732d3610df6379457fc415e6ab43268660a3c8a2256b4d3375e99009",
+    "app/api/sessions/[id]/move/route.ts": "86191080a5434c2cfe9bb53afb5a013f0cdd8c39fb50168beb2ce124da79c09c",
+    "lib/session-reader.ts": "7957dff8920e2c5857116b2f67c01dabca0f122d01baf89a598a7d67d3046e80",
+    "app/api/projects/route.ts": "c516de882084afaeb149b1e558bd544cc0d42df5b23a85a538192c3ac2565bb2",
+    "components/PortableContextActions.tsx": "6761b02d497c40b3ddbe76d49c894534a9d71bb9dff2935e9f88805bcd4f0bff",
+    "components/PortableProjects.tsx": "9ffa780d2d32de9f6f6d9656e7f417142089c8ae36b96e5e69bd7db8dba1618e"
+  }
+}

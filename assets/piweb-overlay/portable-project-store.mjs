@@ -146,12 +146,21 @@ export function writeHeaderJournal(sessionRoot, items) {
   atomicWrite(file, JSON.stringify({ version: 1, at: new Date().toISOString(), sessions: items.map(item => ({ id: item.current.header.id, file: item.file, header: item.current.line.toString('utf8') })) }, null, 1) + '\n');
   return file;
 }
+export function isManagedSessionPath(file, sessionRoot) {
+  try {
+    const realFile = fs.realpathSync(file), realRoot = fs.realpathSync(sessionRoot);
+    const inside = (root, target) => { const rel = path.relative(projectKey(root), projectKey(target)); return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); };
+    if (path.extname(realFile) !== '.jsonl' || !fs.statSync(realFile).isFile()) return false;
+    if (inside(realRoot, realFile)) return true;
+    const registry = new ProjectStore(path.join(path.dirname(sessionRoot), 'web-projects.json')).read();
+    return [...registry.projects.map(p => p.root), registry.inbox].filter(Boolean).some(root => projectKey(path.dirname(realFile)) === projectKey(path.join(root, '会话')));
+  } catch { return false; }
+}
 export function prepareSessionHeader(file, id, cwd, sessionRoot, validateDirectory = true) {
   cwd = directoryPath(cwd);
   if (validateDirectory && !fs.statSync(cwd).isDirectory()) throw new Error('目标路径不是文件夹');
   const realFile = fs.realpathSync(file), realRoot = fs.realpathSync(sessionRoot);
-  const relative = path.relative(realRoot, realFile);
-  if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) || path.extname(realFile) !== '.jsonl') throw new Error('会话文件不在受管目录内');
+  if (!isManagedSessionPath(file, sessionRoot)) throw new Error('会话文件不在受管目录内');
   const current = readHeaderLine(realFile);
   if (current.header.type !== 'session' || current.header.id !== id) throw new Error('会话身份不匹配');
   if (projectKey(current.header.cwd) === projectKey(cwd)) return { changed: false, cwd };

@@ -1,0 +1,25 @@
+/* One scroll surface, permanent project headings, quiet nested conversation rows. */
+.pw-tree { display:flex; flex:1; flex-direction:column; min-height:0; overflow:hidden; }
+.pw-tree-head { display:flex; flex:none; align-items:center; gap:6px; min-height:34px; padding:0 12px 0 16px; color:var(--text-muted); font-size:var(--fs-small); }
+.pw-tree-head > span:first-child { flex:1; }
+.pw-tree-scroll { flex:1; min-height:0; overflow:auto; padding:0 7px 12px; }
+.pw-tree-scroll[hidden] { display:none; }
+.pw-tree-project { margin:2px 0 8px; }
+.pw-tree-project-head { display:flex; align-items:center; min-width:0; border-radius:var(--r-md); }
+.pw-tree-project-head:hover { background:var(--bg-hover); }
+.pw-tree-toggle { display:flex; align-items:center; gap:7px; flex:1; min-width:0; height:32px; padding:0 6px; border:0; border-radius:var(--r-md); background:none; color:var(--text-secondary); font:inherit; font-weight:550; text-align:left; cursor:pointer; }
+.pw-tree-toggle .pw-truncate { flex:1; }
+.pw-tree-toggle .pw-num { color:var(--text-dim); font-size:var(--fs-small); font-weight:400; }
+.pw-tree-more { flex:none; opacity:0; }
+.pw-tree-project-head:hover .pw-tree-more,.pw-tree-project-head:focus-within .pw-tree-more { opacity:1; }
+.pw-tree-children { padding-left:15px; }
+.pw-tree-children .pw-sess-row { min-height:30px; }
+.pw-tree-empty { padding:3px 12px 6px; color:var(--text-dim); font-size:var(--fs-small); }
+.pw-tree-show-more { border:0; background:none; color:var(--text-muted); padding:5px 12px; font:inherit; font-size:var(--fs-small); cursor:pointer; }
+.pw-tree-show-more:hover { color:var(--text); }
+.pw-tree-create,.pw-tree-search { display:flex; gap:4px; padding:4px 10px 8px; }
+.pw-tree-create input,.pw-tree-search input { min-width:0; flex:1; }
+.pw-tree-hidden { display:flex; align-items:center; gap:6px; padding:3px 12px; }
+.pw-tree-hidden > span { flex:1; }
+.pw-tree-toggle:focus-visible,.pw-tree-show-more:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+@media(pointer:coarse) { .pw-tree-toggle { height:38px; } .pw-tree-more { opacity:1; } .pw-tree-children .pw-sess-row { min-height:36px; } }

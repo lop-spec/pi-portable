@@ -19,6 +19,7 @@ import { integrateRedesign } from './patch-piweb-redesign.mjs';
 import { integrateHistory } from './patch-piweb-history.mjs';
 import { integrateImmediateStop } from './patch-piweb-immediate-stop.mjs';
 import { integrateToolExcerpts } from './patch-piweb-tool-excerpts.mjs';
+import { integrateProjectTree } from './patch-piweb-project-tree.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -363,6 +364,7 @@ export function integrate(getFile) {
           ? \`\${message}\\n\\n请继续原任务。\`
           : message,
         streamingBehavior: behavior,`);
+  integrateProjectTree({ get, set, change, prepend, template });
   return files;
 }
 

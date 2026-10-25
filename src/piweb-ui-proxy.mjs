@@ -4,6 +4,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import { isManagedSessionPath } from '../assets/piweb-overlay/portable-project-store.mjs';
+import { indexedSessionPath } from '../assets/piweb-overlay/project-routing.mjs';
 import path from "node:path";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
@@ -179,13 +181,14 @@ export class SessionArchiveStore {
 
   validateSession(info) {
     const id = String(info?.id || "").trim();
-    const filePath = path.resolve(String(info?.path || ""));
+    let filePath = path.resolve(String(info?.path || ""));
     if (!id || !info?.path) throw new Error("archive requires a persisted Pi session id and path");
     if (path.extname(filePath).toLowerCase() !== ".jsonl") throw new Error("archive target is not a Pi JSONL session");
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) throw new Error("archive target Pi session does not exist");
     const realRoot = fs.realpathSync(this.sessionRoot);
     const realFile = fs.realpathSync(filePath);
-    if (!isPathInside(realRoot, realFile)) throw new Error("archive target is outside the configured Pi sessions root");
+    if (!isManagedSessionPath(filePath, this.sessionRoot)) throw new Error("archive target is outside the configured Pi sessions root");
+    filePath = indexedSessionPath(path.dirname(this.sessionRoot), filePath);
     const header = boundedSessionHeader(realFile);
     if (header?.type !== "session" || String(header.id || "") !== id) {
       throw new Error("archive target header does not match the requested Pi session id");

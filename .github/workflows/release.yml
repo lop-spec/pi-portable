@@ -79,6 +79,7 @@ jobs:
           node tests/launcher-portable-node-contract.mjs
           node --test tests/piweb-source-release-contract.mjs
           node --test tests/piweb-history.mjs
+          node --test tests/piweb-project-tree.mjs
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node tests/browser-background-contract.mjs
@@ -192,7 +193,7 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "upstream dependency install failed" }
           Pop-Location
-          node --test tests/patch-piweb-source-contract.mjs tests/piweb-projects.mjs tests/piweb-context-actions.mjs tests/piweb-model-menu.mjs tests/patch-piweb-redesign-contract.mjs tests/piweb-tool-excerpts.mjs
+          node --test tests/patch-piweb-source-contract.mjs tests/piweb-projects.mjs tests/piweb-context-actions.mjs tests/piweb-model-menu.mjs tests/patch-piweb-redesign-contract.mjs tests/piweb-tool-excerpts.mjs tests/piweb-project-tree.mjs
           if ($LASTEXITCODE -ne 0) { throw "source integration contracts failed" }
           node tools/patch-piweb-source.mjs --source upstream
           if ($LASTEXITCODE -ne 0) { throw "source integration failed" }
@@ -263,6 +264,7 @@ jobs:
           Copy-Item tools/patch-piweb-live-models.mjs stage/tools/patch-piweb-live-models.mjs
           Copy-Item tools/patch-piweb-service-tier.mjs stage/tools/patch-piweb-service-tier.mjs
           Copy-Item tools/backup.mjs stage/tools/backup.mjs
+          Copy-Item tools/pi-project.mjs stage/tools/pi-project.mjs
           Copy-Item tools/websearch.mjs stage/tools/websearch.mjs
           Copy-Item tools/patch-pi-native-policy.mjs stage/tools/patch-pi-native-policy.mjs
           Copy-Item tools/piweb-rules-live-check.mjs stage/tools/piweb-rules-live-check.mjs

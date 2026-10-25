@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { directoryPath, projectKey } from './portable-project-store.mjs';
+import { directoryPath, projectKey, isManagedSessionPath } from './portable-project-store.mjs';
 
 export function pathWithin(root, candidate) {
   const relative = path.relative(projectKey(root), projectKey(candidate));
@@ -34,6 +34,8 @@ export function validateProjectDeletion(root, confirmation, { knownRoots, protec
 }
 export async function deleteProjectDirectory(root, confirmation, options) {
   const target = validateProjectDeletion(root, confirmation, options);
+  const transcripts = path.join(target, '会话');
+  if (fs.existsSync(transcripts) && fs.readdirSync(transcripts).some(name => name.endsWith('.jsonl'))) throw new Error('项目仍有对话，请先移动或删除对话后再删除文件夹');
   // Explicitly confirmed physical deletion only. Node rm does not follow child symlinks.
   await fs.promises.rm(target, { recursive: true, force: false, maxRetries: 0 });
   if (fs.existsSync(target)) throw new Error('目录删除未完成：' + target);
@@ -44,7 +46,7 @@ export function deleteSessionFiles(sessions, sessionRoot, confirmation, id) {
   const realRoot = fs.realpathSync(sessionRoot);
   const files = sessions.map(s => {
     const file = directoryPath(s.path);
-    if (fs.lstatSync(file).isSymbolicLink() || !pathWithin(realRoot, fs.realpathSync(file)) || path.extname(file) !== '.jsonl') throw new Error('拒绝删除受管目录外的会话');
+    if (fs.lstatSync(file).isSymbolicLink() || !isManagedSessionPath(file, sessionRoot)) throw new Error('拒绝删除受管目录外的会话');
     const fd = fs.openSync(file, 'r');
     let first;
     try { const b = Buffer.alloc(65537); const n = fs.readSync(fd, b); const end = b.subarray(0, n).indexOf(10); if (end < 0) throw new Error('会话头无效'); first = JSON.parse(b.subarray(0, end).toString()); }
