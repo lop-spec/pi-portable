@@ -1,13 +1,15 @@
 // Routing is a post-reply side effect, never an extra model/tool iteration.
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 export default function projectRouter(pi: ExtensionAPI) {
   let pending: { id: string; name: string; title: string; preserveCwd: boolean } | null = null;
   const agentDir = process.env.PI_CODING_AGENT_DIR;
   if (!agentDir) return;
-  const script = path.resolve(fs.realpathSync(agentDir), '../../../tools/pi-project.mjs');
+  const roots = [process.env.PI_PORTABLE_HOME, path.resolve(fs.realpathSync(agentDir), '../../..'), os.hostname().toLowerCase() === 'yangyong' ? 'C:/Users/lop/Documents/claude/pi-portable' : 'D:/Downloads/pi-protable'].filter(Boolean) as string[];
+  const script = roots.map(root => path.join(root, 'tools/pi-project.mjs')).find(file => fs.existsSync(file));
   const assigned = (id: string) => {
     const file = path.join(agentDir, 'session-projects.json');
     return fs.existsSync(file) && Boolean(JSON.parse(fs.readFileSync(file, 'utf8'))[id]);
@@ -38,7 +40,7 @@ export default function projectRouter(pi: ExtensionAPI) {
     if (!pending) return;
     const request = pending; pending = null;
     try {
-      if (!fs.existsSync(script)) throw new Error('Missing project router: ' + script);
+      if (!script) throw new Error('Missing project router in registered roots');
       const logs = path.join(agentDir, 'project-routing-queue'); fs.mkdirSync(logs, { recursive: true });
       const log = fs.openSync(path.join(logs, 'router.log'), 'a');
       try {

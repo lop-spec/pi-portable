@@ -98,7 +98,7 @@ test('real Pi emits exactly one assistant reply, strips routing metadata, and la
   fs.mkdirSync(agent, { recursive: true }); fs.mkdirSync(tools);
   fs.writeFileSync(path.join(tools, 'pi-project.mjs'), `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(record)},JSON.stringify(process.argv.slice(2)));`);
   const result = spawnSync(process.execPath, [cli, '--mode', 'json', '--no-extensions', '-e', path.join(repo, 'tests/project-routing-provider.ts'), '-e', path.join(repo, 'src/extensions/pi-project-router/index.ts'), '--session-dir', path.join(work, 'sessions'), '--model', 'project-fixture/scripted', '--no-tools', '测试'], {
-    cwd: work, encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, PI_CODING_AGENT_DIR: agent, HOME: work, USERPROFILE: work, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1' },
+    cwd: work, encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, PI_CODING_AGENT_DIR: agent, PI_PORTABLE_HOME: work, HOME: work, USERPROFILE: work, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1' },
   });
   assert.equal(result.status, 0, result.stderr);
   const file = fs.readdirSync(path.join(work, 'sessions')).find(f => f.endsWith('.jsonl'));
