@@ -356,6 +356,13 @@ export function integrate(getFile) {
   integrateHistory({ get, set, change, prepend, template });
   integrateImmediateStop({ change });
   integrateToolExcerpts({ get, set, change, prepend, template });
+  // A steering interjection should not silently replace the work already in progress.
+  // Leave normal sends, queued follow-ups and slash-command arguments unchanged.
+  change(hook, `        message,
+        streamingBehavior: behavior,`, `        message: behavior === "steer" && !message.trimStart().startsWith("/")
+          ? \`\${message}\\n\\n请继续原任务。\`
+          : message,
+        streamingBehavior: behavior,`);
   return files;
 }
 

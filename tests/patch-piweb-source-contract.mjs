@@ -169,6 +169,51 @@ test('follow-up activation is explicit, checks extension availability and never 
   assert.doesNotMatch(controls, /setInterval|\/v1\/responses/);
 });
 
+test('steering appends the continuation reminder once per submission; other sends and commands stay intact', async () => {
+  const hook = integrated.get('hooks/useAgentSession.ts');
+  const start = hook.indexOf('  const sendStreamingPrompt = useCallback(async (');
+  const end = hook.indexOf('\n  const handleSteer =', start);
+  assert.ok(start >= 0 && end > start);
+  const callback = hook.slice(start, end)
+    .replace(/async \([\s\S]*?\) => \{/, 'async (message, behavior, images) => {')
+    .replaceAll(' as const', '');
+  const calls = [], restored = [], notices = [];
+  const sessionIdRef = { current: 'steer-fixture' };
+  let reject = false;
+  const send = vm.runInNewContext(callback + ';sendStreamingPrompt', {
+    useCallback: fn => fn, sessionIdRef, composerDraftKey: 'draft', Error,
+    restoreSubmission: (...args) => restored.push(args),
+    addNotice: notice => notices.push(notice),
+    isPromptRejectedError: () => true,
+    console: { error() {} },
+    sendAgentCommand: async (...args) => {
+      if (reject) throw new Error('rejected');
+      calls.push(args);
+    },
+  });
+  const text = '我的手机亮度不影响你看视频质量吧？';
+  const images = [{ data: 'fixture', mimeType: 'image/png' }];
+  await send(text, 'steer', images);
+  assert.equal(calls[0][0], 'steer-fixture');
+  assert.equal(calls[0][1].message, text + '\n\n请继续原任务。');
+  assert.equal(calls[0][1].type, 'prompt');
+  assert.equal(calls[0][1].streamingBehavior, 'steer');
+  assert.equal(calls[0][1].images[0].data, 'fixture');
+  await send(text, 'followUp');
+  assert.equal(calls[1][1].message, text);
+  await send('/lop-followup off', 'steer');
+  assert.equal(calls[2][1].message, '/lop-followup off');
+  await send('', 'steer', images);
+  assert.equal(calls[3][1].message, '\n\n请继续原任务。');
+  reject = true;
+  await send(text, 'steer', images);
+  assert.equal(restored[0][0], text, 'rejected sends restore the unmodified draft');
+  assert.equal(notices.length, 1);
+  assert.doesNotMatch(callback, /setTimeout|setInterval|type: ["']abort["']/);
+  const input = integrated.get('components/ChatInput.tsx');
+  assert.match(input, /sendQueued\(\(e.altKey && onFollowUp\) \|\| !onSteer \? "followup" : "steer"\)/);
+});
+
 test('archive uses a stable native slot and row IDs, not React fiber introspection on the new version', () => {
   // The injected archive script finds one stable slot in the list header and an ID on every row; the row component
   // only reserves an empty slot and never renders an archive control itself.
