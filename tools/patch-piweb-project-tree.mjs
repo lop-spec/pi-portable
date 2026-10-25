@@ -10,6 +10,7 @@ export function integrateProjectTree({ get, set, change, prepend, template }) {
   change('components/SettingsPanel.tsx', '每天凌晨 5 点（本机时间），归档超过 7 天未更新的会话；跳过运行中会话，可在侧栏“归档”中恢复。', '每天凌晨5点按月归档：归档上月及更早未更新的会话，跳过运行中会话；可在侧栏“归档”中恢复。');
   const sidebar = 'components/SessionSidebar.tsx';
   prepend(sidebar, 'import { ProjectTree } from "./ProjectTree";\n');
+  change(sidebar, 'root?.querySelector(".pw-sess-head")', 'root?.querySelector(".pw-tree-head")');
   const source = get(sidebar), a = source.indexOf('      <ProjectSwitcher\n'), b = source.indexOf('\n      {drawerCwd && (', a);
   if (a < 0 || b < a) throw new Error('Project tree sidebar anchor missing');
   change(sidebar, source.slice(a, b), `      <ProjectTree

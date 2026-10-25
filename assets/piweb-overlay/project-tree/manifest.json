@@ -6,7 +6,7 @@
     "lib/project-capacity.mjs": "99095a4bbdbb0680cca4a98aa27f80c5ae10734b28a72114ba5450da26020da8",
     "app/api/project-routing/route.ts": "59de691bf0e1eadfb55a2c9e334ae10b3cb40897916878bec2767007b6d2a5f6",
     "app/redesign-sidebar.css": "b018706b76109d6fa8b6fa90538b8035515f1adef6395fcfc262e84f34dcaf51",
-    "components/SessionSidebar.tsx": "28cf28231ca2a1aba4074d690503107bbd83066398ec463415c94075e6eabc2e",
+    "components/SessionSidebar.tsx": "9a4c5002b87fee6371adbcbfe18b6b2a18ee92adc0146baa1ebcee2f6bf61244",
     "components/AppShell.tsx": "d75766fcf32009623a0251223686833da3416cc8d24514f6e0072e6987829aac",
     "app/api/default-cwd/route.ts": "5f8a2aef732d3610df6379457fc415e6ab43268660a3c8a2256b4d3375e99009",
     "app/api/sessions/[id]/move/route.ts": "86191080a5434c2cfe9bb53afb5a013f0cdd8c39fb50168beb2ce124da79c09c",
