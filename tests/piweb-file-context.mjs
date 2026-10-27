@@ -44,6 +44,18 @@ test('opening is same-origin, authorized, shell-free and reports errors', () => 
   assert.doesNotMatch(route, /shell:\s*true|cmd\.exe|execSync\(/);
 });
 
+test('Open path activates the exact Explorer window without altering normal file opens', () => {
+  const route = files.get('app/api/open-local-file/route.ts');
+  assert.match(route, /foregroundFolder \? windowsFolderFocusScript/);
+  assert.match(route, /body\.action === "path" \|\| fileStat\.isDirectory\(\)/);
+  assert.match(route, /PIWEB_EXPLORER_NOT_FOREGROUND/);
+  const focus = fs.readFileSync(path.join(repo, 'assets/piweb-overlay/file-context/windows-folder-focus.ps1'), 'utf8').replaceAll('\r\n', '\n');
+  assert.equal(files.get('lib/portable-windows-folder-focus.ts'), `export const windowsFolderFocusScript = ${JSON.stringify(focus)};\n`);
+  for (const re of [/Find-FolderWindow/, /Folder\.Self\.Path/, /AttachThreadInput/, /finally\s*\{[\s\S]*?AttachThreadInput\(\$currentThread,\$foregroundThread,\$false\)/, /GetForegroundWindow\(\) -ne \$hwnd/, /PIWEB_EXPLORER_NOT_FOREGROUND/]) assert.match(focus, re);
+  assert.ok(focus.indexOf('$hwnd=Find-FolderWindow') < focus.indexOf('[System.Diagnostics.Process]::Start($launch)'), 'reuse an existing folder before opening another');
+  assert.doesNotMatch(focus, /SendKeys|SystemParametersInfo|SetForegroundWindow\([^$]/);
+});
+
 test('Windows absolute links survive sanitization, external links remain external', {skip: !fs.existsSync(path.join(source, 'node_modules', 'react'))}, async () => {
   const require = createRequire(path.join(source, 'package.json'));
   const { createJiti } = require('jiti');

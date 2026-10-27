@@ -6,14 +6,15 @@ import path from "node:path";
 import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { isFilePathReferencedBySession } from "@/lib/session-file-references";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { windowsFolderFocusScript } from "@/lib/portable-windows-folder-focus";
 
 const exec = promisify(execFile);
 
-async function openWithSystem(target: string) {
+async function openWithSystem(target: string, foregroundFolder: boolean) {
   if (process.platform === "win32") {
     // The path is passed through the environment, never interpolated into a
     // command or shell. PowerShell itself is hidden; the requested app is not.
-    const script = "$ErrorActionPreference='Stop';$p=New-Object System.Diagnostics.ProcessStartInfo;$p.FileName=$env:PIWEB_LOCAL_OPEN_TARGET;$p.UseShellExecute=$true;[System.Diagnostics.Process]::Start($p)|Out-Null";
+    const script = foregroundFolder ? windowsFolderFocusScript : "$ErrorActionPreference='Stop';$p=New-Object System.Diagnostics.ProcessStartInfo;$p.FileName=$env:PIWEB_LOCAL_OPEN_TARGET;$p.UseShellExecute=$true;[System.Diagnostics.Process]::Start($p)|Out-Null";
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     const executable = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     await exec(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
@@ -52,12 +53,16 @@ export async function POST(request: NextRequest) {
     }
     if (!fileStat.isFile() && !fileStat.isDirectory()) return NextResponse.json({ error: "不是普通文件或目录" }, { status: 400 });
     const target = body.action === "path" && !fileStat.isDirectory() ? path.dirname(filePath) : filePath;
-    await openWithSystem(target);
+    await openWithSystem(target, body.action === "path" || fileStat.isDirectory());
     return NextResponse.json({ ok: true });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") return NextResponse.json({ error: "文件或目录不存在" }, { status: 404 });
     console.error("[pi-web] open local file failed:", error);
+    const detail = error as { message?: string; stderr?: string };
+    if (`${detail?.message ?? ""} ${detail?.stderr ?? ""}`.includes("PIWEB_EXPLORER_NOT_FOREGROUND")) {
+      return NextResponse.json({ error: "目录已打开，但系统未允许置前" }, { status: 500 });
+    }
     return NextResponse.json({ error: "系统未能打开，请检查文件关联和权限" }, { status: 500 });
   }
 }

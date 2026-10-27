@@ -4,6 +4,7 @@ export function integrateFileContext({ get, set, change, prepend, template }) {
   set('components/PortableFileContextMenu.tsx', template('file-context/PortableFileContextMenu.tsx'));
   set('app/api/open-local-file/route.ts', template('file-context/open-local-file-route.ts'));
   set('lib/portable-windows-file-links.ts', template('file-context/portable-windows-file-links.ts'));
+  set('lib/portable-windows-folder-focus.ts', `export const windowsFolderFocusScript = ${JSON.stringify(template('file-context/windows-folder-focus.ps1'))};\n`);
 
   prepend('lib/markdown.ts', 'import { portableWindowsFileLinks } from "./portable-windows-file-links";\n');
   change('lib/markdown.ts', '      [portableImageUrls, { cwd }],', '      portableWindowsFileLinks,\n      [portableImageUrls, { cwd }],');
