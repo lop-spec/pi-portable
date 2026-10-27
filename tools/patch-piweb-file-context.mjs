@@ -1,4 +1,5 @@
 // Final source overlay: one context menu across conversation file renderers.
+import crypto from 'node:crypto';
 export function integrateFileContext({ get, set, change, prepend, template }) {
   set('components/PortableFileContextMenu.tsx', template('file-context/PortableFileContextMenu.tsx'));
   set('app/api/open-local-file/route.ts', template('file-context/open-local-file-route.ts'));
@@ -82,4 +83,8 @@ function DesktopMarkdownImage({src,alt}:{src?:string;alt?:string}){
   change(host, '      a:({href,children})=>{const file=resolveLocalFileHref(href,host.cwd);return <a href={href} target="_blank" rel="noopener noreferrer" onClick={file&&host.onOpenFile?event=>{event.preventDefault();host.onOpenFile?.(file);}:undefined}>{children}</a>;},', '      a:({href,children})=><DesktopMarkdownLink href={href}>{children}</DesktopMarkdownLink>,');
   change(host, '      img:({src,alt})=><img src={typeof src==="string"?src:undefined} alt={alt??""}/>,', '      img:({src,alt})=><DesktopMarkdownImage src={typeof src==="string"?src:undefined} alt={alt}/>,');
   set('public/licenses/pi-desktop/source/host.tsx.txt', get(host));
+  const pinned = JSON.parse(template('file-context/manifest.json'));
+  for (const [name, expected] of Object.entries(pinned.files)) {
+    if (crypto.createHash('sha256').update(get(name)).digest('hex') !== expected) throw new Error(`${name}: file context final-stage hash mismatch; zero writes`);
+  }
 }
