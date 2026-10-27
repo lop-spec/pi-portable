@@ -1,0 +1,5082 @@
+/*
+  Design tokens — the single source of truth for the visual system.
+  Dark defaults on :root, light overrides on :root[data-theme="light"], and the
+  Tailwind @theme scales (type ramp, radii, weights, leading, tracking).
+  Raw typography/radius literals elsewhere are rejected by
+  scripts/check-style-tokens.mjs.
+*/
+
+/*
+  Visual system aligned to local Codex desktop (ChatGPT.app / electron-dark).
+  Palette sourced from Codex CSS tokens: gray-0..1000, surface #181818.
+  Accent is neutral gray-scale (not blue) so chrome, markdown, and plugins stay monochrome.
+*/
+
+.pd-transcript,
+:root:not([data-theme="light"]) .pd-transcript {
+  color-scheme: dark;
+  --gray-0: #ffffff;
+  --gray-50: #f9f9f9;
+  --gray-75: #f3f3f3;
+  --gray-100: #ededed;
+  --gray-300: #afafaf;
+  --gray-500: #5d5d5d;
+  --gray-550: #4f4f4f;
+  --gray-600: #414141;
+  --gray-700: #303030;
+  --gray-750: #282828;
+  --gray-800: #212121;
+  --gray-900: #181818;
+  --gray-1000: #0d0d0d;
+  /* Neutral accent ramp (replaces legacy blue-* accent). */
+  --accent-50: #f3f3f3;
+  --accent-100: #ededed;
+  --accent-300: #afafaf;
+  --accent-400: #ffffff;
+  --accent-900: #303030;
+
+  --ds-bg-primary: var(--gray-900);
+  --ds-settings-rail-bg: var(--ds-bg-under);
+  --ds-bg-sidebar: var(--ds-settings-rail-bg, var(--ds-bg-under));
+  /*
+   * Optional paint layer for the sidebar surface (gradients / images).
+   * `--ds-bg-sidebar` stays a color so color-mix, borders, and macOS glass
+   * tint keep working; themes set this to a CSS <image> value when they want
+   * a gradient or picture plate.
+   */
+  --ds-bg-sidebar-image: none;
+  --ds-bg-secondary: var(--gray-800);
+  --ds-bg-tertiary: var(--gray-750);
+  --ds-bg-inset: var(--gray-1000);
+  --ds-bg-under: #000000;
+  /*
+   * The dock column and its raised header/chrome strips carry their own tokens
+   * so a contributed theme can move them: before D419 the light values were
+   * literals in work-panel.css, which no theme could reach.
+   */
+  --ds-bg-dock: var(--ds-bg-secondary);
+  --ds-bg-dock-raised: transparent;
+  --ds-bg-elevated: color-mix(in oklab, var(--gray-800) 96%, transparent);
+  --ds-bg-elevated-opaque: var(--gray-750);
+  --ds-bg-hover: color-mix(in oklab, var(--gray-0) 6%, transparent);
+  --ds-bg-active: color-mix(in oklab, var(--gray-0) 10%, transparent);
+  /* Codex elevated-primary #212121f5 / color-mix(gray-800 96%, transparent) */
+  --ds-bg-composer: color-mix(in oklab, var(--gray-800) 96%, transparent);
+  /*
+    macOS sidebar and boot-splash glass (chrome.css). The native sidebar
+    vibrancy material carries the blur, so the renderer only adds a thin tint
+    plus a sheen; anything heavier reads as a flat panel and hides the
+    material. Tuned so text-muted still clears 4.5:1 on the brightest backdrop
+    the source-list material can produce.
+  */
+  --ds-sidebar-glass-tint: color-mix(in oklab, var(--ds-bg-sidebar) 40%, transparent);
+  --ds-sidebar-glass-sheen-top: color-mix(in oklab, var(--gray-0) 7%, transparent);
+  --ds-sidebar-glass-sheen-bottom: color-mix(in oklab, var(--gray-0) 4%, transparent);
+  --ds-bg-chip: color-mix(in oklab, var(--gray-0) 6%, transparent);
+  --ds-text-primary: var(--gray-0);
+  /*
+    One white-alpha ramp for the whole secondary/muted/faint tier. gray-500 and
+    gray-600 used to sit here, but those are ink values for a pale surface: on
+    the #181818 plate they land at 2.7:1 and 1.7:1, so mono ids, row meta, tool
+    chips, and inactive scope segments were effectively unreadable. Alpha rather
+    than a flat hex keeps each step consistent over hover and elevated fills too.
+  */
+  --ds-text-secondary: color-mix(in oklab, var(--gray-0) 70%, transparent);
+  --ds-text-muted: color-mix(in oklab, var(--gray-0) 52%, transparent);
+  --ds-text-faint: color-mix(in oklab, var(--gray-0) 38%, transparent);
+  --ds-border-default: color-mix(in oklab, var(--gray-0) 8%, transparent);
+  --ds-border-subtle: color-mix(in oklab, var(--gray-0) 5%, transparent);
+  --ds-border-strong: color-mix(in oklab, var(--gray-0) 14%, transparent);
+  /*
+    Divider-free surfaces (D297). In-flow structure is carried by three tonal
+    layers instead of strokes: the page, a soft tile mixed from the text colour,
+    and a raised layer (an opaque lift plus a soft shadow) for the active pill
+    of a control or a block that must read as "on top". Border tokens above stay
+    for floating layers — menus, dialogs, tooltips — where an edge is an
+    elevation cue rather than a partition.
+  */
+  --ds-tile: color-mix(in oklab, var(--gray-0) 3.5%, transparent);
+  --ds-tile-hover: color-mix(in oklab, var(--gray-0) 6%, transparent);
+  --ds-tile-deep: color-mix(in oklab, var(--gray-0) 8%, transparent);
+  --ds-raised: var(--gray-750);
+  --ds-raised-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --ds-accent: var(--gray-0);
+  --ds-accent-hover: var(--gray-100);
+  --ds-accent-soft: var(--gray-300);
+  /* Focus rings / resize affordances. Tied to the accent so themes stay monochrome. */
+  --ds-focus: var(--ds-accent);
+  /* Settings fields and shared inset searches keep their built-in tones. */
+  --ds-settings-field-bg: #212121;
+  --ds-settings-nav-active: color-mix(in oklab, var(--gray-0) 10%, transparent);
+  --ds-field-inset-bg: color-mix(in oklab, var(--ds-text-primary) 5%, transparent);
+  --ds-field-inset-focus-bg: color-mix(in oklab, var(--ds-text-primary) 7%, transparent);
+  /*
+    Switch track/knob. Off keeps a dim fill plus a hairline ring so the empty
+    slot still reads as a control; on inverts to the solid accent, so the knob
+    flips polarity with the track instead of only sliding.
+  */
+  --ds-switch-track-off: color-mix(in oklab, var(--gray-0) 10%, transparent);
+  --ds-switch-track-off-hover: color-mix(in oklab, var(--gray-0) 18%, transparent);
+  --ds-switch-ring-off: color-mix(in oklab, var(--gray-0) 22%, transparent);
+  --ds-switch-knob-off: var(--gray-300);
+  --ds-switch-knob-on: var(--gray-900);
+  /*
+    Prose ink, code-card chrome, scrims, and transcript fills tokenized in
+    issue #341. Every default is the literal (or literal mix) the sheet painted
+    before, so the built-in appearance is unchanged; what changes is that a
+    contributed theme can now reach them. The Shiki syntax plate and its ink
+    stay with the Shiki theme (see scripts/style-surface-tokens.mjs).
+  */
+  --ds-prose-kbd-fg: var(--ds-text-secondary);
+  --ds-thinking-code-bg: color-mix(in oklab, var(--ds-text-primary) 4.5%, transparent);
+  --ds-mermaid-canvas: color-mix(in oklab, var(--ds-bg-primary) 94%, var(--ds-text-primary));
+  --ds-code-head-bg: color-mix(in oklab, #fff 4%, transparent);
+  --ds-code-hover-bg: color-mix(in oklab, #fff 8%, transparent);
+  /* D148: dark keeps the ~45% black veil. */
+  --ds-scrim: color-mix(in oklab, #000 45%, transparent);
+  --ds-modal-veil: color-mix(in oklab, var(--ds-bg-primary) 78%, transparent);
+  --ds-tool-row-bg: var(--ds-tile);
+  --ds-send-disabled-bg: color-mix(in oklab, var(--ds-text-primary) 18%, transparent);
+  --ds-send-disabled-fg: color-mix(in oklab, var(--gray-900) 70%, transparent);
+  --ds-placeholder-ink: color-mix(in oklab, var(--gray-0) 42%, transparent);
+  --ds-success: #40c977;
+  --ds-warning: #ff8549;
+  --ds-error: #ff6764;
+  --ds-info: var(--gray-300);
+  --ds-purple: #c27aff;
+  --ds-shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --ds-shadow-model-menu: var(--ds-shadow-dialog);
+  /* Codex --elevation-prominent (same stroke+lift in dark and light) */
+  --ds-elevation-stroke: 0 0 0 0.5px color-mix(in oklab, var(--gray-0) 12%, transparent);
+  /* D297: the composer lifts by shadow alone; the hairline stroke is gone. */
+  --ds-shadow-composer: 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+  --ds-bg-elevated-primary: color-mix(in oklab, var(--gray-800) 96%, transparent);
+  --ds-sidebar-width: clamp(240px, 275px, min(520px, calc(100vw - 320px)));
+  /* Settings rail border-box width, including its 1px right border. The
+   * settings drag band starts after the rail so the rail keeps a single
+   * surface tone from the window top edge down. */
+  --ds-settings-nav-width: 275px;
+  --ds-toolbar-height: 46px;
+  /* Square icon-only control. `.icon-btn` takes its width from its label, so an
+     icon-only use pins both axes to this token instead. */
+  --ds-control-size: 28px;
+  /* The field metric: one height for a text input, a native select and the
+     dropdowns that act as form fields, so a control can never look like a
+     different-sized box than the input beside it. Derived from the single-line
+     field box (9px + 9px padding around one `--leading-body` line at
+     `--text-base`) so it follows the Appearance font scale instead of pinning
+     a px value that drifts once type is resized. Dense nested surfaces — the
+     subagent sheet's row body, compact Appearance pickers, and a compact menu
+     search — and the import toolbar, whose row holds small buttons and no
+     field, declare their own metric. */
+  --ds-field-height: calc(18px + var(--text-base) * var(--leading-body));
+  /* Compact closed Appearance picker triggers. SettingsMenuSelect keeps the
+     field metric unless a dense surface overrides it. */
+  --ds-settings-picker-height: calc(14px + var(--text-sm-plus) * var(--leading-body));
+  /* Work-panel controls share these geometry tokens so the header's safe lane
+     cannot drift away from the viewport-fixed toggle. */
+  --ds-work-panel-toggle-size: 28px;
+  --ds-work-panel-toggle-inset: 12px;
+  /* The one gap between adjacent controls in the panel header row: the tab
+     strip to the action group, between `+` and maximize, and — through the
+     lane reserve that spends this token — between that group and the
+     viewport-fixed collapse toggle. One value keeps the three buttons reading
+     as one group instead of a rail behind its own divider. */
+  --ds-work-panel-control-gap: 4px;
+  /* Preview-mode shell actions are two chrome controls (the same 28px square as
+     the toggle beside them) with a 4px gap and an additional 8px buffer before
+     the panel's first tab. Derived from the control it reserves room for, so the
+     lane and the buttons cannot drift apart. */
+  --ds-preview-action-lane-width: calc(
+    2 * var(--ds-work-panel-toggle-size) + 4px + 8px
+  );
+  /* Keep an 8px visual buffer between work-panel actions and window chrome. */
+  --ds-window-controls-width: 120px;
+  /* macOS traffic lights sit at the window's top-left. Their footprint is
+     native geometry, injected at boot from @pi-desktop/shared (window-chrome.ts)
+     so it cannot drift from the position electron/main/bootstrap/window.ts
+     gives the buttons; frames without native traffic lights keep the 0px
+     default. The gap is the breathing room the cluster's right edge keeps
+     before the first shell control. */
+  --ds-traffic-light-edge: 0px;
+  --ds-traffic-light-gap: 12px;
+  /* Left inset a window-level chrome row must leave clear for the traffic
+     lights. The platform policy that turns the two values above into this
+     reserve lives with the consumers in chrome.css. */
+  --ds-window-lead-inset: 0px;
+  --ds-composer-radius: var(--radius-xl);
+  --ds-composer-radius-lg: var(--radius-xl);
+
+  /* Motion tokens (design-system §8) */
+  --motion-duration-fast: 150ms;
+  --motion-duration-normal: 200ms;
+  --motion-duration-slow: 300ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* Global type scale (D343). 1 = product ramp; Appearance multiplies --text-*. */
+  --font-scale: 1;
+}
+
+:root[data-theme="light"] .pd-transcript {
+  color-scheme: light;
+  /* Codex electron-light */
+  --ds-bg-primary: #ffffff;
+  --ds-settings-rail-bg: #f3f3f3;
+  --ds-bg-sidebar: var(--ds-settings-rail-bg, #f3f3f3);
+  --ds-bg-secondary: #f9f9f9;
+  --ds-bg-tertiary: #f3f3f3;
+  --ds-bg-inset: #ededed;
+  --ds-bg-under: #f9f9f9;
+  /* Dock column reads as quiet inset paper on the white chat pane (D419). */
+  --ds-bg-dock: #fafafa;
+  --ds-bg-dock-raised: #ffffff;
+  --ds-bg-elevated: color-mix(in oklab, #ffffff 70%, transparent);
+  --ds-bg-elevated-opaque: #ffffff;
+  --ds-bg-hover: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --ds-bg-active: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --ds-bg-composer: #ffffff;
+  --ds-sidebar-glass-tint: color-mix(in oklab, var(--ds-bg-sidebar) 55%, transparent);
+  --ds-sidebar-glass-sheen-top: color-mix(in oklab, #ffffff 45%, transparent);
+  --ds-sidebar-glass-sheen-bottom: color-mix(in oklab, #ffffff 30%, transparent);
+  --ds-bg-chip: color-mix(in oklab, #1a1c1f 4%, transparent);
+  --ds-text-primary: #1a1c1f;
+  --ds-text-secondary: color-mix(in oklab, #1a1c1f 74%, transparent);
+  --ds-text-muted: #5d5d5d;
+  --ds-text-faint: #afafaf;
+  --ds-border-default: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --ds-border-subtle: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --ds-border-strong: color-mix(in oklab, #1a1c1f 12%, transparent);
+  --ds-tile: color-mix(in oklab, #1a1c1f 3.5%, transparent);
+  --ds-tile-hover: color-mix(in oklab, #1a1c1f 6%, transparent);
+  --ds-tile-deep: color-mix(in oklab, #1a1c1f 8%, transparent);
+  --ds-raised: #ffffff;
+  --ds-raised-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+  /* Light theme accent inverts: dark ink on pale surfaces. */
+  --ds-accent: #1a1c1f;
+  --ds-accent-hover: #303030;
+  --ds-accent-soft: #5d5d5d;
+  --ds-focus: var(--ds-accent);
+  --ds-settings-field-bg: #ffffff;
+  --ds-settings-nav-active: color-mix(in oklab, #1a1c1f 12%, #ffffff);
+  --ds-field-inset-bg: #f3f3f3;
+  /* Issue #341: the light values these fills used to hardcode in overrides. */
+  --ds-prose-kbd-fg: #303030;
+  --ds-thinking-code-bg: #f0f0f0;
+  --ds-mermaid-canvas: #ffffff;
+  --ds-code-head-bg: color-mix(in oklab, #1a1c1f 3.5%, transparent);
+  --ds-code-hover-bg: color-mix(in oklab, #1a1c1f 6%, transparent);
+  /* D148: light drops the scrim to ~28% ink so white dialogs stay readable. */
+  --ds-scrim: color-mix(in oklab, #1a1c1f 28%, transparent);
+  --ds-modal-veil: color-mix(in oklab, #1a1c1f 32%, transparent);
+  --ds-tool-row-bg: color-mix(in oklab, #1a1c1f 2%, transparent);
+  --ds-send-disabled-bg: #8e8e90; /* gold disabled send chip */
+  --ds-send-disabled-fg: #ffffff;
+  --ds-placeholder-ink: #4a4c4f;
+  --ds-field-inset-focus-bg: #ffffff;
+  /* Off knob stays white on the pale track; on knob keeps white on near-black. */
+  --ds-switch-track-off: color-mix(in oklab, #1a1c1f 10%, transparent);
+  --ds-switch-track-off-hover: color-mix(in oklab, #1a1c1f 18%, transparent);
+  --ds-switch-ring-off: color-mix(in oklab, #1a1c1f 20%, transparent);
+  --ds-switch-knob-off: #ffffff;
+  --ds-switch-knob-on: #ffffff;
+  --ds-success: #00a240;
+  --ds-warning: #e25507;
+  --ds-error: #e02e2a;
+  --ds-info: #5d5d5d;
+  --ds-purple: #7c3aed;
+  --ds-shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.12);
+  /* Preserve the opaque light model menu's existing stroke and lift. */
+  --ds-shadow-model-menu:
+    0 0 0 0.5px color-mix(in oklab, #1a1c1f 10%, transparent),
+    0 8px 32px rgba(0, 0, 0, 0.1),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+  --ds-elevation-stroke: 0 0 0 0.5px color-mix(in oklab, #1a1c1f 12%, transparent);
+  /* Codex elevation-prominent exact (same dark/light formula). */
+  --ds-shadow-composer: 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+  --ds-bg-elevated-primary: color-mix(in oklab, #ffffff 70%, transparent);
+}
+
+.pd-transcript {
+  --color-bg-primary: var(--ds-bg-primary);
+  --color-bg-secondary: var(--ds-bg-secondary);
+  --color-bg-tertiary: var(--ds-bg-tertiary);
+  --color-bg-inset: var(--ds-bg-inset);
+  --color-bg-under: var(--ds-bg-under);
+  --color-bg-elevated: var(--ds-bg-elevated);
+  --color-bg-hover: var(--ds-bg-hover);
+  --color-bg-active: var(--ds-bg-active);
+  --color-bg-composer: var(--ds-bg-composer);
+  --color-bg-chip: var(--ds-bg-chip);
+  --color-text-primary: var(--ds-text-primary);
+  --color-text-secondary: var(--ds-text-secondary);
+  --color-text-muted: var(--ds-text-muted);
+  --color-text-faint: var(--ds-text-faint);
+  --color-border-default: var(--ds-border-default);
+  --color-border-subtle: var(--ds-border-subtle);
+  --color-border-strong: var(--ds-border-strong);
+  --color-accent: var(--ds-accent);
+  --color-accent-hover: var(--ds-accent-hover);
+  --color-accent-soft: var(--ds-accent-soft);
+  --color-success: var(--ds-success);
+  --color-warning: var(--ds-warning);
+  --color-error: var(--ds-error);
+  --color-info: var(--ds-info);
+  --color-purple: var(--ds-purple);
+
+  /*
+    Token scales — the ONLY allowed values for typography and radii.
+    Raw px/em literals for font-size, font-weight, line-height,
+    letter-spacing, and border-radius are forbidden in component CSS
+    and TSX (enforced by scripts/check-style-tokens.mjs).
+  */
+  /*
+    Apple-inspired fixed-radius ladder for dense desktop UI. Compact controls
+    remain rounded rectangles; capsules and circles use the explicit shape
+    tokens below. The regular two-pixel rhythm keeps adjacent levels legible
+    and makes concentric nesting predictable.
+  */
+  --radius-3xs: 4px;
+  --radius-2xs: 6px;
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-md-plus: 14px;
+  --radius-lg: 16px;
+  --radius-lg-plus: 18px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+  --radius-round: 50%;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  /* Type ramp (Codex metrics; "-plus" = half-step between named sizes) */
+  --text-3xs: calc(10.5px * var(--font-scale));
+  --text-2xs: calc(11px * var(--font-scale)); /* alias kept: --text-xs */
+  --text-xs: calc(11px * var(--font-scale));
+  --text-xs-plus: calc(11.5px * var(--font-scale));
+  --text-sm: calc(12px * var(--font-scale));
+  --text-sm-plus: calc(12.5px * var(--font-scale));
+  --text-md: calc(13px * var(--font-scale));
+  --text-md-plus: calc(13.5px * var(--font-scale));
+  --text-base: calc(14px * var(--font-scale));
+  --text-base-plus: calc(15px * var(--font-scale));
+  --text-lg: calc(16px * var(--font-scale));
+  --text-lg-plus: calc(18px * var(--font-scale));
+  --text-xl: calc(20px * var(--font-scale));
+  --text-2xl: calc(28px * var(--font-scale));
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-medium-plus: 520;
+  --font-weight-strong: 560;
+  --font-weight-semibold: 600;
+
+  --leading-none: 1;
+  --leading-heading: 1.15;
+  --leading-tighter: 1.2;
+  --leading-tight: 1.25;
+  --leading-compact: 1.3;
+  --leading-compact-plus: 1.35;
+  --leading-normal: 1.4;
+  --leading-body: 1.45;
+  --leading-relaxed: 1.5;
+  --leading-chat: 1.55;
+  --leading-prose: 1.6;
+  --leading-row: calc(18px * var(--font-scale)); /* sidebar thread titles */
+
+  --tracking-tighter: -0.03em;
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0em;
+  --tracking-wide: 0.02em;
+}
+
+.pd-transcript button {font:inherit;color:inherit;background:none;border:0;padding:0;}
+/*
+  Transcript messages — user/assistant rows, bubbles, edit and revision states,
+  hover action toolbars, permission cards, error notices, and the Codex-style
+  tool activity/tool row disclosures.
+*/
+
+.pd-transcript .message-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  /* Skip layout/paint for far-offscreen rows in long transcripts. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
+  /* Paint containment clips descendants to the padding box, which squared off
+     the deliberate bleed of the disclosure row chrome: both disclosure headers
+     pull their hover fill 4px past the column edge, and the two collapse-rail
+     controls occupy separate 14px lanes in the gutter. 34px covers the outer
+     lane. .tool-activity-group keeps its own clip for the subagent card
+     chrome. */
+  overflow-clip-margin: 34px;
+}
+
+.pd-transcript .message-row.user {
+  justify-content: flex-end;
+}
+
+.pd-transcript .message-col {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pd-transcript .message-row.user .message-col {
+  /* `min(max-content, …)` is a definite shrink-wrap. `fit-content` includes
+     the stretch size, so a descendant with `max-width: 100%` (file chips)
+     inflated the plate to the 82%/600px cap after a paste. */
+  width: min(max-content, 82%, 600px);
+  max-width: min(82%, 600px);
+  align-items: flex-end;
+}
+
+/* Composer chips use `max-width: min(100%, 240px)` so they shrink in a
+   definite composer. Inside this shrink-to-fit plate the percentage
+   containing block is the available thread width, which stretches the
+   bubble. A definite 240px cap keeps short chip+text prompts compact. */
+.pd-transcript .message-row.user .composer-chip {
+  max-width: 240px;
+}
+
+/* A chip inside a message belongs to that message: it borrows the message's own
+   face, size and leading and only keeps the tile surface. The composer's fixed
+   11.5px/20px box is a draft-only metric, and as a message chip it clipped the
+   message's own line box. Sized by the inherited leading and aligned to the
+   line, the tile covers exactly one line of message text, so the label sits on
+   that line's baseline and the chip reads as a run of it. */
+.pd-transcript .message-row .composer-chip {
+  height: auto;
+  padding: 0 6px;
+  font: inherit;
+  line-height: inherit;
+  vertical-align: top;
+}
+
+/* A conversation reference is the message chip whose label can be as long as a
+   conversation title. An atomic chip that does not fit is pushed whole onto the
+   next line and leaves the rest of its line blank, so this one is an inline run
+   instead: it breaks with the text, its first line still reaches the right edge
+   of the line it started on, and the tile continues over the break. */
+.pd-transcript .message-row .composer-chip[data-action="open-session-reference"] {
+  display: inline;
+  /* An inline box is as tall as the font (about 1.18em here), so half of the
+     leading has to come back as padding for the tile to cover the line box. */
+  padding: 0.186em 6px;
+  vertical-align: baseline;
+  white-space: normal;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* `gap` only spaces flex items: an inline run needs the icon's own gap. */
+.pd-transcript .message-row .composer-chip[data-action="open-session-reference"] .composer-chip-icon {
+  margin-right: 4px;
+}
+
+/* Break the label where the line needs it instead of ellipsising it: on a full
+   line the label is the only part long enough to reach the right edge. */
+.pd-transcript .message-row .composer-chip[data-action="open-session-reference"] .composer-chip-name {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.pd-transcript .message-row.assistant .message-col,
+.pd-transcript .message-row.system .message-col,
+.pd-transcript .message-row.tool .message-col {
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  align-items: flex-start;
+}
+
+/* Decision cards are soft tiles (D297): risk rides in the tint and the risk
+   pill rather than a coloured rail. */
+.pd-transcript .permission-card {
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  margin: 10px 0;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--ds-warning) 7%, transparent);
+}
+
+.pd-transcript .asktool-card {
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+}
+
+.pd-transcript .asktool-card-header,
+.pd-transcript .asktool-card-header-actions {
+  display: flex;
+  align-items: center;
+}
+.pd-transcript .asktool-card-header {
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pd-transcript .asktool-card-header-actions {
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+}
+.pd-transcript .asktool-card-header-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pd-transcript .asktool-card-title {
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.pd-transcript .asktool-card-progress {
+  color: var(--ds-text-faint);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.pd-transcript .asktool-question-number {
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-wide);
+}
+
+.pd-transcript .asktool-decline {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--ds-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-xs);
+}
+
+.pd-transcript .asktool-decline:hover {
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .asktool-indicators {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+.pd-transcript .asktool-indicator {
+  width: 6px;
+  height: 6px;
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: var(--ds-tile-deep);
+  cursor: pointer;
+}
+.pd-transcript .asktool-indicator.current {
+  outline: 2px solid color-mix(in oklab, var(--ds-accent) 30%, transparent);
+  outline-offset: 1px;
+}
+
+.pd-transcript .asktool-indicator.answered {
+  background: var(--ds-success);
+}
+
+.pd-transcript .asktool-indicator.skipped {
+  background: var(--ds-text-muted);
+}
+
+.pd-transcript .asktool-question {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  margin: 8px 0 0;
+  color: var(--ds-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-snug);
+}
+
+.pd-transcript .asktool-question-body {
+  display: block;
+  min-width: 0;
+  /* Long prompts scroll here so header actions stay on screen (#1531).
+     Do not reserve a scrollbar gutter. */
+  max-height: min(208px, 24vh);
+  max-height: min(208px, 24dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior-y: contain;
+}
+
+.pd-transcript .asktool-question-body:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+
+.pd-transcript .asktool-options {
+  display: grid;
+  gap: 6px;
+  max-height: min(208px, 24vh);
+  max-height: min(208px, 24dvh);
+  margin-top: 8px;
+  padding: 2px 4px 2px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 2px;
+}
+
+/* The card rides the composer plate below, so its option rows are inlaid fills
+   on that plate rather than the raised layer of an in-flow surface (D297). */
+.pd-transcript .asktool-option {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 28px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--ds-tile-deep);
+  color: var(--ds-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  text-align: start;
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .asktool-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pd-transcript .asktool-rich-paragraph,
+.pd-transcript .asktool-rich-heading,
+.pd-transcript .asktool-rich-list,
+.pd-transcript .asktool-rich-list-item,
+.pd-transcript .asktool-rich-quote,
+.pd-transcript .asktool-rich-pre,
+.pd-transcript .asktool-rich-table,
+.pd-transcript .asktool-rich-table-row,
+.pd-transcript .asktool-rich-table-cell {
+  display: block;
+  margin: 0;
+}
+
+.pd-transcript .asktool-rich-heading {
+  font-weight: var(--font-weight-semibold);
+}
+
+.pd-transcript .asktool-rich-list {
+  padding-inline-start: 4px;
+}
+
+.pd-transcript .asktool-rich-list-ordered {
+  counter-reset: asktool-option-item;
+}
+
+.pd-transcript .asktool-rich-list-item + .asktool-rich-list-item {
+  margin-top: 2px;
+}
+
+.pd-transcript .asktool-rich-list-ordered > .asktool-rich-list-item {
+  counter-increment: asktool-option-item;
+}
+
+.pd-transcript .asktool-rich-list-ordered > .asktool-rich-list-item > .asktool-rich-list-marker::before {
+  content: counter(asktool-option-item) ". ";
+}
+
+.pd-transcript .asktool-rich-list-unordered > .asktool-rich-list-item > .asktool-rich-list-marker {
+  margin-inline-end: 5px;
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .asktool-rich-quote {
+  padding-inline-start: 6px;
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .asktool-rich-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .asktool-rich-task-marker,
+.pd-transcript .asktool-rich-image-alt {
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .asktool-rich-image-alt {
+  font-style: italic;
+}
+
+.pd-transcript .asktool-rich-rule {
+  display: block;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--ds-text-faint);
+}
+
+.pd-transcript .asktool-rich-table-row {
+  display: flex;
+  gap: 6px;
+}
+
+.pd-transcript .asktool-rich-table-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .asktool-rich-code {
+  border-radius: var(--radius-2xs);
+  background: var(--ds-tile-deep);
+  padding: 1px 3px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .asktool-option-description {
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .asktool-option:hover,
+.pd-transcript .asktool-option.selected {
+  background: color-mix(in oklab, var(--ds-accent) 10%, var(--ds-tile-deep));
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .asktool-option-mark {
+  display: grid;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-2xs);
+  background: var(--ds-tile-deep);
+  color: var(--ds-accent);
+  font-size: var(--text-xs);
+  line-height: var(--leading-none);
+  margin-top: 2px;
+}
+
+.pd-transcript .asktool-option[role="radio"] .asktool-option-mark {
+  border-radius: var(--radius-full);
+}
+
+.pd-transcript .asktool-option.selected .asktool-option-mark {
+  background: color-mix(in oklab, var(--ds-accent) 18%, transparent);
+}
+
+.pd-transcript .asktool-custom-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--ds-tile-deep);
+  color: var(--ds-text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .asktool-custom-input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ds-accent) 30%, transparent);
+}
+
+.pd-transcript .asktool-card-header-actions .btn {
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+}
+@media (max-width: 560px) {
+  .pd-transcript .asktool-card-header {
+    align-items: flex-start;
+  }
+  .pd-transcript .asktool-card-header-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* Compact pre-stream feedback: visible immediately after send without
+   competing with the assistant rail, tool rows, or permission card. */
+.pd-transcript .working-indicator {
+  box-sizing: border-box;
+  display: flex;
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 8px;
+  padding: 8px 0 4px 16px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm-plus);
+}
+
+/* Runtime-owned quiet phases explain why no new transcript row is arriving.
+   Keep them as the same lightweight status row, not a second progress card. */
+.pd-transcript .run-activity-indicator[data-phase="waiting-model"],
+.pd-transcript .run-activity-indicator[data-phase="starting"],
+.pd-transcript .run-activity-indicator[data-phase="preparing"],
+.pd-transcript .run-activity-indicator[data-phase="compacting"] {
+  color: var(--ds-info);
+}
+
+.pd-transcript .run-activity-indicator[data-phase="waiting-model"]
+  .working-indicator-mark > span,
+.pd-transcript .run-activity-indicator[data-phase="starting"]
+  .working-indicator-mark > span,
+.pd-transcript .run-activity-indicator[data-phase="preparing"]
+  .working-indicator-mark > span,
+.pd-transcript .run-activity-indicator[data-phase="compacting"]
+  .working-indicator-mark > span {
+  background: var(--ds-info);
+}
+
+.pd-transcript .run-activity-indicator[data-phase="retrying"],
+.pd-transcript .run-activity-indicator[data-phase="recovering"] {
+  color: var(--ds-warning);
+}
+
+.pd-transcript .run-activity-indicator[data-phase="retrying"] .working-indicator-mark > span,
+.pd-transcript .run-activity-indicator[data-phase="recovering"]
+  .working-indicator-mark > span {
+  background: var(--ds-warning);
+}
+
+.pd-transcript .run-activity-indicator[data-phase="waiting-subagents"] {
+  color: var(--ds-purple);
+}
+
+.pd-transcript .run-activity-indicator[data-phase="waiting-subagents"]
+  .working-indicator-mark > span {
+  background: var(--ds-purple);
+}
+
+.pd-transcript .run-activity-indicator {
+  min-width: 0;
+}
+
+.pd-transcript .run-activity-indicator .working-indicator-label {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .run-activity-retry-reason {
+  position: relative;
+  /* The plate hangs this far above the trigger; the bridge below covers it. */
+  --run-activity-error-gap: 8px;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  cursor: help;
+  outline: none;
+}
+
+/* The pointer has to cross the gap between the trigger and the plate to reach
+   the plate's scrollbar. That band belongs to the indicator row, not to the
+   trigger, so `:hover` dropped there and the plate closed mid-reach. The bridge
+   is part of the trigger, which keeps the path hovered. */
+.pd-transcript .run-activity-retry-reason::before {
+  content: "";
+  position: absolute;
+  top: calc(-1 * var(--run-activity-error-gap));
+  left: 0;
+  right: 0;
+  height: var(--run-activity-error-gap);
+}
+
+.pd-transcript .run-activity-retry-reason:focus-visible {
+  border-radius: var(--radius-2xs);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ds-accent) 80%, transparent);
+}
+
+/* The retry reason borrows the assistant error card's hierarchy without
+   adding a second transcript row. It is hover/focus-only so the active row
+   remains compact at rest. The in-flow `.message-error` wash is transparent;
+   this floating tooltip mixes the same tint over an opaque elevated plate.
+   The plate hangs above the tail status row inside `.thread-scroll`, whose
+   `overflow: auto` clips it at the scrollport edge, and the conversation bar
+   paints over the same band one stacking level higher, so an unbounded plate
+   lost the first lines of a long provider message (ADR 0196) - the part a
+   reader needs. Cap it to the room the tail row leaves: the window minus the
+   conversation bar, minus the composer reserve `.thread-content` already
+   holds (16px above `--composer-dock-height`), minus the 46px status row and
+   this plate's own 8px gap. The remainder scrolls, the way
+   `.message-error-details pre` already handles long error text. */
+.pd-transcript .run-activity-error-popover.message-error {
+  position: absolute;
+  bottom: calc(100% + var(--run-activity-error-gap));
+  left: 0;
+  z-index: 8;
+  display: block;
+  width: min(360px, calc(100vw - 32px));
+  padding: 10px 12px;
+  max-height: calc(100vh - var(--ds-toolbar-height, 46px) - var(--composer-dock-height, 228px) - 70px);
+  /* RunActivityIndicator measures the room the tail row actually leaves and
+     publishes it here; the calc is only the first-paint fallback. */
+  max-height: var(--run-activity-error-max-height, calc(100dvh - var(--ds-toolbar-height, 46px) - var(--composer-dock-height, 228px) - 70px));
+  /* The plate itself does not scroll: Chromium paints a scrollbar outside a
+     rounded corner, so the bar crossed the radius. The body below the heading
+     owns the scrolling instead. */
+  overflow: hidden;
+  background: color-mix(in oklab, var(--ds-error) 10%, var(--ds-bg-elevated-opaque));
+  box-shadow: var(--ds-shadow-dialog);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  visibility: hidden;
+  /* Leaving the trigger keeps the plate for one short beat, so a reader
+     reaching for the scrollbar is not punished for the trip. */
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-out) 240ms,
+    transform var(--motion-duration-fast) var(--motion-ease-out) 240ms,
+    visibility 0s linear calc(var(--motion-duration-fast) + 240ms);
+}
+
+.pd-transcript .run-activity-retry-reason:hover .run-activity-error-popover,
+.pd-transcript .run-activity-retry-reason:focus-visible .run-activity-error-popover {
+  opacity: 1;
+  /* The capped plate is scrollable, so the revealed state has to take the
+     pointer. Hovering the plate keeps this trigger's `:hover` alive - the
+     plate is its child - so a long provider message can be scrolled and
+     selected instead of losing its first lines above the scrollport. */
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.pd-transcript .run-activity-error-message {
+  display: block;
+  margin: 9px 0 0 24px;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+  /* Body-only scrolling (measured by RunActivityIndicator): the heading above
+     stays put while a long provider message scrolls inside the plate. */
+  max-height: var(--run-activity-error-body-max-height, none);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .run-activity-error-popover.message-error {
+    transition: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .pd-transcript .run-activity-error-popover.message-error {
+    left: auto;
+    right: 0;
+  }
+}
+
+.pd-transcript .working-indicator-mark {
+  display: inline-flex;
+  width: 18px;
+  height: 8px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+}
+
+.pd-transcript .working-indicator-mark > span {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-round);
+  background: var(--ds-text-secondary);
+  opacity: 0.35;
+  animation: working-indicator-dot 1s var(--motion-ease-standard) infinite;
+}
+
+.pd-transcript .working-indicator-mark > span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.pd-transcript .working-indicator-mark > span:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+.pd-transcript .working-indicator-label {
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .working-elapsed {
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .planning-state-indicator {
+  box-sizing: border-box;
+  display: flex;
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 8px;
+  padding: 8px 0 4px 16px;
+  color: var(--ds-info);
+  font-size: var(--text-sm-plus);
+  animation: planning-state-in var(--motion-duration-fast) var(--motion-ease-out)
+    both;
+}
+
+.pd-transcript .planning-state-indicator .working-indicator-mark > span {
+  background: var(--ds-purple);
+}
+
+@keyframes working-indicator-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Running labels stay readable; the small marker carries the live feedback
+   so long tool names never flash between two text colours. */
+.pd-transcript .tool-activity-label.running,
+.pd-transcript .tool-row-name.running {
+  color: var(--ds-text-secondary);
+}
+
+/* The live marker is a real flex sibling of the label. A generated inline box
+   had to be aligned by hand and drifted off the row centre inside the label's
+   ellipsis box; as a flex item it is centred by the header's own alignment and
+   spaced by its gap. */
+.pd-transcript .activity-marker {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: var(--radius-round);
+  background: var(--ds-text-secondary);
+  animation: activity-marker-pulse 1s var(--motion-ease-standard) infinite;
+}
+
+@keyframes activity-marker-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.pd-transcript .text-shimmer {
+  display: inline-grid;
+  min-width: 0;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+.pd-transcript .text-shimmer > span {
+  grid-area: 1 / 1;
+  white-space: pre;
+}
+.pd-transcript .text-shimmer-base {
+  color: inherit;
+  opacity: 1;
+  transition: opacity 220ms ease-out;
+}
+.pd-transcript .text-shimmer-peak {
+  color: transparent;
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent calc(50% - 5.2ch),
+      var(--ds-text-primary) 50%,
+      transparent calc(50% + 5.2ch)
+    ),
+    linear-gradient(var(--ds-text-secondary), var(--ds-text-secondary));
+  background-size: 360% 100%, 100% 100%;
+  background-position: 100% 0, 0 0;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: text-shimmer-sweep 1.2s linear infinite;
+  opacity: 1;
+  transition: opacity 220ms ease-out;
+  will-change: background-position;
+}
+.pd-transcript .text-shimmer[data-active="true"] .text-shimmer-base {
+  opacity: 0;
+}
+.pd-transcript .text-shimmer[data-active="false"] .text-shimmer-peak {
+  animation: none;
+  opacity: 0;
+}
+@keyframes text-shimmer-sweep {
+  from { background-position: 100% 0, 0 0; }
+  to { background-position: 0 0, 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .text-shimmer-peak {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+  .pd-transcript .text-shimmer-base {
+    opacity: 1 !important;
+  }
+}
+
+@keyframes planning-state-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .working-indicator-mark > span,
+.pd-transcript .planning-state-indicator {
+    animation: none;
+  }
+}
+
+/* A recorded change is a list row, not a card: it borrows `.tool-row`'s
+   metrics so a Write/Edit row and its change read as one rhythm. `--review-
+   change-rail` survives as the per-status accent for the mark and focus ring. */
+.pd-transcript .review-change-card {
+  --review-change-rail: var(--ds-text-muted);
+  position: relative;
+  box-sizing: border-box;
+  width: min(calc(100% - 24px), var(--chat-prose-max-width, 720px));
+  margin: 0 0 2px 24px;
+}
+
+.pd-transcript .review-change-card[data-status="added"] {
+  --review-change-rail: var(--ds-success);
+}
+
+.pd-transcript .review-change-card[data-status="deleted"] {
+  --review-change-rail: var(--ds-error);
+}
+
+.pd-transcript .review-change-card[data-state="rolledBack"] {
+  --review-change-rail: var(--ds-text-faint);
+}
+
+.pd-transcript .review-change-card.is-compact {
+  width: 100%;
+  margin: 0;
+}
+
+/* In the transcript the review card is the tool row itself: it claims the full
+   band, drops the transcript inset, and puts the diff body directly beneath the
+   only header. Header order follows the file-ledger row: mark, path, counts,
+   caret. The panel keeps its existing caret-first order. */
+.pd-transcript .review-change-card.is-tool-row {
+  width: 100%;
+  margin: 3px 0;
+}
+
+.pd-transcript .review-change-card.is-tool-row .review-change-card-mark {
+  order: 0;
+}
+
+.pd-transcript .review-change-card.is-tool-row .review-change-card-path {
+  order: 1;
+}
+
+.pd-transcript .review-change-card.is-tool-row .review-change-card-counts {
+  order: 2;
+}
+
+.pd-transcript .review-change-card.is-tool-row .review-change-card-caret {
+  order: 3;
+  /* This is now the row's only disclosure affordance, so it keeps the
+     tool-row caret's resting visibility instead of the old card's hidden one. */
+  opacity: 0.65;
+}
+
+.pd-transcript .review-change-card.is-tool-row .review-change-card-body {
+  margin-left: 0;
+}
+
+.pd-transcript .review-change-card-header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 24px;
+  align-items: center;
+  gap: 6px;
+  margin: 0 -4px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--ds-text-secondary);
+  text-align: left;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-out),
+    color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .review-change-card-header:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .review-change-card-header:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 1.5px solid color-mix(in oklab, var(--review-change-rail) 78%, transparent);
+  outline-offset: -2px;
+}
+
+/* In the transcript the caret stays out of the way until the row is engaged
+   (as tool rows do); in the panel list it is the row's main affordance. */
+.pd-transcript .review-change-card-caret {
+  display: inline-flex;
+  width: 12px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--ds-text-muted);
+  opacity: 0;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .review-change-card:hover .review-change-card-caret,
+.pd-transcript .review-change-card-header:focus-visible .review-change-card-caret,
+.pd-transcript .review-change-card.is-compact .review-change-card-caret,
+.pd-transcript .review-change-card.open .review-change-card-caret {
+  opacity: 1;
+}
+
+.pd-transcript .review-change-card.open .review-change-card-caret {
+  transform: rotate(90deg);
+}
+
+.pd-transcript .review-change-card-mark {
+  width: 10px;
+  flex: 0 0 auto;
+  color: var(--review-change-rail);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-compact);
+  text-align: center;
+}
+
+.pd-transcript .review-change-card-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs-plus);
+  line-height: var(--leading-compact-plus);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.pd-transcript .review-change-card-header:hover .review-change-card-path {
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .review-change-card-counts {
+  margin-left: auto;
+  gap: 5px;
+  font-size: var(--text-2xs);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .review-change-card[data-state="rolledBack"] .review-change-card-path {
+  color: var(--ds-text-faint);
+  text-decoration: line-through;
+}
+
+.pd-transcript .review-change-card[data-state="rolledBack"] .review-change-card-counts {
+  opacity: 0.55;
+}
+
+/* The expanded diff sits in a soft tile indented to the path text (D297). */
+.pd-transcript .review-change-card-body {
+  max-height: min(360px, 42vh);
+  margin: 2px 0 6px 18px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--ds-tile);
+  animation: review-change-reveal var(--motion-duration-normal) var(--motion-ease-out) both;
+}
+
+.pd-transcript .review-change-card-body-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.pd-transcript .review-change-card-actions {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 6px 2px;
+}
+
+.pd-transcript .review-change-card-actions.is-compact {
+  padding-inline: 4px;
+}
+
+.pd-transcript .review-change-rollback,
+.pd-transcript .review-change-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  white-space: nowrap;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-out),
+    color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .review-change-rollback:hover:not(:disabled),
+.pd-transcript .review-change-copy:hover:not(:disabled) {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .review-change-rollback:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.pd-transcript .review-change-copy:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.pd-transcript .review-change-copy.copied {
+  color: var(--ds-success);
+}
+
+.pd-transcript .review-change-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ds-success);
+  font-size: var(--text-xs-plus);
+}
+
+.pd-transcript .review-change-rollback-note {
+  min-width: 0;
+  flex: 1 1 180px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  line-height: var(--leading-compact-plus);
+}
+.pd-transcript .review-change-diff .diff-line-sign {
+  width: 24px;
+  padding-block: 3px;
+  font-weight: var(--font-weight-medium);
+}
+
+.pd-transcript .review-change-diff .diff-line-text {
+  padding: 3px 10px 3px 4px;
+}
+
+.pd-transcript .review-change-diff .diff-line.add {
+  background: color-mix(in oklab, var(--ds-success) 14%, transparent);
+}
+
+.pd-transcript .review-change-diff .diff-line.del {
+  background: color-mix(in oklab, var(--ds-error) 14%, transparent);
+}
+
+.pd-transcript .review-change-diff .diff-line.hunk {
+  padding: 4px 10px;
+  color: var(--ds-text-faint);
+}
+
+.pd-transcript .review-change-note {
+  padding: 6px 10px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  line-height: var(--leading-body);
+}
+
+@keyframes review-change-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.pd-transcript .turn-outcome-card {
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  margin: 12px 0 8px;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  padding: 12px 14px;
+}
+
+.pd-transcript .turn-outcome-card.failed {
+  background: color-mix(in oklab, var(--ds-error) 7%, transparent);
+}
+
+.pd-transcript .turn-outcome-heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.pd-transcript .turn-outcome-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ds-accent);
+}
+
+.pd-transcript .turn-outcome-card.failed .turn-outcome-icon {
+  color: var(--ds-error);
+}
+
+.pd-transcript .turn-outcome-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pd-transcript .turn-outcome-copy strong {
+  color: var(--ds-text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pd-transcript .turn-outcome-copy span {
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+}
+
+.pd-transcript .turn-outcome-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0 24px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+}
+
+.pd-transcript .turn-outcome-stats span {
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--ds-text-primary) 5%, transparent);
+  padding: 2px 7px;
+}
+
+.pd-transcript .turn-outcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 10px 0 0 24px;
+}
+
+.pd-transcript .permission-card.risk-high {
+  background: color-mix(in oklab, var(--ds-error) 7%, transparent);
+}
+
+.pd-transcript .permission-card.risk-low {
+  background: var(--ds-tile);
+}
+
+.pd-transcript .permission-card-header,
+.pd-transcript .permission-card-meta,
+.pd-transcript .permission-card-actions {
+  display: flex;
+  align-items: center;
+}
+
+.pd-transcript .permission-card-header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pd-transcript .permission-card-title {
+  /* Keeps the risk pill hard right once the queue count joins the header. */
+  margin-inline-end: auto;
+  color: var(--ds-text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pd-transcript .permission-card-queued {
+  flex: none;
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+}
+
+.pd-transcript .permission-card-agent {
+  margin-top: 4px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .permission-risk {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: var(--ds-tile-deep);
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+}
+
+.pd-transcript .permission-risk.risk-high {
+  background: color-mix(in oklab, var(--ds-error) 14%, transparent);
+  color: var(--ds-error);
+}
+
+.pd-transcript .permission-risk.risk-medium {
+  background: color-mix(in oklab, var(--ds-warning) 14%, transparent);
+  color: var(--ds-warning);
+}
+
+.pd-transcript .permission-card-prompt {
+  margin-top: 6px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-md);
+}
+
+.pd-transcript .permission-card-reason {
+  margin-top: 4px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .permission-card-args {
+  max-height: 240px;
+  margin-top: 12px;
+  overflow: auto;
+}
+
+.pd-transcript .permission-card-meta {
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+}
+
+.pd-transcript .permission-card-meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .permission-card-meta > span:last-child {
+  flex: none;
+}
+
+.pd-transcript .permission-card-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 560px) {
+  .pd-transcript .permission-card-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .pd-transcript .permission-card-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* Hover actions under a message: quiet icon chips, WorkBuddy/Codex density. */
+.pd-transcript .message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  padding-top: 2px;
+  opacity: 0;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .message-row.user .message-actions {
+  justify-content: flex-end;
+}
+
+.pd-transcript .message-row:hover .message-actions,
+.pd-transcript .message-row:focus-within .message-actions,
+.pd-transcript .message-actions:focus-within {
+  opacity: 1;
+}
+
+.pd-transcript .message-timestamp {
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+  line-height: var(--leading-compact);
+  white-space: nowrap;
+  user-select: none;
+  padding: 0 4px;
+  align-self: center;
+}
+
+.pd-transcript .icon-btn:active:not(:disabled),
+.pd-transcript .title-nav-btn:active:not(:disabled),
+.pd-transcript .nav-item:active:not(:disabled),
+.pd-transcript .copy-btn:active:not(:disabled),
+.pd-transcript .sidebar-toolbar-button:active:not(:disabled),
+.pd-transcript .sidebar-session-group-add:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.pd-transcript .copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  line-height: var(--leading-compact);
+  transition: background var(--motion-duration-fast) var(--motion-ease-out),
+    color var(--motion-duration-fast) var(--motion-ease-out),
+    transform var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .copy-btn:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .copy-btn.copied {
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .copy-btn.primary {
+  background: var(--ds-accent);
+  color: var(--ds-bg-primary);
+}
+
+.pd-transcript .copy-btn.primary:hover {
+  background: var(--ds-accent-hover);
+  color: var(--ds-bg-primary);
+}
+
+.pd-transcript .copy-btn.danger:hover {
+  background: color-mix(in oklab, var(--ds-error) 10%, transparent);
+  color: var(--ds-error);
+}
+
+/* Message toolbars stay glyphs-only: the label rides in a hover/focus tooltip
+   so a row of actions reads as icons instead of a sentence of chips. */
+.pd-transcript .copy-btn.icon {
+  position: relative;
+  min-width: 26px;
+  padding-inline: 5px;
+}
+
+
+.pd-transcript .message-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .message-meta-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 20px;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--ds-text-primary) 5%, transparent);
+  padding: 1px 8px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-compact);
+  white-space: nowrap;
+}
+
+.pd-transcript .message-meta-chip.model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Turn usage capsule: the completed turn's speed and total stay visible; the
+   composition and exact counts live in the hover/focus popover. */
+.pd-transcript .turn-usage-capsule {
+  display: inline-flex;
+  min-height: 20px;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--ds-tile);
+  padding: 0 8px;
+  color: var(--ds-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-xs);
+  line-height: var(--leading-compact);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-out),
+    color var(--motion-duration-fast) var(--motion-ease-out),
+    box-shadow var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .turn-usage-capsule:hover,
+.pd-transcript .turn-usage-capsule[data-open="true"] {
+  background: var(--ds-tile-hover);
+  color: var(--ds-text-primary);
+  box-shadow: inset 0 0 0 1px var(--ds-border-subtle);
+}
+
+.pd-transcript .turn-usage-capsule:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ds-text-primary) 44%, transparent);
+  outline-offset: 2px;
+}
+
+/* The bar is a flex row of proportional segments. Segment order matches the
+   popover rows: cache read, input, output, then cache write when present. */
+.pd-transcript .turn-usage-bar {
+  display: flex;
+  width: 36px;
+  height: 4px;
+  flex: 0 0 36px;
+  gap: 1px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--ds-text-primary) 7%, transparent);
+}
+
+.pd-transcript .turn-usage-seg {
+  min-width: 1px;
+  flex-basis: 0;
+  border-radius: var(--radius-full);
+}
+
+.pd-transcript .turn-usage-seg.cache {
+  background: color-mix(in oklab, var(--ds-text-primary) 24%, transparent);
+}
+
+.pd-transcript .turn-usage-seg.input {
+  background: color-mix(in oklab, var(--ds-text-primary) 51%, transparent);
+}
+
+.pd-transcript .turn-usage-seg.output {
+  background: color-mix(in oklab, var(--ds-text-primary) 86%, transparent);
+}
+
+.pd-transcript .turn-usage-seg.write {
+  background: color-mix(in oklab, var(--ds-text-primary) 36%, transparent);
+}
+
+.pd-transcript .turn-usage-separator {
+  color: var(--ds-text-faint);
+}
+
+.pd-transcript .turn-usage-total {
+  color: var(--ds-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .turn-usage-capsule:hover .turn-usage-total,
+.pd-transcript .turn-usage-capsule[data-open="true"] .turn-usage-total {
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .turn-usage-popover {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  width: min(268px, calc(100vw - 32px));
+  flex-direction: column;
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--radius-md-plus);
+  background: var(--ds-bg-elevated-opaque);
+  padding: 12px;
+  color: var(--ds-text-primary);
+  box-shadow: var(--ds-shadow-dialog);
+  font-size: var(--text-xs);
+  line-height: var(--leading-body);
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  visibility: hidden;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-out),
+    transform var(--motion-duration-fast) var(--motion-ease-out),
+    visibility 0s linear var(--motion-duration-fast);
+}
+
+.pd-transcript .turn-usage-popover.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.pd-transcript .turn-usage-popover-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pd-transcript .turn-usage-popover-title {
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .turn-usage-popover-total {
+  color: var(--ds-text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--leading-compact);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .turn-usage-popover .turn-usage-bar {
+  width: 100%;
+  flex: 0 0 auto;
+  height: 4px;
+  gap: 2px;
+  margin: 11px 0 8px;
+}
+
+.pd-transcript .turn-usage-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+}
+
+.pd-transcript .turn-usage-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 2px 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-body);
+}
+
+.pd-transcript .turn-usage-row dt {
+  margin: 0;
+  color: var(--ds-text-muted);
+  font-weight: var(--font-weight-normal);
+}
+
+.pd-transcript .turn-usage-row dd {
+  margin: 0;
+  color: var(--ds-text-secondary);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pd-transcript .turn-usage-popover-footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .turn-usage-popover-footer strong {
+  color: var(--ds-text-primary);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .turn-usage-capsule,
+.pd-transcript .turn-usage-popover {
+    transition: none;
+  }
+}
+
+.pd-transcript .context-inspector {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  color: var(--ds-accent);
+}
+
+.pd-transcript .context-inspector[data-level="warning"] {
+  color: var(--ds-warning);
+}
+
+.pd-transcript .context-inspector[data-level="critical"] {
+  color: var(--ds-error);
+}
+
+.pd-transcript .context-inspector-trigger {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  padding: 3px 8px 3px 5px;
+  color: currentColor;
+  cursor: pointer;
+  font: inherit;
+  line-height: var(--leading-compact);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-out),
+    color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .context-inspector-trigger:hover {
+  background: color-mix(in oklab, currentColor 8%, transparent);
+}
+
+.pd-transcript .context-inspector[data-open="true"] .context-inspector-trigger {
+  background: color-mix(in oklab, currentColor 12%, transparent);
+}
+
+.pd-transcript .context-inspector-trigger:focus-visible {
+  outline: 2px solid color-mix(in oklab, currentColor 54%, transparent);
+  outline-offset: 2px;
+}
+
+.pd-transcript .context-inspector-ring {
+  width: 17px;
+  height: 17px;
+  overflow: visible;
+  transform: rotate(-90deg);
+}
+
+.pd-transcript .context-inspector-ring-track,
+.pd-transcript .context-inspector-ring-progress {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.pd-transcript .context-inspector-ring-track {
+  stroke: color-mix(in oklab, var(--ds-text-primary) 14%, transparent);
+}
+
+.pd-transcript .context-inspector-ring-progress {
+  stroke: currentColor;
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--motion-duration-normal) var(--motion-ease-out);
+}
+
+.pd-transcript .context-inspector-ring-value {
+  color: currentColor;
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-compact);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-popover {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  width: min(376px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 32px));
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--radius-md-plus);
+  background: var(--ds-bg-elevated-opaque);
+  padding: 16px;
+  color: var(--ds-text-primary);
+  box-shadow: var(--ds-shadow-dialog);
+  font-size: var(--text-xs);
+  line-height: var(--leading-body);
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  visibility: hidden;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-out),
+    transform var(--motion-duration-fast) var(--motion-ease-out),
+    visibility 0s linear var(--motion-duration-fast);
+}
+
+.pd-transcript .context-inspector-popover.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.pd-transcript .context-inspector-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pd-transcript .context-inspector-heading-value {
+  min-width: 0;
+  color: var(--ds-text-primary);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-strong);
+  line-height: var(--leading-none);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .context-inspector-heading-percent {
+  flex: 0 0 auto;
+  color: currentColor;
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-none);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sections inside the popover are set apart by space alone (D297). */
+.pd-transcript .context-inspector-window,
+.pd-transcript .context-inspector-kpis,
+.pd-transcript .context-inspector-summary,
+.pd-transcript .context-inspector-compaction {
+  margin-top: 14px;
+}
+
+.pd-transcript .context-inspector-window {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .context-inspector-window > span:first-child {
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+}
+
+.pd-transcript .context-inspector-window strong {
+  margin-left: auto;
+  color: var(--ds-text-primary);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-window-percent {
+  color: var(--ds-text-muted);
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-kpis {
+  display: flex;
+  flex-direction: column;
+}
+
+.pd-transcript .context-inspector-kpis > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.pd-transcript .context-inspector-kpis span {
+  min-width: 0;
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-kpis strong {
+  color: var(--ds-text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-summary {
+  display: flex;
+  flex-direction: column;
+}
+
+.pd-transcript .context-inspector-summary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.pd-transcript .context-inspector-summary-row > strong {
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-normal);
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-summary-values {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 10px;
+  color: var(--ds-text-primary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pd-transcript .context-inspector-summary-values > span {
+  white-space: nowrap;
+}
+
+.pd-transcript .context-inspector-compaction {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .context-inspector-compaction strong {
+  color: var(--ds-text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+/* One transcript row per compaction: a quiet centred label the eye can skip.
+ * The flanking pseudo-elements only centre it — no rule is drawn (D297). */
+.pd-transcript .transcript-compaction-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+  color: var(--ds-text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .transcript-compaction-row::before,
+.pd-transcript .transcript-compaction-row::after {
+  flex: 1;
+  content: "";
+}
+
+.pd-transcript .transcript-compaction-detail {
+  color: var(--ds-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .context-inspector-ring-progress,
+.pd-transcript .context-inspector-trigger,
+.pd-transcript .context-inspector-popover {
+    transition: none;
+  }
+}
+
+.pd-transcript .message-revision-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-compact);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Compact in-flow editor. Outer composer shadow clips: the row uses
+   content-visibility (paint containment) and has no horizontal padding, and
+   the transcript scroller clips overflow. Separate from the pane with the
+   same 8% mix as a user bubble (`--ds-tile-deep`); focus uses an inset ring
+   so it stays inside the plate. The textarea is unboxed; actions sit in a
+   28px footer. */
+.pd-transcript .message-edit {
+  display: flex;
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  margin: 0;
+  flex-direction: column;
+  border: 0;
+  border-radius: var(--ds-composer-radius, var(--radius-xl));
+  background: var(--ds-tile-deep);
+  box-shadow: none;
+  isolation: isolate;
+}
+
+.pd-transcript .message-edit:focus-within {
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--ds-focus) 28%, transparent);
+}
+
+/* A prompt being edited needs typing room, so the user column drops its
+   narrow chat-plate clamp for as long as the editor is open. */
+.pd-transcript .message-row.user .message-col:has(.message-edit) {
+  width: 100%;
+  max-width: min(100%, var(--chat-prose-max-width, 720px));
+}
+
+.pd-transcript .message-row.user .message-bubble:has(.message-edit) {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.pd-transcript .message-edit-input {
+  display: block;
+  width: 100%;
+  min-height: 3lh;
+  max-height: min(12lh, 50vh);
+  resize: none;
+  overflow-y: auto;
+  border: 0;
+  background: transparent;
+  padding: 12px 14px 8px;
+  color: var(--ds-text-primary);
+  font: inherit;
+  font-size: var(--text-base);
+  line-height: var(--leading-chat);
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.pd-transcript .message-edit-input:focus,
+.pd-transcript .message-edit-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.pd-transcript .message-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 4px 8px 8px;
+}
+
+.pd-transcript .message-edit-cancel {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-compact);
+  white-space: nowrap;
+}
+
+.pd-transcript .send-btn.message-edit-submit {
+  width: auto;
+  min-width: 28px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-compact);
+  white-space: nowrap;
+}
+
+.pd-transcript .message-revision-label {
+  min-width: 34px;
+  text-align: center;
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .copy-btn.revision-nav {
+  min-width: 24px;
+  padding-inline: 4px;
+}
+
+.pd-transcript .message-bubble {
+  max-width: min(100%, var(--chat-prose-max-width, 720px));
+  border-radius: var(--radius-lg-plus);
+  padding: 10px 14px;
+  line-height: var(--leading-chat);
+}
+
+.pd-transcript .message-user-text {
+  /* Preserve hard newlines; wrap long tokens without splitting every CJK glyph. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  min-width: 0;
+  line-height: inherit;
+}
+
+.pd-transcript .message-row.session-message .message-col {
+  width: min(100%, var(--chat-prose-max-width, 720px));
+  max-width: 100%;
+  align-items: stretch;
+}
+
+.pd-transcript .message-row.session-message .message-bubble {
+  background: var(--ds-bg-hover);
+  border-radius: var(--radius-md-plus);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .session-message-origin {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-bottom: 6px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .session-message-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: var(--font-weight-medium);
+}
+
+.pd-transcript .session-message-source {
+  padding: 2px 0;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  color: var(--ds-accent);
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.pd-transcript .session-message-source:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pd-transcript .session-message-source:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.pd-transcript .session-message-session-id {
+  flex-basis: 100%;
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-compact);
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .message-attachments {
+  display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 5px;
+  /* The chips continue the body line instead of heading it. */
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.pd-transcript .message-row.user .message-attachments {
+  /* Percentage max-width inflates the shrink-to-fit user plate. */
+  max-width: none;
+}
+
+.pd-transcript .message-attachment {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile-deep);
+  padding: 4px 7px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .message-attachment span {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A user-message image is a chip like any other attachment; its preview card
+   appears on hover or focus and is rendered outside the message row. */
+.pd-transcript .message-attachment-image-chip {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.pd-transcript .message-row.assistant .message-bubble,
+.pd-transcript .message-row.system .message-bubble,
+.pd-transcript .message-row.tool .message-bubble {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Live parent turns stay transparent like completed prose (D323). The
+   `--ds-tile` card belongs only to `.tool-activity-group.has-subagents`
+   (D319) and the nested `.subagent-run`. */
+
+.pd-transcript .message-error {
+  /* The message column owns the dynamic chat width; do not add a second cap. */
+  width: 100%;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--ds-error) 7%, transparent);
+  padding: 10px 12px;
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .message-error-heading,
+.pd-transcript .message-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pd-transcript .message-error-heading {
+  min-width: 0;
+}
+
+.pd-transcript .message-error-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ds-error);
+}
+
+.pd-transcript .message-error-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+}
+
+.pd-transcript .message-error-copy strong {
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .message-error-copy code {
+  width: fit-content;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--ds-error) 8%, transparent);
+  padding: 2px 6px;
+  color: var(--ds-error);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-compact);
+}
+
+.pd-transcript .message-error-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.pd-transcript .message-error-dismiss {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .message-error-dismiss:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .message-error-dismiss:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+
+.pd-transcript .message-error-toggle {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+}
+
+.pd-transcript .message-error-toggle:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .message-error-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.pd-transcript .message-error-details {
+  margin-top: 12px;
+}
+
+.pd-transcript .message-error-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0 0 8px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.pd-transcript .message-error-details dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .message-error-raw {
+  position: relative;
+  min-width: 0;
+}
+
+.pd-transcript .message-error-details pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  border-radius: var(--radius-sm);
+  background: var(--ds-bg-inset);
+  padding: 8px 40px 8px 10px;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .message-error-raw .copy-btn {
+  position: absolute;
+  top: 4px;
+  inset-inline-end: 4px;
+}
+
+@media (max-width: 560px) {
+  .pd-transcript .message-error-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .pd-transcript .message-error-actions {
+    width: calc(100% - 24px);
+    flex-basis: calc(100% - 24px);
+    margin-inline-start: 24px;
+    justify-content: flex-start;
+  }
+
+  .pd-transcript .message-error-details dl {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+}
+
+/* Thinking prose base tokens — detailed rules live with .prose-chat. */
+
+/* Codex-style tool activity: lightweight disclosure rows, not boxed cards */
+.pd-transcript .tool-activity-group {
+  /* The assistant column aligns children to flex-start, so the group has to
+     claim the full width itself — otherwise expanded detail blocks shrink to
+     their content and short payloads render as tiny chips. */
+  width: 100%;
+  min-width: 0;
+  margin: 7px 0;
+  /* Skip layout/paint for collapsed groups far offscreen (D247). */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+  /* Clips the same disclosure chrome as .message-row — at the column's left
+     edge, and at its right for a run row's head — so it relaxes its clip by
+     the same amount; with either one left tight the fill is squared off. */
+  overflow-clip-margin: 8px;
+}
+
+/*
+ * A disclosure header is a row, not a chip. A content-sized `inline-flex`
+ * header (the whole process, an ordinary group, a subagent card) stopped at
+ * its own label, so the tool call never used the conversation width: it stayed
+ * narrow next to full-width prose and did not change when the band was dragged
+ * wider, and a long label overran the chip because only the level-specific
+ * overrides below carried an ellipsis. The row claims the band like every
+ * other transcript row; the label ellipsizes and the caret trails it.
+ */
+.pd-transcript .tool-activity-header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-sm);
+  /* Same inline geometry as a tool row's header: the icon and label sit on the
+     prose edge, while the hover fill bleeds 4px into the gutter. */
+  margin: 0 -4px;
+  padding: 2px 4px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm-plus);
+  text-align: left;
+}
+
+.pd-transcript .tool-activity-header:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .tool-activity-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ds-text-muted);
+}
+
+/* Long labels ellipsize inside the band-wide header instead of overrunning it. */
+.pd-transcript .tool-activity-label {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .tool-activity-count {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Issue counts are inline metadata in an activity-group header, never a second
+ * line of the row. The icon and its localized count stay on one centered line
+ * and truncate together when the band runs out of width.
+ */
+.pd-transcript .activity-issue-count {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--ds-error);
+  font-size: var(--text-xs-plus);
+  white-space: nowrap;
+}
+
+.pd-transcript .activity-issue-count > svg {
+  flex: none;
+}
+
+.pd-transcript .activity-issue-count > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The caret closes the row, so a short label keeps it at the trailing edge. */
+.pd-transcript .tool-activity-caret {
+  display: inline-flex;
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--ds-text-muted);
+  opacity: 0.65;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .tool-activity-group.open > .tool-activity-header > .tool-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pd-transcript .tool-activity-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--motion-duration-normal) var(--motion-ease-out),
+    opacity var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .tool-activity-group.open > .tool-activity-collapse {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.pd-transcript .tool-activity-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+  /* This scroller's padding box is the clip edge, and overflow-clip-margin
+     does not apply to scroll containers, so a run row's 4px hover-fill
+     overhang is given layout room instead. The negative margin keeps the
+     content box — and therefore every row inside — the size it was. */
+  padding-right: 8px;
+  margin-right: -8px;
+}
+
+.pd-transcript .tool-activity-body {
+  position: relative;
+  margin: 3px 0 6px 7px;
+  padding: 2px 0 2px 12px;
+}
+
+/*
+ * Parallel Task calls become one compact, truthful topology. The runtime only
+ * supports one delegation level, so the canvas connects the main agent to a
+ * flat list instead of implying dependencies between delegates (ADR 0062).
+ */
+.pd-transcript .tool-activity-group.has-subagents {
+  container: subagent-activity / inline-size;
+  overflow: hidden;
+  border-radius: var(--radius-md-plus);
+  background: var(--ds-tile);
+}
+
+/* The subagent card only re-dresses the shared header row: its material is the
+   card itself, so the row loses the radius and the bleed. */
+.pd-transcript .tool-activity-group.has-subagents .tool-activity-header {
+  min-height: 42px;
+  margin: 0;
+  border-radius: 0;
+  padding: 10px 16px;
+}
+
+.pd-transcript .subagent-activity-metrics {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.pd-transcript .tool-activity-group.has-subagents .tool-activity-body {
+  margin: 0;
+  border-left: 0;
+  padding: 0;
+}
+
+/*
+ * Parent thinking/tool rows must not sit on the tile's edge if they still share
+ * this card (D319 splits them out; this is the remaining inset).
+ */
+.pd-transcript .tool-activity-group.has-subagents .tool-activity-body > .tool-row {
+  margin-right: 16px;
+  margin-left: 16px;
+}
+
+.pd-transcript .tool-activity-group.has-subagents .tool-activity-body > .tool-row:last-child {
+  margin-bottom: 12px;
+}
+
+/* Nodes are raised tiles on the group's tile; connectors are tinted 2px bars
+   rather than hairlines, and the dotted canvas is gone (D297). */
+.pd-transcript .subagent-topology {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(138px, 0.58fr) 34px minmax(248px, 1.42fr);
+  align-items: center;
+  padding: 8px 16px 16px;
+}
+
+.pd-transcript .subagent-topology-root {
+  display: flex;
+  min-width: 0;
+  min-height: 72px;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: var(--radius-md);
+  background: var(--ds-raised);
+  padding: 11px;
+  box-shadow: var(--ds-raised-shadow);
+}
+
+.pd-transcript .subagent-topology-root-icon,
+.pd-transcript .subagent-topology-avatar {
+  position: relative;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-round);
+  background: var(--ds-bg-active);
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .subagent-topology-root-copy,
+.pd-transcript .subagent-topology-node-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.pd-transcript .subagent-topology-root-copy strong {
+  overflow: hidden;
+  color: var(--ds-text-primary);
+  font-size: var(--text-sm-plus);
+  font-weight: var(--font-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .subagent-topology-root-copy > span {
+  margin-top: 4px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.pd-transcript .subagent-topology-connector {
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--ds-tile-deep);
+}
+
+.pd-transcript .subagent-topology-agents {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding-left: 14px;
+}
+
+.pd-transcript .subagent-topology-agents::before {
+  position: absolute;
+  top: 36px;
+  bottom: 36px;
+  left: 0;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--ds-tile-deep);
+  content: "";
+}
+
+.pd-transcript .subagent-topology-node {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  border-radius: var(--radius-md);
+  background: var(--ds-raised);
+  box-shadow: var(--ds-raised-shadow);
+}
+
+.pd-transcript .subagent-topology-node::before {
+  position: absolute;
+  top: 35px;
+  right: 100%;
+  width: 15px;
+  height: 2px;
+  background: var(--ds-tile-deep);
+  content: "";
+}
+
+.pd-transcript .subagent-stop-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.pd-transcript .subagent-activity-header {
+  display: flex;
+  align-items: center;
+  padding-right: 10px;
+}
+
+.pd-transcript .subagent-activity-header > .tool-activity-header {
+  flex: 1;
+}
+
+.pd-transcript .tool-activity-group.open > .subagent-activity-header > .tool-activity-header > .tool-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pd-transcript .subagent-topology-node-actions {
+  position: relative;
+}
+
+.pd-transcript .subagent-topology-node-actions > .subagent-stop-button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+}
+
+.pd-transcript .subagent-topology-node-actions:has(> .subagent-stop-button) .subagent-topology-node-header {
+  min-height: 88px;
+}
+
+.pd-transcript .subagent-topology-node-actions:has(> .subagent-stop-button) :is(.subagent-topology-node-summary, .subagent-topology-node-steps) {
+  padding-right: 100px;
+}
+
+.pd-transcript .subagent-topology-node-header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 70px;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: inherit;
+  padding: 10px;
+  color: var(--ds-text-secondary);
+  text-align: left;
+}
+
+.pd-transcript .subagent-topology-node-header:hover {
+  background: var(--ds-bg-hover);
+}
+
+.pd-transcript .subagent-topology-node-header:disabled {
+  cursor: default;
+}
+
+.pd-transcript .subagent-topology-node-header:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ds-accent) 58%, transparent);
+  outline-offset: -2px;
+}
+
+.pd-transcript .subagent-topology-status-icon {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+  align-items: center;
+  justify-content: center;
+  /* Knockout ring in the node's own surface colour, not a divider. */
+  border: 2px solid var(--ds-raised);
+  border-radius: var(--radius-round);
+  background: var(--ds-text-muted);
+  color: var(--ds-bg-primary);
+}
+
+.pd-transcript .subagent-topology-status-icon > span {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-round);
+  background: currentColor;
+}
+
+.pd-transcript .subagent-topology-node.outcome-completed .subagent-topology-status-icon {
+  background: var(--ds-success);
+}
+
+.pd-transcript .subagent-topology-node.outcome-truncated .subagent-topology-status-icon {
+  background: var(--ds-warning);
+}
+
+.pd-transcript .subagent-topology-node.outcome-timed-out .subagent-topology-status-icon {
+  background: var(--ds-warning);
+}
+
+.pd-transcript .subagent-topology-node.outcome-failed .subagent-topology-status-icon {
+  background: var(--ds-error);
+}
+
+.pd-transcript .subagent-topology-node.outcome-aborted .subagent-topology-status-icon,
+.pd-transcript .subagent-topology-node.outcome-denied .subagent-topology-status-icon {
+  background: var(--ds-text-muted);
+}
+
+.pd-transcript .subagent-topology-node.outcome-creating .subagent-topology-status-icon {
+  background: var(--ds-purple);
+  animation: subagent-creating-pulse 1.4s var(--motion-ease-standard) infinite;
+}
+
+.pd-transcript .subagent-topology-node.outcome-creating .subagent-topology-node-status {
+  color: var(--ds-purple);
+}
+
+@keyframes subagent-creating-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .subagent-topology-node.outcome-creating .subagent-topology-status-icon {
+    animation: none;
+  }
+}
+
+.pd-transcript .subagent-topology-node-title-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+}
+
+.pd-transcript .subagent-topology-node-title {
+  min-width: 0;
+  flex: 1 1 12ch;
+  overflow: hidden;
+  color: var(--ds-text-primary);
+  display: -webkit-box;
+  font-size: var(--text-sm-plus);
+  font-weight: var(--font-weight-semibold);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.pd-transcript .subagent-topology-node-model {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.pd-transcript .subagent-topology-node-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pd-transcript .subagent-topology-node-thinking {
+  flex: none;
+  white-space: pre;
+}
+
+.pd-transcript .subagent-topology-node-status {
+  flex: none;
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.pd-transcript .subagent-topology-node-summary {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.pd-transcript .subagent-topology-node-summary {
+  margin-top: 4px;
+}
+
+.pd-transcript .subagent-topology-node-steps {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+}
+
+.pd-transcript .subagent-topology-node > .tool-row-body,
+.pd-transcript .subagent-topology-node > .subagent-run {
+  margin-right: 10px;
+  margin-left: 38px;
+}
+
+.pd-transcript .subagent-topology-node.open {
+  box-shadow:
+    var(--ds-raised-shadow),
+    0 0 0 2px color-mix(in oklab, var(--ds-accent) 22%, transparent);
+}
+
+@container subagent-activity (max-width: 520px) {
+  .pd-transcript .tool-activity-group.has-subagents .tool-activity-header {
+    flex-wrap: wrap;
+  }
+
+  .pd-transcript .subagent-activity-metrics {
+    order: 3;
+    width: calc(100% - 24px);
+    margin-left: 20px;
+  }
+
+  .pd-transcript .subagent-topology {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pd-transcript .subagent-topology-connector {
+    width: 2px;
+    height: 18px;
+    margin-left: 28px;
+  }
+
+  .pd-transcript .subagent-topology-agents {
+    padding-left: 28px;
+  }
+
+  .pd-transcript .subagent-topology-agents::before {
+    top: 0;
+    bottom: 36px;
+    left: 14px;
+  }
+
+  .pd-transcript .subagent-topology-node::before {
+    width: 14px;
+  }
+}
+
+/* A tool row claims the conversation column whatever its parent displays as:
+   the disclosure header is the row's only width-bearing box. */
+.pd-transcript .tool-row {
+  width: 100%;
+  min-width: 0;
+  margin: 3px 0;
+}
+
+.pd-transcript .tool-row-header {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  min-height: 24px;
+  gap: 4px;
+  margin: 0 -4px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm-plus);
+  text-align: left;
+}
+
+.pd-transcript .tool-row-header:disabled {
+  cursor: default;
+}
+
+/*
+ * A run row's head carries three controls: the disclosure, a copy of the
+ * command the body no longer repeats, and the caret (D226). The hover fill
+ * belongs to the head so it does not stop short under those controls.
+ */
+.pd-transcript .tool-row-head.is-run {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  margin: 0 -4px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+}
+
+.pd-transcript .tool-row-head.is-run .tool-row-header {
+  width: auto;
+  flex: 1;
+  margin: 0;
+  padding: 2px 0;
+}
+
+/* Leaf commands sit one step below the turn and group titles. */
+.pd-transcript .tool-row-head.is-run .tool-row-name {
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .tool-row-head.is-run .tool-row-header:hover {
+  background: transparent;
+}
+
+.pd-transcript .tool-row-head.is-run:has(.tool-row-header:not(:disabled)):hover {
+  background: var(--ds-bg-hover);
+}
+
+.pd-transcript .tool-row-head.is-run:has(.tool-row-header:not(:disabled)):hover
+  .tool-row-name {
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .tool-row-head-copy {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--ds-text-muted);
+  opacity: 0;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+/* Focus reveals it too: a control that can be tabbed to must be visible. */
+.pd-transcript .tool-row:hover .tool-row-head-copy,
+.pd-transcript .tool-row.open .tool-row-head-copy,
+.pd-transcript .tool-row-head-copy:focus-visible,
+.pd-transcript .tool-row-head-copy.copied {
+  opacity: 1;
+}
+
+.pd-transcript .tool-row-head-copy:hover,
+.pd-transcript .tool-row-head-copy.copied {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .tool-row-head-copy.copied {
+  color: var(--ds-success);
+}
+
+.pd-transcript .tool-row-caret.is-toggle {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 0;
+  border-radius: var(--radius-xs);
+}
+
+.pd-transcript .tool-row-caret.is-toggle:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+/* A run row states its outcome next to the caret, success included. */
+.pd-transcript .tool-row-state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding-left: 4px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.pd-transcript .tool-row-state.is-error {
+  color: var(--ds-error);
+}
+
+.pd-transcript .tool-row-state-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: var(--radius-round);
+  background: var(--ds-text-faint);
+}
+
+.pd-transcript .tool-row-state.is-done .tool-row-state-dot {
+  background: var(--ds-success);
+}
+
+.pd-transcript .tool-row-state.is-error .tool-row-state-dot {
+  background: var(--ds-error);
+}
+
+.pd-transcript .tool-row-state.is-running .tool-row-state-dot {
+  background: var(--ds-text-secondary);
+  animation: tool-row-state-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes tool-row-state-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .tool-row-state.is-running .tool-row-state-dot {
+    animation: none;
+  }
+
+  .pd-transcript .tool-row-head-copy {
+    transition: none;
+  }
+}
+
+.pd-transcript .tool-row-header:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .tool-row-header:disabled:hover {
+  background: transparent;
+}
+
+.pd-transcript .tool-row-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ds-text-muted);
+}
+
+/* A lifecycle row is a subagent row (D268): it carries the same accent the
+   topology node's avatar uses, so scanning the transcript groups it with the
+   Task card it reports on rather than with the file tools around it. */
+.pd-transcript .tool-row-icon.is-subagent {
+  color: var(--ds-accent);
+}
+
+.pd-transcript .tool-row-caret {
+  display: inline-flex;
+  flex: none;
+  margin-left: 2px;
+  color: var(--ds-text-muted);
+  opacity: 0.65;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .tool-row:hover .tool-row-caret,
+.pd-transcript .tool-row-header:focus-visible .tool-row-caret,
+.pd-transcript .tool-row-header:focus-visible ~ .tool-row-caret,
+.pd-transcript .tool-row.open .tool-row-caret {
+  opacity: 1;
+}
+
+.pd-transcript .tool-row.open > .tool-row-header > .tool-row-caret,
+.pd-transcript .tool-row.open > .tool-row-head > .tool-row-header > .tool-row-caret,
+.pd-transcript .tool-row.open > .tool-row-head > .tool-row-caret {
+  transform: rotate(90deg);
+}
+
+.pd-transcript .tool-row-name {
+  flex: none;
+  font-weight: var(--font-weight-medium);
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .tool-row-header:hover .tool-row-name {
+  color: var(--ds-text-primary);
+}
+
+/* Which delegate a `Task` row handed the work to (ADR 0060). */
+.pd-transcript .tool-row-agent {
+  flex: none;
+  border-radius: var(--radius-xs);
+  padding: 0 5px;
+  background: var(--ds-tile-deep);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-row);
+  white-space: nowrap;
+}
+
+/* A fan-out count is lighter than a named delegate. */
+.pd-transcript .tool-row-agent.is-count {
+  background: var(--ds-tile);
+}
+
+.pd-transcript .tool-row-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs-plus);
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .tool-row-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .tool-row-status.error {
+  color: var(--ds-error);
+}
+
+.pd-transcript .tool-spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  margin-left: auto;
+  border-radius: var(--radius-round);
+  border: 1.5px solid var(--ds-border-default);
+  border-top-color: var(--ds-text-secondary);
+  animation: spin 0.8s linear infinite;
+}
+
+.pd-transcript .tool-row-body {
+  position: relative;
+  margin: 4px 0 6px 24px;
+  padding: 4px 0 8px 12px;
+  color: var(--ds-text-secondary);
+}
+
+/* Tool details stay in the tool row's level rather than adding a second inset. */
+.pd-transcript .tool-row:not(.thinking):not(.subagent-topology-node) > .tool-row-body {
+  margin-left: 0;
+  padding-left: 0;
+}
+
+.pd-transcript .disclosure-collapse-rail {
+  position: absolute;
+  inset-block: 0;
+  left: -8px;
+  width: 16px;
+  min-width: 16px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* The collapse rail draws nothing at rest (D297): indentation alone marks the
+   body. Hovering or focusing the strip reveals a 2px bar as the affordance. */
+.pd-transcript .disclosure-collapse-rail::before {
+  position: absolute;
+  inset-block: 0;
+  left: calc(50% - 1px);
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  content: "";
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .disclosure-collapse-rail:hover::before,
+.pd-transcript .disclosure-collapse-rail:focus-visible::before {
+  background: var(--ds-text-muted);
+}
+
+.pd-transcript .disclosure-collapse-rail:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ds-accent) 58%, transparent);
+  outline-offset: -2px;
+}
+
+/* The turn body carries no content indent, so its rail keeps the outer lane.
+   A grouped body indents its child rows by 12px, and its rail sits in that
+   gutter; expanding a group never puts two hit targets on the same pixels.
+   Tool-row detail rails keep their tighter inset. */
+.pd-transcript .turn-process-body > .disclosure-collapse-rail {
+  left: -32px;
+  width: 14px;
+  min-width: 14px;
+}
+
+.pd-transcript .process-activity-body > .disclosure-collapse-rail {
+  left: -12px;
+  width: 14px;
+  min-width: 14px;
+}
+
+/* Keep the visible bar next to the content while the hit target extends into
+   the gutter. */
+.pd-transcript .turn-process-body > .disclosure-collapse-rail::before,
+.pd-transcript .process-activity-body > .disclosure-collapse-rail::before {
+  right: 0;
+  left: auto;
+}
+
+/*
+ * What a delegate did, one level inside its `Task` row. The tile marks the
+ * boundary: everything inside it happened in the delegate's own context.
+ */
+.pd-transcript .subagent-run {
+  position: relative;
+  min-width: 0;
+  margin: 2px 0 8px 24px;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  padding: 6px 10px 8px 12px;
+}
+
+/*
+ * Positions the nested jump-to-latest control over the bounded scroller
+ * without putting overflow on `.subagent-run` (that would clip the collapse
+ * rail; D271).
+ */
+.pd-transcript .subagent-run-follow {
+  position: relative;
+  min-width: 0;
+}
+
+/*
+ * A delegate's whole run is nested inside the parent's transcript, so an
+ * `explorer` that made forty tool calls would otherwise add forty rows to the
+ * page the moment its node is expanded — the reader loses their place and the
+ * parent's own next row is pushed out of view. The rows scroll in place
+ * instead, tall enough to read several at once and capped against the viewport
+ * so a short window does not turn the run into a slit.
+ *
+ * The scroll sits on this wrapper rather than on `.subagent-run` because the
+ * collapse rail is absolutely positioned at `left: -8px`, outside the padding
+ * box: an `overflow` on the parent would clip the rail away. Pinned-follow
+ * (D302) drives the scroll position; native anchoring would fight it.
+ */
+.pd-transcript .subagent-run-rows {
+  max-height: min(420px, 48vh);
+  max-height: min(420px, 48dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  overflow-anchor: none;
+}
+
+.pd-transcript .subagent-run-follow > .jump-latest-btn {
+  bottom: 8px;
+  z-index: 1;
+}
+
+.pd-transcript .subagent-run-rows.is-panel-flow {
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+  scrollbar-gutter: auto;
+  overflow-anchor: auto;
+}
+
+.pd-transcript .subagent-run-rows:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ds-accent) 58%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* The heading sits outside the scroll area, so it already stays with the run
+   and needs no sticky positioning: the attribution can never scroll away from
+   the rows it labels. */
+.pd-transcript .subagent-run-heading {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 5px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.pd-transcript .subagent-run-count {
+  margin-inline-start: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-normal);
+}
+
+/* The delegate's own prose, including the report it hands back. */
+.pd-transcript .subagent-answer {
+  margin: 4px 0;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm-plus);
+}
+
+/* Collapsed-row outcome badges: exit code, hit counts, truncation. */
+.pd-transcript .tool-row-chips {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.pd-transcript .tool-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-xs);
+  padding: 0 5px;
+  background: var(--ds-tile-deep);
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-row);
+  white-space: nowrap;
+}
+
+.pd-transcript .tool-chip.is-error {
+  background: color-mix(in oklab, var(--ds-error) 12%, transparent);
+  color: var(--ds-error);
+}
+
+.pd-transcript .tool-block + .tool-block {
+  margin-top: 10px;
+}
+
+.pd-transcript .tool-row-section-head {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 4px;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.pd-transcript .tool-row-copy {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--ds-text-muted);
+}
+
+.pd-transcript .tool-row-copy:hover,
+.pd-transcript .tool-row-copy.copied {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .tool-row-content {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--ds-tool-row-bg);
+  padding: 10px 12px;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pd-transcript .large-text-preview-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.pd-transcript .large-text-preview-status {
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .tool-row-content.is-error {
+  background: color-mix(in oklab, var(--ds-error) 7%, transparent);
+  color: color-mix(in oklab, var(--ds-error) 72%, var(--ds-text-primary));
+}
+
+/*
+ * A run row's body is the output itself (D227): the heading, the frame and the
+ * fill are gone, so what is left reads like the terminal it came from. The
+ * height cap stays — a thousand-line build must not push the rest of the
+ * transcript out of reach — and stderr keeps its tint, with the channel name
+ * carried for screen readers instead of by a visible heading.
+ */
+.pd-transcript .tool-block.is-plain + .tool-block.is-plain {
+  margin-top: 6px;
+}
+
+.pd-transcript .tool-block.is-plain .tool-row-content {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+/* Edit diffs: a soft tile inside the tool body; add/del read from the line
+   tints alone, with no gutter bars (D297). */
+.pd-transcript .tool-diff {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+}
+
+.pd-transcript .tool-diff .diff-line {
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .tool-diff .diff-line.add {
+  background: color-mix(in oklab, var(--ds-success) 14%, transparent);
+}
+
+.pd-transcript .tool-diff .diff-line.del {
+  background: color-mix(in oklab, var(--ds-error) 14%, transparent);
+}
+
+.pd-transcript .tool-diff .diff-line-text {
+  padding-block: 2px;
+}
+
+.pd-transcript .tool-file-list,
+.pd-transcript .tool-match-list {
+  display: flex;
+  max-height: 260px;
+  flex-direction: column;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  padding: 6px 4px;
+  gap: 1px;
+}
+
+/*
+ * Linked paths are <button>s stretched by the column flex list. Chromium's
+ * anonymous button box then justifies the label glyphs across the row
+ * unless the control is a block box, same as `.tool-match-path`.
+ */
+.pd-transcript .tool-file-item {
+  display: block;
+  flex: none;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: var(--radius-3xs);
+  padding: 2px 8px;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .tool-file-item.is-linked:hover,
+.pd-transcript .tool-match-path.is-linked:hover {
+  background: var(--ds-bg-hover);
+  color: var(--ds-text-primary);
+  text-decoration: underline;
+}
+
+.pd-transcript .tool-match-group + .tool-match-group {
+  margin-top: 6px;
+}
+
+.pd-transcript .tool-match-path {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-3xs);
+  padding: 2px 8px;
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs-plus);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .tool-match-line {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 8px;
+}
+
+.pd-transcript .tool-match-line-no {
+  flex: none;
+  min-width: 28px;
+  color: var(--ds-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: right;
+  user-select: none;
+}
+
+.pd-transcript .tool-match-line-text {
+  min-width: 0;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.pd-transcript .tool-asktool-results {
+  display: grid;
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior-y: contain;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  padding: 10px 12px;
+  gap: 10px;
+  scrollbar-gutter: stable;
+}
+
+.pd-transcript .tool-asktool-entry + .tool-asktool-entry {
+  border-top: 1px solid var(--ds-border-subtle);
+  padding-top: 10px;
+}
+
+.pd-transcript .tool-asktool-question {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.pd-transcript .tool-asktool-question-number,
+.pd-transcript .tool-asktool-answer-label {
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+}
+
+.pd-transcript .tool-asktool-question-copy {
+  color: var(--ds-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .tool-asktool-answer {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0 0;
+}
+
+.pd-transcript .tool-asktool-answer-label {
+  flex: none;
+}
+
+.pd-transcript .tool-asktool-answer-values {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+}
+
+.pd-transcript .tool-asktool-answer-value {
+  display: inline-flex;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--ds-tile-deep);
+  padding: 3px 7px;
+  color: var(--ds-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .tool-asktool-skipped {
+  color: var(--ds-text-muted);
+  font-style: italic;
+}
+
+/* Scalar payload entries (plugin tools, argument previews). Bounded like every
+   other detail block (`.tool-row-content`, `.tool-file-list`): a roster of ten
+   delegates or a payload with thirty fields must not push the reading position
+   down the page. */
+.pd-transcript .tool-fields {
+  display: grid;
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior-y: contain;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  padding: 6px 10px;
+  gap: 2px;
+  scrollbar-gutter: stable;
+}
+
+.pd-transcript .tool-field {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.pd-transcript .tool-field-label {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs-plus);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .tool-field-value {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .tool-note {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  padding: 8px 10px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.pd-transcript .tool-note.is-error {
+  background: color-mix(in oklab, var(--ds-error) 7%, transparent);
+  color: var(--ds-error);
+}
+
+.pd-transcript .tool-note-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .tool-block-more {
+  padding: 4px 2px 0;
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Search navigation uses the original message tree and its rendered text. */
+.pd-transcript .message-row.transcript-search-target {
+  content-visibility: visible;
+}
+
+.pd-transcript ::highlight(transcript-search) {
+  color: var(--ds-text-primary);
+  background-color: color-mix(in srgb, var(--ds-accent) 35%, transparent);
+}
+
+.pd-transcript .transcript-search-source-match {
+  background-color: color-mix(in srgb, var(--ds-accent) 25%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--ds-accent) 65%, transparent);
+  outline-offset: 2px;
+}
+
+.pd-transcript .transcript-load-later {
+  display: block;
+  margin: 16px auto;
+  padding: 8px 12px;
+  color: var(--ds-text-muted);
+  border-radius: var(--radius-md);
+  background: var(--ds-bg-elevated-opaque);
+}
+
+.pd-transcript .transcript-navigation-loading {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--ds-bg-elevated-opaque);
+  color: var(--ds-text-muted);
+  font-size: var(--text-xs);
+}
+
+/* Process, activity groups and item details own independent disclosure levels. */
+.pd-transcript .turn-process {
+  width: 100%;
+  margin: 0 0 8px;
+  min-width: 0;
+}
+
+/*
+ * The top-level fold is a hairline row, not a hover chip. Status, duration,
+ * tool count and the caret form one left-aligned run, so the disclosure
+ * indicator trails the metadata instead of being pushed to the far edge of the
+ * band. Hover only strengthens the ink; no background fill is involved.
+ */
+.pd-transcript .turn-process > .tool-activity-header {
+  margin: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--ds-border-subtle);
+  padding: 4px 0 8px;
+}
+
+.pd-transcript .turn-process > .tool-activity-header:hover {
+  background: transparent;
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .turn-process > .tool-activity-header:hover .tool-activity-icon,
+.pd-transcript .turn-process > .tool-activity-header:hover .tool-activity-label,
+.pd-transcript .turn-process > .tool-activity-header:hover .turn-duration,
+.pd-transcript .turn-process > .tool-activity-header:hover .tool-activity-count,
+.pd-transcript .turn-process > .tool-activity-header:hover .tool-activity-caret {
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .turn-process > .tool-activity-header:hover .turn-sep {
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .turn-process > .tool-activity-header > .tool-activity-caret {
+  margin-inline-start: 0;
+  opacity: 0.8;
+}
+
+.pd-transcript .turn-duration {
+  flex: none;
+  color: var(--ds-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pd-transcript .turn-sep {
+  flex: none;
+  color: var(--ds-text-faint);
+}
+
+.pd-transcript .turn-process.open > .tool-activity-header > .tool-activity-caret,
+.pd-transcript .process-activity-group.open > .tool-activity-header > .tool-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pd-transcript .turn-process-body {
+  position: relative;
+  /* The turn's process and its group headers share one left edge. A nested
+     group restores the released v0.20.1 hierarchy below that header: its body
+     indents child rows by 12px and keeps the group's collapse rail in the
+     gutter, so the transcript never becomes an indenting staircase. */
+  padding-left: 0;
+}
+
+.pd-transcript .turn-process-body[hidden],
+.pd-transcript .process-activity-body[hidden] {
+  display: none;
+}
+
+.pd-transcript .turn-process-body > .assistant-turn-fragment {
+  color: var(--ds-text-secondary);
+  margin-block: 8px;
+}
+
+.pd-transcript .process-activity-group {
+  width: 100%;
+  min-width: 0;
+  margin-block: 6px;
+}
+
+/* The turn's own title is the strongest level; a nested group is smaller and
+   quieter, while leaf run rows keep tool-row secondary text. Its body adds the
+   released 12px indent below the group header. */
+.pd-transcript .process-activity-group > .tool-activity-header {
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm);
+}
+
+.pd-transcript .process-activity-group > .tool-activity-header:hover {
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .process-activity-body {
+  position: relative;
+  min-width: 0;
+}
+
+.pd-transcript .process-activity-group.grouped > .process-activity-body {
+  margin-block: 3px 6px;
+  /* Child tool rows sit one 12px step inside the group header; the group's
+     collapse rail lives in that gutter. No further nesting level is added. */
+  padding-inline-start: 12px;
+}
+
+/* The nested process levels share the base header row: no level-specific
+   width, label or caret overrides are needed now that the row claims the
+   band itself (see `.tool-activity-header`). */
+
+.pd-transcript .thinking-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 6px;
+}
+
+/* Provider-hosted web search round. The row reuses the tool-row idiom; only
+ * the body payload needs its own rules. */
+.pd-transcript .hosted-search-query {
+  margin: 2px 0 6px;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pd-transcript .hosted-search-sources {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pd-transcript .hosted-search-sources a {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--ds-text-primary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+
+.pd-transcript .hosted-search-sources a:hover {
+  text-decoration: underline;
+}
+
+/* The title ellipsizes inside the row: an inline-flex anchor would otherwise
+   let a long source name push the host label past the band. */
+.pd-transcript .hosted-search-source-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-transcript .hosted-search-source-host {
+  color: var(--ds-text-tertiary);
+  flex: none;
+}
+
+.pd-transcript .hosted-search-more {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--ds-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* ── Smooth streaming cursor and layout stabilization ── */
+
+@keyframes smooth-stream-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.pd-transcript .assistant-turn-fragment.streaming .prose-chat {
+  text-wrap: wrap;
+}
+
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > :last-child:not(ul):not(ol):not(blockquote):not(pre):not(table):not(.table-wrap)::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > :is(ul, ol):last-child li:last-child:not(:has(ul, ol)):not(:has(p))::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > :is(ul, ol):last-child li:last-child > p:last-child::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > blockquote:last-child > p:last-child::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > pre:last-child > code::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--ds-text-primary);
+  animation: smooth-stream-blink 1s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > :last-child:not(ul):not(ol):not(blockquote):not(pre):not(table):not(.table-wrap)::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > :is(ul, ol):last-child li:last-child:not(:has(ul, ol)):not(:has(p))::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > :is(ul, ol):last-child li:last-child > p:last-child::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > blockquote:last-child > p:last-child::after,
+.pd-transcript .assistant-turn-fragment.smooth-cursor .prose-chat > pre:last-child > code::after {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+/*
+  Markdown prose — the .prose-chat reading surface (headings, lists, quotes,
+  links, tables, math), fenced code blocks, Mermaid diagrams, and the quieter
+  thinking-prose variant.
+*/
+
+/*
+  Chat prose — refined markdown typography for the assistant transcript.
+  Goal: calm reading surface with clear hierarchy — headings without rules,
+  links always discoverable, borderless inline code, quotes as soft tiles, and
+  code/table shells that sit in the same family as the rest of the UI. No block
+  draws a stroke (D297): tone and spacing carry the structure.
+  Blocks render as direct children of .prose-chat.
+*/
+.pd-transcript .prose-chat {
+  color: var(--ds-text-primary);
+  font-size: var(--text-base);
+  line-height: var(--leading-prose);
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-wrap: pretty;
+  letter-spacing: var(--tracking-normal);
+}
+
+.pd-transcript .markdown-plain-fallback {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pd-transcript .markdown-plain-fallback > [role="status"] {
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm);
+  margin-bottom: 0.5rem;
+}
+
+.pd-transcript .markdown-plain-fallback pre {
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pd-transcript .prose-chat > :first-child {
+  margin-top: 0 !important;
+}
+
+.pd-transcript .prose-chat > :last-child {
+  margin-bottom: 0 !important;
+}
+
+/* Body rhythm: breathing room between blocks so multi-part answers read as
+   distinct thoughts, while consecutive paragraphs stay conversational. */
+.pd-transcript .prose-chat p {
+  margin: 0.65em 0;
+}
+
+.pd-transcript .prose-chat p + p {
+  margin-top: 0.8em;
+}
+
+.pd-transcript .prose-chat strong {
+  color: var(--ds-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pd-transcript .prose-chat em {
+  font-style: italic;
+}
+
+.pd-transcript .prose-chat del,
+.pd-transcript .prose-chat s {
+  color: var(--ds-text-secondary);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+/* Superscript refs keep the line box from stretching. */
+.pd-transcript .prose-chat sup {
+  line-height: 0;
+}
+
+/* GFM footnotes: quiet appendix set apart by space (their <hr> is hidden). */
+.pd-transcript .prose-chat .footnotes {
+  margin: 1.6em 0 0;
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm-plus);
+}
+
+.pd-transcript .prose-chat .footnotes hr {
+  display: none;
+}
+
+.pd-transcript .prose-chat .footnotes ol {
+  margin: 0.3em 0;
+  padding-left: 1.3em;
+}
+
+.pd-transcript .prose-chat .footnotes li {
+  margin: 0.15em 0;
+}
+
+/* Heading ramp: clear size steps without rules or boxes — hierarchy comes
+   from weight, tracking, and the space above, not from chrome. */
+.pd-transcript .prose-chat h1,
+.pd-transcript .prose-chat h2,
+.pd-transcript .prose-chat h3,
+.pd-transcript .prose-chat h4,
+.pd-transcript .prose-chat h5,
+.pd-transcript .prose-chat h6 {
+  margin: 1.25em 0 0.45em;
+  color: var(--ds-text-primary);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  text-wrap: balance;
+}
+
+.pd-transcript .prose-chat h1 {
+  font-size: var(--text-xl);
+  letter-spacing: var(--tracking-tighter);
+  line-height: var(--leading-tighter);
+}
+
+.pd-transcript .prose-chat h2 {
+  font-size: var(--text-lg-plus);
+}
+
+:root[data-theme="light"] .pd-transcript .prose-chat h5,
+:root[data-theme="light"] .pd-transcript .prose-chat h6 {
+  color: color-mix(in oklab, var(--ds-text-primary) 62%, transparent);
+}
+
+.pd-transcript .prose-chat h3 {
+  font-size: var(--text-lg);
+}
+
+.pd-transcript .prose-chat h4 {
+  font-size: var(--text-base-plus);
+  font-weight: var(--font-weight-medium-plus);
+}
+
+.pd-transcript .prose-chat h5,
+.pd-transcript .prose-chat h6 {
+  font-size: var(--text-base);
+  color: var(--ds-text-secondary);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-normal);
+}
+
+.pd-transcript .prose-chat h1 + *,
+.pd-transcript .prose-chat h2 + *,
+.pd-transcript .prose-chat h3 + *,
+.pd-transcript .prose-chat h4 + *,
+.pd-transcript .prose-chat h5 + *,
+.pd-transcript .prose-chat h6 + * {
+  margin-top: 0.4em;
+}
+
+/* Consecutive headings stack tighter — the second one belongs to the same
+   section, not a new one. */
+.pd-transcript .prose-chat h1 + h2,
+.pd-transcript .prose-chat h2 + h3,
+.pd-transcript .prose-chat h3 + h4,
+.pd-transcript .prose-chat h4 + h5,
+.pd-transcript .prose-chat h5 + h6 {
+  margin-top: 0.75em;
+}
+
+.pd-transcript .prose-chat ul,
+.pd-transcript .prose-chat ol {
+  margin: 0.65em 0;
+  padding-left: 1.4em;
+}
+
+.pd-transcript .prose-chat ul {
+  list-style: disc;
+}
+
+.pd-transcript .prose-chat ol {
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+
+.pd-transcript .prose-chat li {
+  margin: 0.28em 0;
+  padding-left: 0.15em;
+}
+
+.pd-transcript .prose-chat li::marker {
+  color: color-mix(in oklab, var(--ds-text-muted) 88%, var(--ds-text-primary));
+  font-weight: var(--font-weight-medium);
+}
+
+:root[data-theme="light"] .pd-transcript .prose-chat li::marker {
+  color: color-mix(in oklab, var(--ds-text-primary) 40%, transparent);
+}
+
+.pd-transcript .prose-chat li > p {
+  margin: 0.25em 0;
+}
+
+.pd-transcript .prose-chat li > ul,
+.pd-transcript .prose-chat li > ol {
+  margin: 0.25em 0 0.3em;
+}
+
+.pd-transcript .prose-chat .contains-task-list {
+  padding-left: 0.15em;
+  list-style: none;
+}
+
+.pd-transcript .prose-chat .task-list-item {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45em;
+  margin: 0.28em 0;
+  padding-left: 0;
+}
+
+.pd-transcript .prose-chat .task-list-item > input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0.28em 0 0;
+  accent-color: var(--ds-accent);
+  border-radius: var(--radius-3xs);
+}
+
+.pd-transcript .prose-chat .task-list-item > p {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Blockquote: a soft tile plus muted text (D297) — the rail is gone, and the
+   tint stays faint so long citations don't read as heavy boxes. */
+.pd-transcript .prose-chat blockquote {
+  position: relative;
+  margin: 0.85em 0;
+  padding: 0.55em 0.9em;
+  border-radius: var(--radius-md);
+  background: var(--ds-tile);
+  color: var(--ds-text-secondary);
+}
+
+:root[data-theme="light"] .pd-transcript .prose-chat blockquote {
+  color: color-mix(in oklab, var(--ds-text-primary) 72%, transparent);
+}
+
+.pd-transcript .prose-chat blockquote > :first-child {
+  margin-top: 0;
+}
+
+.pd-transcript .prose-chat blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.pd-transcript .prose-chat blockquote blockquote {
+  margin: 0.5em 0;
+}
+
+/* A thematic break is pure space: no line is drawn (D297). */
+.pd-transcript .prose-chat hr {
+  margin: 1.8em 0;
+  border: 0;
+  height: 0;
+  background: none;
+}
+
+/* Links stay monochrome but are always discoverable: a soft permanent
+   underline that firms up on hover, instead of relying on color alone. */
+.pd-transcript .prose-chat a {
+  color: var(--ds-text-primary);
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in oklab, var(--ds-text-primary) 32%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  transition: color var(--motion-duration-fast) var(--motion-ease-out), text-decoration-color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .prose-chat a:hover {
+  color: var(--ds-text-primary);
+  text-decoration-color: color-mix(in oklab, var(--ds-text-primary) 85%, transparent);
+}
+
+.pd-transcript .prose-chat a:focus-visible {
+  outline-offset: 3px;
+  border-radius: var(--radius-3xs);
+}
+
+/* Light only softens the permanent underline; the base rule already paints the
+   `--ds-text-primary` ink, so the colour line is not duplicated here. */
+:root[data-theme="light"] .pd-transcript .prose-chat a {
+  text-decoration-color: color-mix(in oklab, var(--ds-text-primary) 30%, transparent);
+}
+
+:root[data-theme="light"] .pd-transcript .prose-chat a:hover {
+  text-decoration-color: color-mix(in oklab, var(--ds-text-primary) 80%, transparent);
+}
+
+.pd-transcript .prose-chat img,
+.pd-transcript .prose-chat .chat-image-remote {
+  display: block;
+  max-width: min(100%, 560px);
+  margin: 0.65em 0;
+  border-radius: var(--radius-md-plus);
+  background: var(--ds-tile);
+}
+
+.pd-transcript .prose-chat kbd {
+  display: inline-block;
+  padding: 0.05em 0.4em;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs-plus);
+  line-height: var(--leading-normal);
+  border-radius: var(--radius-3xs);
+  background: var(--ds-tile-deep);
+  color: var(--ds-prose-kbd-fg);
+  white-space: nowrap;
+}
+
+/* Inline code: borderless soft chip — the hairline frame used to add noise
+   around every token in dense technical answers. */
+.pd-transcript .prose-chat code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm-plus);
+  font-variant-ligatures: none;
+  background: color-mix(in oklab, var(--ds-text-primary) 7%, transparent);
+  border-radius: var(--radius-3xs);
+  padding: 0.14em 0.4em;
+  color: color-mix(in oklab, var(--ds-text-primary) 94%, var(--ds-accent-soft));
+}
+
+:root[data-theme="light"] .pd-transcript .prose-chat code {
+  background: color-mix(in oklab, var(--ds-text-primary) 6%, transparent);
+  color: var(--ds-text-primary);
+}
+
+/* Fallback for a bare <pre> that bypassed the code-block chrome */
+.pd-transcript .prose-chat pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-relaxed);
+  background: #282c34;
+  border-radius: var(--radius-md-plus);
+  padding: 14px 16px;
+  overflow: auto;
+  margin: 0.85em 0;
+  box-shadow: none;
+  color: #abb2bf;
+}
+
+/* Shiki one-light plate + ink. The Shiki theme owns this pair
+   (apps/desktop/src/lib/shiki.ts); see the guard header. */
+:root[data-theme="light"] .pd-transcript .prose-chat pre {
+  background: #fafafa;
+  box-shadow: none;
+  color: #383a42;
+}
+
+.pd-transcript .prose-chat pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+/* GFM tables (D297): no shell, no cell rules. The header row is the deepest
+   tile, body rows alternate a faint tile, and hover lifts the row a step. */
+.pd-transcript .prose-chat .table-wrap {
+  margin: 0.9em 0;
+  max-width: 100%;
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-md-plus);
+}
+
+.pd-transcript .prose-chat .table-wrap table {
+  margin: 0;
+  width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+}
+
+.pd-transcript .prose-chat th,
+.pd-transcript .prose-chat td {
+  padding: 9px 14px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.pd-transcript .prose-chat th {
+  font-weight: var(--font-weight-medium);
+  color: var(--ds-text-primary);
+  background: var(--ds-tile-deep);
+  font-size: var(--text-sm-plus);
+  letter-spacing: var(--tracking-wide);
+}
+
+.pd-transcript .prose-chat tbody tr:nth-child(even) td {
+  background: var(--ds-tile);
+}
+
+.pd-transcript .prose-chat tbody tr td {
+  transition: background var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .prose-chat tbody tr:hover td {
+  background: var(--ds-tile-hover);
+}
+
+.pd-transcript .prose-chat td code {
+  font-size: var(--text-sm);
+}
+
+/* KaTeX display math: keep long formulas scrollable, not overflowing */
+.pd-transcript .prose-chat .katex-display {
+  margin: 0.85em 0;
+  padding: 0.55em 0.75em;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--ds-tile);
+}
+
+.pd-transcript .prose-chat .katex {
+  font-size: var(--text-base-plus);
+}
+
+/*
+  Code block — single surface + slim language rail.
+  Body background is transparent so Shiki (one-dark-pro / one-light) owns the
+  palette; we only paint the outer card once (no nested pre/code wash).
+*/
+.pd-transcript .code-block {
+  --code-block-bg: #282c34; /* one-dark-pro editor background */
+  margin: 0.9em 0;
+  border-radius: var(--radius-md-plus);
+  background: var(--code-block-bg);
+  overflow: hidden;
+  box-shadow: none;
+  color: #abb2bf;
+}
+
+/* Shiki one-light plate + ink, the same pair as the bare `pre` fallback. */
+:root[data-theme="light"] .pd-transcript .code-block {
+  --code-block-bg: #fafafa; /* one-light editor background */
+  color: #383a42;
+}
+
+.pd-transcript .code-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 6px 3px 14px;
+  /* The head is a slightly lighter band on the editor surface; no rule. */
+  background: var(--ds-code-head-bg);
+}
+
+/* Shiki one-light token ink for the language rail and the copy button. */
+:root[data-theme="light"] .pd-transcript .code-block-lang {
+  color: color-mix(in oklab, #383a42 62%, transparent);
+}
+
+:root[data-theme="light"] .pd-transcript .code-block .code-copy-btn {
+  color: color-mix(in oklab, #383a42 62%, transparent);
+  opacity: 0.9;
+}
+
+/* The hover fill is ours (--ds-code-hover-bg); the ink is the Shiki token. */
+:root[data-theme="light"] .pd-transcript .code-block .code-copy-btn:hover {
+  color: #383a42;
+}
+
+.pd-transcript .code-block-lang {
+  color: color-mix(in oklab, #abb2bf 72%, transparent);
+  font-size: var(--text-xs-plus);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: lowercase;
+  font-family: var(--font-mono);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.pd-transcript .code-block .code-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  color: var(--ds-text-muted);
+  transition: background var(--motion-duration-fast) var(--motion-ease-out), color var(--motion-duration-fast) var(--motion-ease-out), opacity var(--motion-duration-fast) var(--motion-ease-out);
+  opacity: 0.75;
+}
+
+.pd-transcript .code-block:hover .code-copy-btn,
+.pd-transcript .code-block:focus-within .code-copy-btn,
+.pd-transcript .code-block .code-copy-btn.copied {
+  opacity: 1;
+}
+
+.pd-transcript .code-block .code-copy-btn:hover {
+  color: var(--ds-text-secondary);
+  background: var(--ds-code-hover-bg);
+}
+
+.pd-transcript .code-block .code-copy-btn.copied {
+  color: var(--ds-success);
+}
+
+.pd-transcript .prose-chat .code-block pre {
+  margin: 0;
+  padding: 13px 16px 15px;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  overflow-x: auto;
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-relaxed);
+  box-shadow: none;
+  tab-size: 2;
+  color: inherit;
+}
+
+.pd-transcript .prose-chat .code-block pre code {
+  display: block;
+  width: fit-content;
+  min-width: 100%;
+  font-size: var(--text-sm-plus);
+  white-space: pre;
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0;
+  color: inherit;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Defensive: never reintroduce a nested wash on fenced code. */
+.pd-transcript .code-block pre,
+.pd-transcript .code-block code,
+.pd-transcript .code-block .line,
+.pd-transcript .code-block span {
+  background-color: transparent;
+}
+
+/* Mermaid diagrams keep code-card density while using a paper-like canvas. */
+.pd-transcript .mermaid-block {
+  margin: 0.85em 0;
+  overflow: hidden;
+  border-radius: var(--radius-md-plus);
+  background: var(--ds-tile);
+  color: var(--ds-text-primary);
+}
+
+.pd-transcript .mermaid-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 6px 3px 14px;
+  background: var(--ds-tile-deep);
+}
+
+.pd-transcript .mermaid-block-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ds-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-compact);
+  letter-spacing: var(--tracking-wide);
+  text-transform: lowercase;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.pd-transcript .mermaid-block-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.pd-transcript .mermaid-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  color: var(--ds-text-muted);
+  transition: background var(--motion-duration-fast) var(--motion-ease-out), color var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .mermaid-action-btn:hover,
+.pd-transcript .mermaid-action-btn:focus-visible,
+.pd-transcript .mermaid-action-btn.active {
+  color: var(--ds-text-primary);
+  background: color-mix(in oklab, var(--ds-text-primary) 7%, transparent);
+}
+
+.pd-transcript .mermaid-action-btn.copied {
+  color: var(--ds-success);
+}
+
+.pd-transcript .mermaid-block-body {
+  min-width: 0;
+  background: var(--ds-mermaid-canvas);
+}
+
+.pd-transcript .mermaid-svg {
+  min-height: 144px;
+  padding: 18px;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.pd-transcript .mermaid-svg.refreshing {
+  opacity: 0.72;
+}
+
+.pd-transcript .mermaid-svg > svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: auto;
+}
+
+.pd-transcript .mermaid-loading {
+  display: grid;
+  align-content: center;
+  gap: 9px;
+  min-height: 144px;
+  padding: 24px 18%;
+}
+
+.pd-transcript .mermaid-loading > span {
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--ds-text-primary) 8%, transparent);
+  animation: mermaid-loading-pulse 0.9s var(--motion-ease-standard) infinite;
+}
+
+.pd-transcript .mermaid-loading > span:nth-child(2) {
+  width: 78%;
+  animation-delay: 100ms;
+}
+
+.pd-transcript .mermaid-loading > span:nth-child(3) {
+  width: 58%;
+  animation-delay: 200ms;
+}
+
+@keyframes mermaid-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pd-transcript .mermaid-loading > span {
+    animation: none;
+    opacity: 0.65;
+  }
+  .pd-transcript .mermaid-svg {
+    transition: none;
+  }
+}
+
+.pd-transcript .mermaid-block-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  color: var(--ds-error);
+  background: color-mix(in oklab, var(--ds-error) 6%, transparent);
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-normal);
+}
+
+.pd-transcript .prose-chat .mermaid-source {
+  margin: 0;
+  padding: 13px 14px 15px;
+  border: 0;
+  border-radius: 0;
+  background: #282c34;
+  color: #abb2bf;
+  overflow: auto;
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-relaxed);
+  box-shadow: none;
+}
+
+/* Shiki one-light plate + ink, the same pair as the code card above. */
+:root[data-theme="light"] .pd-transcript .prose-chat .mermaid-source {
+  background: #fafafa;
+  color: #383a42;
+}
+
+.pd-transcript .prose-chat .mermaid-source code {
+  display: block;
+  width: fit-content;
+  min-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* Thinking prose stays quieter than answer prose but inherits hierarchy. */
+.pd-transcript .thinking-prose {
+  color: var(--ds-text-secondary);
+  font-size: var(--text-sm-plus);
+  line-height: var(--leading-chat);
+}
+
+:root[data-theme="light"] .pd-transcript .thinking-prose {
+  color: color-mix(in oklab, var(--ds-text-primary) 58%, transparent);
+}
+
+:root[data-theme="light"] .pd-transcript .thinking-prose code {
+  color: color-mix(in oklab, var(--ds-text-primary) 68%, transparent);
+}
+
+.pd-transcript .thinking-prose h1,
+.pd-transcript .thinking-prose h2,
+.pd-transcript .thinking-prose h3,
+.pd-transcript .thinking-prose h4,
+.pd-transcript .thinking-prose h5,
+.pd-transcript .thinking-prose h6 {
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .thinking-prose a {
+  color: var(--ds-text-secondary);
+  text-decoration-color: color-mix(in oklab, var(--ds-text-secondary) 45%, transparent);
+}
+
+.pd-transcript .thinking-prose a:hover {
+  color: var(--ds-text-primary);
+  text-decoration-color: color-mix(in oklab, var(--ds-text-primary) 70%, transparent);
+}
+
+.pd-transcript .thinking-prose code {
+  background: var(--ds-thinking-code-bg);
+  color: var(--ds-text-secondary);
+}
+
+.pd-transcript .thinking-prose blockquote {
+  background: var(--ds-tile);
+}
+
+.pd-transcript { min-width:0; width:100%; font-family:var(--font-sans); font-size:var(--text-base); line-height:var(--leading-body);color:var(--ds-text-primary); }
+.pd-transcript button { font-family:inherit; cursor:pointer; }
+.pd-transcript [hidden] { display:none!important; }
+.pd-transcript .turn-process-body { min-width:0; }
+.pd-transcript .pd-file-menu { background:var(--ds-bg-elevated-opaque);padding:6px;box-shadow:var(--ds-shadow-dialog);border-radius:var(--radius-xs); }
+.pd-transcript .pd-file-menu button { display:block;padding:5px 10px; }

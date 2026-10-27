@@ -21,6 +21,7 @@ import { integrateImmediateStop } from './patch-piweb-immediate-stop.mjs';
 import { integrateToolExcerpts } from './patch-piweb-tool-excerpts.mjs';
 import { integrateAskBack } from './patch-piweb-ask-back.mjs';
 import { integrateProjectTree } from './patch-piweb-project-tree.mjs';
+import { integrateDesktopTranscript } from './patch-piweb-desktop-transcript.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -367,6 +368,7 @@ export function integrate(getFile) {
           : message,
         streamingBehavior: behavior,`);
   integrateProjectTree({ get, set, change, prepend, template });
+  integrateDesktopTranscript({ get, set, change, template });
   return files;
 }
 

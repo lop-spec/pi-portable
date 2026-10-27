@@ -1,0 +1,146 @@
+{
+  "repository": "https://github.com/vastsa/PI-Desktop",
+  "commit": "c099b6a4cdb4dcdc3bf467432e36af10fde77080",
+  "version": "0.21.0",
+  "license": "LGPL-3.0",
+  "files": [
+    {
+      "name": "tool-display.ts",
+      "source": "lib/tool-display.ts",
+      "sourceSha256": "97cab1f22f9827735f667e4cfca13fecaeb9c4af0c9ce3817ec12eea48b7c6ca",
+      "sha256": "97cab1f22f9827735f667e4cfca13fecaeb9c4af0c9ce3817ec12eea48b7c6ca"
+    },
+    {
+      "name": "render-content-limits.ts",
+      "source": "lib/render-content-limits.ts",
+      "sourceSha256": "e1ec4dcbb2ca71ea9ee18fe7515d365d8e9de8e507c61875348793383a7a58b6",
+      "sha256": "e1ec4dcbb2ca71ea9ee18fe7515d365d8e9de8e507c61875348793383a7a58b6"
+    },
+    {
+      "name": "render-diagnostics.ts",
+      "source": "lib/render-diagnostics.ts",
+      "sourceSha256": "35b2e65923f17d52fa5a3624b9c3738828388f376190f9f24a8e6a14ad181729",
+      "sha256": "35b2e65923f17d52fa5a3624b9c3738828388f376190f9f24a8e6a14ad181729"
+    },
+    {
+      "name": "shiki.ts",
+      "source": "lib/shiki.ts",
+      "sourceSha256": "d7feaaafb4acf4654ac4c575c791295a6de85ddc3518aa574631c81de028d1df",
+      "sha256": "13b828c8638b145efdd34e6583125f74393a153831eae1de137da51db7fbf064"
+    },
+    {
+      "name": "syntax.tsx",
+      "source": "components/Markdown.tsx",
+      "sourceSha256": "a1739d05dcb822b17962221fce4b8b16d522b0fe09d6fced03e7a003a7889bf1",
+      "sha256": "dd8b19c10e7ddf5a6b6c00b00a6135a8c8f4f9cb403b055c3e7e1d5ad259f30e"
+    },
+    {
+      "name": "activity-group-folding.ts",
+      "source": "lib/activity-group-folding.ts",
+      "sourceSha256": "5e0f27ece27606cac2654d47d7e4620f7a6d93513e9fdfdbf78613c982065f71",
+      "sha256": "8f956c1eae7f09819659d2276eceef9edc140ed73353f7b10ef941ead3a387ba"
+    },
+    {
+      "name": "turn-process.ts",
+      "source": "lib/turn-process.ts",
+      "sourceSha256": "8a1d3e6d9a02c8ad183bf2982d3fea138105c808def6fccf2bc8990e31990f1c",
+      "sha256": "e35bee0595d5ea3e2e7adfc5cf0781b6e7b8660a06a7363d9d13293267f6b8c0"
+    },
+    {
+      "name": "disclosure-scope.ts",
+      "source": "features/chat/transcript/disclosure-scope.ts",
+      "sourceSha256": "8615e92c5f6ae5840420f8ede8ed12d7dc3bca6a783471dd333389aca1698e51",
+      "sha256": "8615e92c5f6ae5840420f8ede8ed12d7dc3bca6a783471dd333389aca1698e51"
+    },
+    {
+      "name": "disclosure-anchor-context.ts",
+      "source": "lib/disclosure-anchor-context.ts",
+      "sourceSha256": "f6737c0fc0260dcd9e485d7bfbc80e4c76c28b41e9fcfbf82d22e6994589dc23",
+      "sha256": "f6737c0fc0260dcd9e485d7bfbc80e4c76c28b41e9fcfbf82d22e6994589dc23"
+    },
+    {
+      "name": "TextShimmer.tsx",
+      "source": "features/chat/transcript/TextShimmer.tsx",
+      "sourceSha256": "450d23968b1e808c7d0cc5b7da3512773fcfdc62db6835fbd01c95885e253be2",
+      "sha256": "450d23968b1e808c7d0cc5b7da3512773fcfdc62db6835fbd01c95885e253be2"
+    },
+    {
+      "name": "useSmoothText.ts",
+      "source": "hooks/useSmoothText.ts",
+      "sourceSha256": "ac98d25d2712769c4abe18fa6f1b52c7328a8c1a9520423beb15a40b81e6f54d",
+      "sha256": "f7bfe00506012f3ac2d686ee5f27b06d8c38cf1ba549b3522232b707948e9b29"
+    },
+    {
+      "name": "icons.tsx",
+      "source": "components/icons.tsx",
+      "sourceSha256": "1c247663cabd585d3601c39f62588498a4541aa4365229fe63170d72e08f13ca",
+      "sha256": "1c247663cabd585d3601c39f62588498a4541aa4365229fe63170d72e08f13ca"
+    },
+    {
+      "name": "disclosure.tsx",
+      "source": "features/chat/transcript/disclosure.tsx",
+      "sourceSha256": "e7f74b7285770d91cfba6cb241aa36e51e01ca5055ce2d2654ab1c8007c0955c",
+      "sha256": "79dba0f0a8a3a3d8ccab7148ab7415dd47e85d7e7ceb91bd555fc7e38948ec29"
+    },
+    {
+      "name": "TurnProcess.tsx",
+      "source": "features/chat/transcript/TurnProcess.tsx",
+      "sourceSha256": "869212ab0e4a00afc87a699d4f06069222a9ba57202fd1297ec18330026ac20d",
+      "sha256": "78a5588b0749d8de9d3169bdbced990dec4172c7e520882ba4c89f535d6297da"
+    },
+    {
+      "name": "ProcessActivityGroup.tsx",
+      "source": "features/chat/transcript/ProcessActivityGroup.tsx",
+      "sourceSha256": "5519bff9656f3589bc19763635de7ea4438f69e6dccd0c2d41e88773c8149bb8",
+      "sha256": "d29992aad88e419e52cbb3808fc4e5ae5bda8a09950c9072b29ca5ac9f151f97"
+    },
+    {
+      "name": "tool-presentation.ts",
+      "source": "lib/tool-presentation.ts",
+      "sourceSha256": "e327a54015782ef698362d3760d3ccce83be712b8225686c6cc55606124a4169",
+      "sha256": "f66abca33be8c597377b9c1bd46cbd4d49c5c13ce50e44178f285ec9da51633e"
+    },
+    {
+      "name": "LargeTextPreview.tsx",
+      "source": "components/LargeTextPreview.tsx",
+      "sourceSha256": "de5365751f2bc795506aaf8443114c5557c1b6b0573b552c8ec948ff4774d102",
+      "sha256": "ab3d9e131eaf895ba704a65fa2b4d70ca92638057add027fceaac5c0d7d10d22"
+    },
+    {
+      "name": "ToolDetails.tsx",
+      "source": "components/ToolDetails.tsx",
+      "sourceSha256": "645a793d7599e13e4d987753f74eacbf4ac71c4e86a5c577980ddec9f280743e",
+      "sha256": "baed15056aa13495ad86e170652b7b084b9d63222cefdbbddbb091833191081b"
+    },
+    {
+      "name": "shared.tsx",
+      "source": "features/chat/transcript/shared.tsx",
+      "sourceSha256": "5a9cbf987a1162e6ea26d2fface4adb93a29bfee021cc487228dd0b854d63775",
+      "sha256": "c2384d0bfdf769cd72775cdc1baa8da45e7895af90d509ea3152ba48bf75546c"
+    },
+    {
+      "name": "tokens.css",
+      "source": "styles/tokens.css",
+      "sourceSha256": "d25f4c1757df258b3abcec54637cdb46e917932eb460f35f8d91b9393bb4a03c",
+      "sha256": "d25f4c1757df258b3abcec54637cdb46e917932eb460f35f8d91b9393bb4a03c"
+    },
+    {
+      "name": "messages.css",
+      "source": "styles/messages.css",
+      "sourceSha256": "042a209f5583f0a03974416c260c3d82f41fb9555406a54994bd541932c2c0ab",
+      "sha256": "042a209f5583f0a03974416c260c3d82f41fb9555406a54994bd541932c2c0ab"
+    },
+    {
+      "name": "prose.css",
+      "source": "styles/prose.css",
+      "sourceSha256": "e8df833d400b64f8b36d893fde07f166f6a7018d7529f84482cf50173ec2e053",
+      "sha256": "e8df833d400b64f8b36d893fde07f166f6a7018d7529f84482cf50173ec2e053"
+    },
+    {
+      "name": "zh-CN.ts",
+      "source": "packages/i18n/src/locales/zh-CN/index.ts",
+      "sourceSha256": "f4fd55e45ff997e49b4ecdad98441a514091e1fbe2573b8e4e82254049aa8262",
+      "sha256": "f906ac2ebae7c37a7394b6c1d66e7a72ab6273d2179ae41ae8399ecff0fd31f9"
+    }
+  ]
+}

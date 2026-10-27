@@ -1,0 +1,15 @@
+PI-Desktop transcript UI
+Copyright its respective authors, https://github.com/vastsa/PI-Desktop
+Version 0.21.0, commit c099b6a4cdb4dcdc3bf467432e36af10fde77080
+Licensed under GNU LGPL version 3. See COPYING.LESSER and COPYING.
+
+This application uses modified PI-Desktop presentation source. Electron IPC,
+workspace plugins and persistence bindings are replaced by Pi Web browser
+adapters. No original session storage, model settings or tool execution code
+is replaced. Sources and modification hashes are included beside this notice.
+
+Presentation includes the original turn/activity disclosures, thinking row,
+structured tool details, text shimmer, smooth streaming, syntax highlighter,
+Chinese labels and locally scoped original token/message/prose styles.
+A browser-only focus adaptation prevents pointer focus from opening a closed
+row before its first click; the original reading protection remains intact.

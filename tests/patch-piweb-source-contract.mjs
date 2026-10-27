@@ -28,7 +28,9 @@ test('pins the official main SHA and declares source-integrated runtime identity
   assert.match(upstream.ref, /^[a-f0-9]{40}$/);
   const pkg = JSON.parse(integrated.get('package.json'));
   assert.equal(pkg.version, upstream.version);
-  assert.deepEqual(pkg.piPortable, { upstreamRef: upstream.ref, sourceOverlay: 1 });
+  assert.equal(pkg.piPortable.upstreamRef, upstream.ref);
+  assert.equal(pkg.piPortable.sourceOverlay, 1);
+  assert.equal(pkg.piPortable.desktopTranscript.version, '0.21.0');
 });
 
 test('native CLI explicitly keeps its Next.js child hidden on Windows', () => {
@@ -285,7 +287,7 @@ test('new draft model choices persist before sending; follow-up busy state retai
   assert.doesNotMatch(integrated.get('components/PortableNodes.tsx'), /onMouseEnter/);
 });
 
-test('turn process renders as a timeline: narration visible, thinking folded, tool calls hidden', () => {
+test('turn process uses Desktop disclosures for history and live, with unfiltered available reasoning', () => {
   const chat = integrated.get('components/ChatWindow.tsx');
   assert.doesNotMatch(chat, /portableToolViews/);
   assert.doesNotMatch(chat, /<ProcessDetailsGroup /);
@@ -301,42 +303,25 @@ test('turn process renders as a timeline: narration visible, thinking folded, to
   assert.match(chat, /if \(item\.role === "toolResult"\) continue;/);
   const timeline = integrated.get('components/PortableProcessTimeline.tsx');
   assert.ok(timeline.startsWith('"use client";'));
-  assert.match(timeline, /last\?\.type === "tools"\) last\.calls\.push\(call\)/);
-  assert.match(timeline, /const \[open, setOpen\] = useState\(false\)/);
-  assert.match(timeline, /const expanded = open \|\| Boolean\(target\)/);
-  assert.match(timeline, /\{failed\} 条失败/);
-  // lop 2026-09-30: tool calls are hidden (a search hit is the one exception), consecutive thinking
-  // summaries fold into one row closed by default, and the Chinese narration stays visible.
-  assert.match(timeline, /if \(!showTool\(block\)\) return;/);
-  assert.match(timeline, /buildTimelineItems\(entries, block => block === searchBlock/);
-  assert.match(timeline, /if \(last\?\.type === "thinking"\) \{\s*last\.blocks\.push\(item\)/);
-  // Thinking folds closed by default (only a search hit or a click opens it); it reads "正在思考" while streaming.
-  assert.ok(timeline.includes('思考 ${blocks.length} 处') && timeline.includes('正在思考'));
-  assert.match(timeline, /const ThinkingGroup[\s\S]{0,200}const \[open, setOpen\] = useState\(false\)/);
-  assert.match(timeline, /<ThinkingGroup item=\{item\}[^>]*live=\{Boolean\(live\)\}/);
-  // The narration is full markdown in the rail, never folded or clipped.
-  assert.match(timeline, /className=\{streaming \? "pw-proc-item pw-proc-narr is-streaming" : "pw-proc-item pw-proc-narr"\}/);
-  assert.match(timeline, /<div data-message-text[^>]*>\s*<PortableTextBlock /);
-  for (const label of ['运行 ${count.bash} 条命令', '读取 ${count.read.size} 个文件', '搜索 ${count.search} 次', '修改 ${count.change.size} 个文件']) assert.ok(timeline.includes(label), label);
+  assert.match(timeline, /<TurnProcess /);
+  assert.match(timeline, /<ProcessActivityGroup /);
+  assert.match(timeline, /segmentTurnProcess\(projection.process,"fully-folded"\)/);
+  assert.match(timeline, /<ThinkingRow [^>]*autoOpen/);
+  assert.match(timeline, /<ToolRow /);
+  assert.doesNotMatch(timeline, /ToolChineseExcerpt|ThinkingGroup|showTool\(block\)/);
+  const disclosure = integrated.get('components/desktop-transcript/disclosure.tsx');
+  assert.match(disclosure, /const requestedOpen = choice \? choice.open : \(derivedOpen \|\| reading\)/);
+  assert.match(disclosure, /requestedOpen && scope.visible/);
   const view = integrated.get('components/MessageView.tsx');
   assert.match(view, /export \{ ToolCallBlock as PortableToolCallBlock, TextBlock as PortableTextBlock, loadThinkingContent as portableLoadThinkingContent, getToolPreview as portableToolPreview \};/);
   // The live bubble's thinking stays collapsed by default (no force-expand while streaming).
   assert.match(view, /const \[expanded, setExpanded\] = useState\(isThinkingExpandedByDefault\);/);
   assert.doesNotMatch(view, /streaming=\{isStreaming\}/);
   assert.match(integrated.get('lib/session-reader.ts'), /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
-  // lop 2026-10-06: reasoning is shown only when Chinese makes up at least 30% of its reading units (CJK characters plus whole
-  // Latin words); English, or English quoting a few Chinese words, is not shown at all (live or finished).
+  // 2026-10-27: full Desktop behavior replaces the old Chinese-only filter.
   const display = integrated.get('lib/message-display.ts');
-  const hideSource = display.match(/export const CHINESE_REASONING_MIN_SHARE[\s\S]*?\nexport function isEmptyThinkingBlock[^\n]*\n[^\n]*\n\}/)?.[0];
-  assert.ok(hideSource, 'reasoning visibility source');
-  const isHidden = vm.runInNewContext(`${hideSource
-    .replaceAll('export ', '')
-    .replace('(text: string): number', '(text)')
-    .replace(/\(block: [^)]*\): block is ThinkingContent/, '(block, _options)')};isEmptyThinkingBlock`, {});
-  for (const thinking of ['', '  ', '**Planning the fix**', 'Inspecting files', 'Inspecting the config files and checking 配置 again before the change']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), true, JSON.stringify(thinking));
-  for (const thinking of ['先看一下配置', '**Planning** 然后检查', '分析中', '先改 run-supervisor.mjs 再跑测试']) assert.equal(isHidden({ type: 'thinking', thinking }, { isStreaming: true }), false, thinking);
-  assert.equal(isHidden({ type: 'thinking', thinking: 'English preview of a long block', deferred: true }), true);
-  assert.equal(isHidden({ type: 'text', text: '' }), false);
+  assert.match(display, /return block.type === "thinking" && !block.thinking.trim\(\) && !_options.isStreaming;/);
+  assert.doesNotMatch(integrated.get('lib/session-reader.ts'), /toolChineseExcerpts|chineseExcerpts/);
   assert.match(integrated.get('app/redesign-conversation.css'), /\.pw-think-fold/);
   assert.match(integrated.get('app/redesign-conversation.css'), /\.pw-proc-narr/);
   // Composer: the model selector (and the gauge/⚡ controls anchored on it) sits first in the

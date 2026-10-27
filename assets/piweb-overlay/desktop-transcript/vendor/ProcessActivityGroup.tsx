@@ -1,0 +1,73 @@
+import { useId, useMemo, type ReactNode } from "react";
+import { useTranslation } from "./host";
+import type { AssistantActivityItem } from "./model";
+import { cachedActivitySummary } from "./summary";
+import { IconChevronRight, IconCircleAlert, IconSparkles } from "./icons";
+import { DisclosureCollapseRail } from "./shared";
+import { DisclosureScope, type useAutomaticDisclosure } from "./disclosure";
+
+/** Keep the body identity stable when a singleton grows into a group. */
+export function ProcessActivityGroup({
+  items,
+  active,
+  disclosure,
+  children,
+}: {
+  items: readonly AssistantActivityItem[];
+  active: boolean;
+  disclosure: ReturnType<typeof useAutomaticDisclosure>;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const detailsId = useId();
+  const grouped = items.length > 1;
+  // A group below a collapsed whole-turn process is not expanded even when the
+  // user left it open: `disclosure.open` already folds in that gate, and the
+  // choice itself survives so reopening the process restores it.
+  const parentVisible = disclosure.parentVisible;
+  const open = (!grouped || disclosure.open) && parentVisible;
+  const summary = useMemo(() => cachedActivitySummary(items), [items]);
+  if (items.length === 0) return null;
+  return (
+    <div className={`process-activity-group${grouped ? " grouped" : " singleton"}${open ? " open" : ""}`}>
+      {grouped ? (
+        <button
+          type="button"
+          className="tool-activity-header"
+          ref={disclosure.titleRef}
+          aria-expanded={open}
+          aria-controls={detailsId}
+          onClick={disclosure.toggle}
+        >
+          <span className="tool-activity-icon" aria-hidden><IconSparkles size={14} /></span>
+          <span className={`tool-activity-label${active ? " running" : ""}`}>
+            {t(summary.label, { count: summary.count })}
+          </span>
+          {active ? <span className="activity-marker" aria-hidden /> : null}
+          {summary.thinking > 0 && summary.tools > 0 ? (
+            <span className="tool-activity-count">{t("chat.activityIncludesThinking")}</span>
+          ) : null}
+          {active ? <span className="tool-activity-count">{t("chat.running")}</span> : null}
+          {summary.issues > 0 ? (
+            <span className="activity-issue-count">
+              <IconCircleAlert size={14} aria-hidden />
+              <span>{t("chat.activityFailures", { count: summary.issues })}</span>
+            </span>
+          ) : null}
+          <span className="tool-activity-caret" aria-hidden><IconChevronRight size={12} /></span>
+        </button>
+      ) : null}
+      <div
+        id={detailsId}
+        ref={disclosure.bodyRef}
+        className="process-activity-body"
+        hidden={!open}
+        inert={!open}
+        {...disclosure.bodyEvents}
+      >
+        {grouped ? <DisclosureCollapseRail label={t("chat.collapseActivityGroup")} onCollapse={disclosure.collapse} /> : null}
+        <DisclosureScope disclosure={disclosure} open={open}>{children}</DisclosureScope>
+      </div>
+    </div>
+  );
+}
