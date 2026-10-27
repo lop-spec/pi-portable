@@ -80,6 +80,7 @@ jobs:
           node --test tests/piweb-source-release-contract.mjs
           node --test tests/piweb-history.mjs
           node --test tests/piweb-project-tree.mjs tests/piweb-project-capacity.mjs tests/piweb-project-monthly.mjs
+          node --test tests/project-balance.mjs tests/project-reply-time.mjs tests/project-recent-tasks.mjs tests/pi-task-results.mjs
           node tests/windows-process-env.mjs
           node tests/windows-launcher-contract.mjs
           node tests/browser-background-contract.mjs
@@ -269,6 +270,8 @@ jobs:
           Copy-Item tools/patch-piweb-service-tier.mjs stage/tools/patch-piweb-service-tier.mjs
           Copy-Item tools/backup.mjs stage/tools/backup.mjs
           Copy-Item tools/pi-project.mjs stage/tools/pi-project.mjs
+          Copy-Item tools/project-balance.mjs stage/tools/project-balance.mjs
+          Copy-Item tools/pi-task-results.mjs stage/tools/pi-task-results.mjs
           Copy-Item tools/websearch.mjs stage/tools/websearch.mjs
           Copy-Item tools/patch-pi-native-policy.mjs stage/tools/patch-pi-native-policy.mjs
           Copy-Item tools/piweb-rules-live-check.mjs stage/tools/piweb-rules-live-check.mjs

@@ -3,6 +3,9 @@ export function integrateProjectTree({ get, set, change, prepend, template }) {
   set('components/ProjectTree.tsx', template('ProjectTree.tsx'));
   set('lib/project-routing.mjs', template('project-routing.mjs'));
   set('lib/project-capacity.mjs', template('project-capacity.mjs'));
+  set('lib/session-reply-time.mjs', template('session-reply-time.mjs'));
+  set('lib/recent-tasks.mjs', template('recent-tasks.mjs'));
+  set('app/api/session-reply-times/route.ts', template('session-reply-times-route.ts'));
   set('app/api/project-routing/route.ts', template('project-routing-route.ts'));
   prepend('lib/rpc-manager.ts', 'import { monthlySessionDir } from "@/lib/project-routing.mjs";\n');
   change('lib/rpc-manager.ts', 'SessionManager.create(cwd, undefined)', 'SessionManager.create(cwd, monthlySessionDir(getAgentDir(), cwd))');

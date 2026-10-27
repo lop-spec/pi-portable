@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SessionInfo } from '@/lib/types';
 import { listSessionFamilies } from '@/lib/session-family';
 import { workspaceKeyOf } from '@/lib/workspace-memory';
+import { recentTaskCandidates, recentTasks } from '@/lib/recent-tasks.mjs';
 import { SessionSearch } from './SessionSearch';
 import { SessionContextActions, ProjectActionMenu, ProjectActionDialog, NoticeDialog, type ProjectActionKind } from './PortableContextActions';
 import { projectRequest, type ProjectRegistry, type NamedProject } from './PortableProjects';
@@ -24,8 +25,6 @@ interface Props {
   onCreated: (cwd: string, registry: ProjectRegistry) => void;
 }
 const foldKey = 'pi-web:project-tree-folds';
-const monthFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit' });
-const monthOf = (session: SessionInfo) => { const date = new Date(session.created); return Number.isFinite(date.getTime()) ? monthFormatter.format(date) : '未知月份'; }; 
 function readFolds(): Set<string> { try { return new Set(JSON.parse(localStorage.getItem(foldKey) ?? '[]')); } catch { return new Set(); } }
 export function ProjectTree(props: Props) {
   const { sessions, projects, hiddenProjects, registry, selectedSessionId, runningSessionIds, unreadSessionIds } = props;
@@ -37,13 +36,39 @@ export function ProjectTree(props: Props) {
   const [projectDialog, setProjectDialog] = useState<{ project: NamedProject; kind: ProjectActionKind } | null>(null);
   const [creating, setCreating] = useState(false), [newName, setNewName] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null), search = useRef<HTMLInputElement>(null);
-  const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions]);
+  const [clock, setClock] = useState(() => Date.now()), [replyTimes, setReplyTimes] = useState<Record<string, string | null>>({}), [recentError, setRecentError] = useState(false);
+  const [recentArchive, setRecentArchive] = useState<{ sessions: SessionInfo[]; replies: Record<string, string | null> }>({ sessions: [], replies: {} }), [archiveError, setArchiveError] = useState(false), [archiveView, setArchiveView] = useState(false);
+  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 30000); return () => clearInterval(timer); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch('/api/session-reply-times', { cache: 'no-store', signal: controller.signal })
+      .then(response => { if (!response.ok) throw new Error('recent archive unavailable'); return response.json(); })
+      .then(data => { setRecentArchive({ sessions: data.sessions ?? [], replies: data.replies ?? {} }); setArchiveError(Boolean(data.incomplete)); })
+      .catch(error => { if (error.name !== 'AbortError') setArchiveError(true); });
+    return () => controller.abort();
+  }, [clock]);
+  const byId = useMemo(() => new Map([...recentArchive.sessions, ...sessions].map(s => [s.id, s])), [sessions, recentArchive]);
+  const allFamilies = useMemo(() => listSessionFamilies([...byId.values()]), [byId]);
+  const allReplies = useMemo(() => ({ ...recentArchive.replies, ...replyTimes }), [recentArchive, replyTimes]);
+  const recentCandidates = recentTaskCandidates(allFamilies, runningSessionIds, clock);
+  const candidateKey = recentCandidates.map(f => `${f.root.id}:${f.root.modified}`).sort().join('|');
+  useEffect(() => {
+    const ids = candidateKey ? candidateKey.split('|').map(item => item.split(':', 1)[0]) : [];
+    if (!ids.length) { setReplyTimes({}); setRecentError(false); return; }
+    const controller = new AbortController();
+    const batches = Array.from({ length: Math.ceil(ids.length / 200) }, (_, index) => ids.slice(index * 200, index * 200 + 200));
+    void Promise.all(batches.map(batch => fetch('/api/session-reply-times', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: batch }), signal: controller.signal })
+      .then(response => { if (!response.ok) throw new Error('reply times unavailable'); return response.json(); })))
+      .then(data => { setReplyTimes(Object.assign({}, ...data.map(item => item.replies ?? {}))); setRecentError(data.some(item => item.incomplete)); })
+      .catch(error => { if (error.name !== 'AbortError') setRecentError(true); });
+    return () => controller.abort();
+  }, [candidateKey, clock]);
   const groups = useMemo(() => {
-    const known = new Set(registry.projects.map(p => p.key));
-    const loose = sessions.filter(s => !known.has(workspaceKeyOf(s)) && !registry.hidden.includes(workspaceKeyOf(s)));
-    const result = projects.map(project => ({ project, families: listSessionFamilies(sessions.filter(s => workspaceKeyOf(s) === project.key)) }));
-    return [{ project: { key: '__inbox', root: '', name: '未归属' }, families: listSessionFamilies(loose) }, ...result];
-  }, [sessions, projects, registry]);
+    const recent = recentTasks(allFamilies, runningSessionIds, allReplies, clock);
+    const archivedIds = new Set(recentArchive.sessions.map(s => s.id));
+    const result = projects.map(project => ({ project, families: listSessionFamilies(sessions.filter(s => (archiveView || !archivedIds.has(s.id)) && workspaceKeyOf(s) === project.key)) }));
+    return [{ project: { key: '__inbox', root: '', name: '最近任务' }, families: recent }, ...result];
+  }, [sessions, projects, allFamilies, runningSessionIds, allReplies, recentArchive, archiveView, clock]);
   const selectedGroup = groups.find(g => g.families.some(f => f.root.id === selectedSessionId || f.subagents.some(s => s.id === selectedSessionId)))?.project.key;
   useEffect(() => {
     if (!selectedGroup) return;
@@ -59,7 +84,8 @@ export function ProjectTree(props: Props) {
   useEffect(() => {
     const update = () => {
       const html = document.documentElement;
-      if (html.dataset.piSessionArchiveView === 'archived' && !props.loading && !props.error) html.dataset.piSessionArchiveProjectCount = String(groups.reduce((sum, group) => sum + group.families.length, 0));
+      setArchiveView(html.dataset.piSessionArchiveView === 'archived');
+      if (html.dataset.piSessionArchiveView === 'archived' && !props.loading && !props.error) html.dataset.piSessionArchiveProjectCount = String(new Set(groups.flatMap(group => group.families.map(f => f.root.id))).size);
       else delete html.dataset.piSessionArchiveProjectCount;
       document.dispatchEvent(new Event('pi-web:archive-project-count'));
     };
@@ -88,8 +114,8 @@ export function ProjectTree(props: Props) {
     try { const data = await projectRequest('/api/project-routing', { action: 'create', project: newName }); props.onCreated(data.cwd, data); setCreating(false); setNewName(''); }
     catch (error) { setNotice(String(error)); } finally { setBusy(false); }
   };
-  const row = (session: SessionInfo, sub: boolean, family: ReturnType<typeof listSessionFamilies>[number]) => <SessionRow key={session.id}
-    session={session} depth={sub ? 1 : 0} timeLabel={formatSessionTime(session.modified, new Date())} tooltipTime={formatSessionDateTime(session.modified, new Date())}
+  const row = (session: SessionInfo, sub: boolean, family: ReturnType<typeof listSessionFamilies>[number], recent = false) => <SessionRow key={session.id}
+    session={session} depth={sub ? 1 : 0} timeLabel={formatSessionTime(recent ? allReplies[session.id] ?? session.modified : session.modified, new Date())} tooltipTime={formatSessionDateTime(recent ? allReplies[session.id] ?? session.modified : session.modified, new Date())}
     isSelected={session.id === selectedSessionId} isRunning={[session, ...(!sub ? family.subagents : [])].some(s => runningSessionIds.has(s.id))}
     isUnread={[session, ...(!sub ? family.subagents : [])].some(s => unreadSessionIds.has(s.id))} subagentCount={sub ? 0 : family.subagents.length}
     expanded={children.has(session.id)} renaming={renaming === session.id} tabbable menuOpen={menuId === session.id} subagentGlyph={props.subagentGlyph}
@@ -113,18 +139,19 @@ export function ProjectTree(props: Props) {
       {props.loading && sessions.length === 0 && <div className="pw-sess-state" role="status">正在加载项目…</div>}
       {groups.map(({ project, families }) => {
         const closed = folds.has(project.key), count = families.length;
-        const ordered = [...families].sort((a, b) => monthOf(b.root).localeCompare(monthOf(a.root)) || Date.parse(b.latestModified) - Date.parse(a.latestModified));
+        const ordered = project.key === '__inbox' ? families : [...families].sort((a, b) => Date.parse(b.latestModified) - Date.parse(a.latestModified));
         const members = families.flatMap(f => [f.root, ...f.subagents]);
         const running = members.some(s => runningSessionIds.has(s.id)), unread = members.some(s => unreadSessionIds.has(s.id));
         return <section className="pw-tree-project" key={project.key} data-project-key={project.key}>
-          <div className="pw-tree-project-head"><button type="button" className="pw-tree-toggle" aria-expanded={!closed} aria-controls={`tree-${project.key}`} title={project.root || '新对话先在这里，首轮回复结束后自动归属'} onClick={() => toggle(project.key)}>
+          <div className="pw-tree-project-head"><button type="button" className="pw-tree-toggle" aria-expanded={!closed} aria-controls={`tree-${project.key}`} title={project.root || '最近1小时回复过或正在运行的对话'} onClick={() => toggle(project.key)}>
             <Icon name={closed ? 'right' : 'down'} size={12} /><Icon name="folder" size={15} /><span className="pw-truncate">{project.name ?? project.root.split(/[/\\]/).at(-1)}</span>
             {running ? <span className="pw-spinner pw-spinner--sm" role="status" aria-label="运行中" /> : unread ? <span className="pw-dot" title="有新回复" /> : null}<span className="pw-num">{count}</span>
           </button>{project.key !== '__inbox' && <button type="button" className="pw-icon-btn pw-icon-btn--sm pw-tree-more" aria-label={`${project.name ?? '项目'}操作`} title="项目操作" onClick={e => setProjectMenu({ project, anchor: anchorFromElement(e.currentTarget, { align: 'end' }), element: e.currentTarget })}><Icon name="more" /></button>}</div>
           {!closed && <div id={`tree-${project.key}`} className="pw-tree-children">
-            {count === 0 && <p className="pw-tree-empty">{project.key === '__inbox' ? '新对话自动归属项目' : '暂无对话'}</p>}
-            {(more.has(project.key) ? ordered : ordered.slice(0, 5)).map((family, index, visible) => <div key={family.root.id}>{(index === 0 || monthOf(visible[index - 1].root) !== monthOf(family.root)) && <div className="pw-tree-month">{monthOf(family.root)}</div>}{row(family.root, false, family)}{children.has(family.root.id) && family.subagents.map(s => row(s, true, family))}</div>)}
-            {count > 5 && <button className="pw-tree-show-more" type="button" onClick={() => setMore(prev => { const next = new Set(prev); next.has(project.key) ? next.delete(project.key) : next.add(project.key); return next; })}>{more.has(project.key) ? '收起对话' : `显示全部 ${count} 个`}</button>}
+            {project.key === '__inbox' && (recentError || archiveError) && <p className="pw-tree-empty" role="alert">最近回复时间加载不完整</p>}
+            {count === 0 && <p className="pw-tree-empty">{project.key === '__inbox' ? '最近暂无任务' : '暂无对话'}</p>}
+            {(project.key === '__inbox' || more.has(project.key) ? ordered : ordered.slice(0, 5)).map(family => <div key={family.root.id}>{row(family.root, false, family, project.key === '__inbox')}{children.has(family.root.id) && family.subagents.map(s => row(s, true, family, project.key === '__inbox'))}</div>)}
+            {project.key !== '__inbox' && count > 5 && <button className="pw-tree-show-more" type="button" onClick={() => setMore(prev => { const next = new Set(prev); next.has(project.key) ? next.delete(project.key) : next.add(project.key); return next; })}>{more.has(project.key) ? '收起对话' : `显示全部 ${count} 个`}</button>}
           </div>}
         </section>;
       })}
