@@ -23,7 +23,7 @@ export function integrateFileContext({ get, set, change, prepend, template }) {
   change(written, '      {hidden > 0 && (', '      <PortableFileContextMenu menu={fileMenu} />\n      {hidden > 0 && (');
 
   const markdown = 'components/MarkdownBody.tsx';
-  prepend(markdown, 'import { PortableFileContextMenu, usePortableFileMenu, localFilePathFromImageApi } from "./PortableFileContextMenu";\n');
+  prepend(markdown, 'import { PortableFileContextMenu, usePortableFileMenu, localFilePathFromImageApi, localFilePathFromInlineCode } from "./PortableFileContextMenu";\n');
   change(markdown, '  const { cwd } = useContext(MarkdownRenderContext);\n  delete props.node;', '  const { cwd, onOpenFile } = useContext(MarkdownRenderContext);\n  const fileMenu = usePortableFileMenu(cwd, undefined, onOpenFile);\n  delete props.node;');
   change(markdown, '  const filePath = href ? resolveLocalFileHref(href, cwd) : null;', '  const filePath = href ? resolveLocalFileHref(href, cwd) ?? localFilePathFromImageApi(href) : null;');
   change(markdown, `  if (!imageSrc || insideLink) return image;
@@ -38,15 +38,13 @@ export function integrateFileContext({ get, set, change, prepend, template }) {
       {children}
     </code>
   );`, `  // Inline code that is itself a path is another common way of delivering files.
-  const rawPath = typeof children === "string" ? children.trim() : "";
-  const looksLikePath = !/[\\r\\n<>]/.test(rawPath) && (/^(?:[A-Za-z]:[\\\\/]|\\\\\\\\|\\/|\\.{1,2}[\\\\/])/.test(rawPath) || /^[^\\r\\n]*[\\\\/][^\\r\\n]+\\.[A-Za-z0-9]{1,16}$/.test(rawPath) || /^[^\\r\\n]+\\.[A-Za-z0-9]{1,16}$/.test(rawPath));
-  const filePath = looksLikePath ? resolveLocalFileHref(rawPath, cwd) : null;
+  const filePath = typeof children === "string" ? localFilePathFromInlineCode(children, cwd) : null;
   return <><code className="markdown-inline-code" {...props} onContextMenu={filePath ? (event) => fileMenu.open(event, filePath) : undefined}>{children}</code><PortableFileContextMenu menu={fileMenu} /></>;`);
   change(markdown, '  const { cwd, onOpenFile } = useContext(MarkdownRenderContext);\n  // `node`', '  const { cwd, onOpenFile } = useContext(MarkdownRenderContext);\n  const fileMenu = usePortableFileMenu(cwd, undefined, onOpenFile);\n  // `node`');
   change(markdown, '      <a href={href} {...props} onClick={handleClick}>\n        {children}\n      </a>', '      <a href={href} {...props} onClick={handleClick} onContextMenu={(event) => fileMenu.open(event, filePath)}>\n        {children}\n      </a>\n      <PortableFileContextMenu menu={fileMenu} />');
 
   const host = 'components/desktop-transcript/host.tsx';
-  prepend(host, 'import { PortableFileContextMenu, usePortableFileMenu, localFilePathFromImageApi, type PortableFileMenuState } from "../PortableFileContextMenu";\nimport { encodeFilePathForApi } from "@/lib/file-paths";\n');
+  prepend(host, 'import { PortableFileContextMenu, usePortableFileMenu, localFilePathFromImageApi, localFilePathFromInlineCode, type PortableFileMenuState } from "../PortableFileContextMenu";\nimport { encodeFilePathForApi } from "@/lib/file-paths";\n');
   const menuStart = `type Menu={x:number;y:number;path:string}|null;
 export function useChatFileMenu(){
   const [fileMenu,setMenu]=useState<Menu>(null);
@@ -78,11 +76,25 @@ function DesktopMarkdownImage({src,alt}:{src?:string;alt?:string}){
   const file=src?(resolveLocalFileHref(src,host.cwd)??localFilePathFromImageApi(src)):null;
   const image=<img src={file?\`/api/files/\${encodeFilePathForApi(file)}?type=read\`:src} alt={alt??""}/>;
   return file?<span onContextMenu={event=>menu.open(event,file)}>{image}<PortableFileContextMenu menu={menu}/></span>:image;
+}
+function DesktopMarkdownCode({className,children}:{className?:string;children?:ReactNode}){
+  const host=useContext(HostContext),menu=usePortableFileMenu(host.cwd,host.sessionId,host.onOpenFile);
+  const raw=String(children),file=localFilePathFromInlineCode(raw,host.cwd);
+  if(className||raw.includes("\\n"))return <CodeBlock code={raw.replace(/\\n$/,"")} lang={className?.replace("language-","")??""}/>;
+  return <><code onContextMenu={file?event=>menu.open(event,file):undefined}>{children}</code><PortableFileContextMenu menu={menu}/></>;
 }`;
   change(host, menuStart, menuEnd);
   change(host, '      a:({href,children})=>{const file=resolveLocalFileHref(href,host.cwd);return <a href={href} target="_blank" rel="noopener noreferrer" onClick={file&&host.onOpenFile?event=>{event.preventDefault();host.onOpenFile?.(file);}:undefined}>{children}</a>;},', '      a:({href,children})=><DesktopMarkdownLink href={href}>{children}</DesktopMarkdownLink>,');
   change(host, '      img:({src,alt})=><img src={typeof src==="string"?src:undefined} alt={alt??""}/>,', '      img:({src,alt})=><DesktopMarkdownImage src={typeof src==="string"?src:undefined} alt={alt}/>,');
+  change(host, '      code:({className,children})=>{const raw=String(children);return className||raw.includes("\\n")?<CodeBlock code={raw.replace(/\\n$/,"")} lang={className?.replace("language-","")??""}/>:<code>{children}</code>;},', '      code:({className,children})=><DesktopMarkdownCode className={className}>{children}</DesktopMarkdownCode>,');
   set('public/licenses/pi-desktop/source/host.tsx.txt', get(host));
+
+  const toolRow = 'components/desktop-transcript/ToolRow.tsx';
+  prepend(toolRow, 'import { PortableFileContextMenu, usePortableFileMenu } from "../PortableFileContextMenu";\n');
+  change(toolRow, '  const openTarget=useOpenPreviewTarget();', '  const openTarget=useOpenPreviewTarget();\n  const fileMenu=usePortableFileMenu(host.cwd,host.sessionId,host.onOpenFile);');
+  change(toolRow, 'onClick={previewTarget?(event)=>{event.stopPropagation();openTarget(previewTarget);}:undefined}>{summary}</span>', 'onClick={previewTarget?(event)=>{event.stopPropagation();openTarget(previewTarget);}:undefined} onContextMenu={previewTarget?.kind==="file"?event=>fileMenu.open(event,path):undefined}>{summary}</span>');
+  change(toolRow, '      {runHead&&command?<ToolCommandCopy command={command}/>:null}', '      <PortableFileContextMenu menu={fileMenu}/>\n      {runHead&&command?<ToolCommandCopy command={command}/>:null}');
+  set('public/licenses/pi-desktop/source/ToolRow.tsx.txt', get(toolRow));
   const pinned = JSON.parse(template('file-context/manifest.json'));
   for (const [name, expected] of Object.entries(pinned.files)) {
     if (crypto.createHash('sha256').update(get(name)).digest('hex') !== expected) throw new Error(`${name}: file context final-stage hash mismatch; zero writes`);

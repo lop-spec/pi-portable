@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useState, type MouseEvent } from "react";
-import { resolveLocalFilePath } from "@/lib/file-links";
+import { resolveLocalFileHref, resolveLocalFilePath } from "@/lib/file-links";
 import { PopMenu } from "./sidebar/PopMenu";
 
 export const PortableFileSession = createContext<string | undefined>(undefined);
@@ -16,6 +16,12 @@ export function localFilePathFromImageApi(src: string): string | null {
     const joined = parts.join("/");
     return /^[A-Za-z]:\//.test(joined) || joined.startsWith("//") ? joined : `/${joined}`;
   } catch { return null; }
+}
+
+export function localFilePathFromInlineCode(value: string, cwd?: string): string | null {
+  const raw = value.trim();
+  const looksLikePath = !/[\r\n<>]/.test(raw) && (/^(?:[A-Za-z]:[\\/]|\\\\|\/|\.{1,2}[\\/])/.test(raw) || /^[^\r\n]*[\\/][^\r\n]+\.[A-Za-z0-9]{1,16}$/.test(raw) || /^[^\r\n]+\.[A-Za-z0-9]{1,16}$/.test(raw));
+  return looksLikePath ? resolveLocalFileHref(raw, cwd) : null;
 }
 
 type MenuState = { path: string; x: number; y: number; trigger: HTMLElement | null } | null;

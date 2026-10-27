@@ -1,13 +1,15 @@
 {
   "stage": "file-context-after-desktop",
   "files": {
-    "components/MarkdownBody.tsx": "2b0974bb946011d69bdab5bffe25422d15720f6795bbb0fa5daee05047f26e83",
+    "components/MarkdownBody.tsx": "1b9d7c40661cbe1b87042e7869f50ea835d44f9b70d76e3b7f3fc025bdf72e43",
     "components/TurnWrittenFiles.tsx": "8e155c43824fd8a210fdf8222021ef367637dedb84b9b1e236e6bfe49c93db36",
     "components/MessageView.tsx": "3ff2e04b758cbd19abe433f88dd4f3804704efccb0167377e6b96723fb6cc261",
     "lib/markdown.ts": "ab74b7d42b49f3664cb8d076795b538b3d8fd95f89d5428096101aee44059910",
-    "components/desktop-transcript/host.tsx": "d184ad1257d3686863e9387c98a9ad0830edf9835731e0589d919056f71a9075",
-    "public/licenses/pi-desktop/source/host.tsx.txt": "d184ad1257d3686863e9387c98a9ad0830edf9835731e0589d919056f71a9075",
-    "components/PortableFileContextMenu.tsx": "9853c80f71da5bf3917999649cb3c4f46453dfd9566cd7b37d64bab4913fab92",
+    "components/desktop-transcript/host.tsx": "481ca211dd9b85895b96bcf24602d3f38325f40d8765e2a1ee1951662c900095",
+    "public/licenses/pi-desktop/source/host.tsx.txt": "481ca211dd9b85895b96bcf24602d3f38325f40d8765e2a1ee1951662c900095",
+    "components/desktop-transcript/ToolRow.tsx": "304f5b2cfc6392ec72e9ad1e2624c42efb24faa42a909deefc20d82555cf7ab8",
+    "public/licenses/pi-desktop/source/ToolRow.tsx.txt": "304f5b2cfc6392ec72e9ad1e2624c42efb24faa42a909deefc20d82555cf7ab8",
+    "components/PortableFileContextMenu.tsx": "17b4dae7a92c42b9f92e98e2c3071979c914275d3d5755c7c7ad93d14cdcff43",
     "app/api/open-local-file/route.ts": "01b1a6f2abc0a0df70dfa0357b6766ae44cdb63d862c96a0344db4d69bf4b787",
     "lib/portable-windows-file-links.ts": "d6830f98b6be2eea613239ebb146b7dcf95b618f9759d33d7c50fd42ddf2cc23"
   }

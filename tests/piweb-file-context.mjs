@@ -31,7 +31,11 @@ test('all conversation representations use the shared menu and session identity'
   const desktop = files.get('components/desktop-transcript/host.tsx');
   assert.match(desktop, /usePortableFileMenu\(host.cwd,host.sessionId,host.onOpenFile\)/);
   assert.match(desktop, /DesktopMarkdownLink/);
+  assert.match(desktop, /DesktopMarkdownCode/);
   assert.equal(files.get('public/licenses/pi-desktop/source/host.tsx.txt'), desktop);
+  const row = files.get('components/desktop-transcript/ToolRow.tsx');
+  assert.match(row, /onContextMenu=\{previewTarget\?\.kind===\"file\"\?event=>fileMenu\.open\(event,path\)/);
+  assert.equal(files.get('public/licenses/pi-desktop/source/ToolRow.tsx.txt'), row);
 });
 
 test('opening is same-origin, authorized, shell-free and reports errors', () => {
@@ -48,7 +52,9 @@ test('Windows absolute links survive sanitization, external links remain externa
   const jiti = createJiti(path.join(source, 'components/MarkdownBody.test.mjs'), { jsx: { runtime: 'automatic' }, tsconfigPaths: true });
   // Run against the actual integrated checkout, not just the overlay templates.
   const { MarkdownBody } = await jiti.import(path.join(source, 'components/MarkdownBody.tsx'));
-  const { localFilePathFromImageApi } = await jiti.import(path.join(source, 'components/PortableFileContextMenu.tsx'));
+  const { localFilePathFromImageApi, localFilePathFromInlineCode } = await jiti.import(path.join(source, 'components/PortableFileContextMenu.tsx'));
+  assert.equal(localFilePathFromInlineCode('C:/Users/me/project/a b.txt', 'C:/Users/me/project'), 'C:/Users/me/project/a b.txt');
+  assert.equal(localFilePathFromInlineCode('not a path', 'C:/Users/me/project'), null);
   assert.equal(localFilePathFromImageApi('/api/files/C%3A/Users/me/%E5%9B%BE%E7%89%87.png?type=read'), 'C:/Users/me/图片.png');
   assert.equal(localFilePathFromImageApi('/api/files/%2F%2Fserver/share/a.png?type=read'), '//server/share/a.png');
   assert.equal(localFilePathFromImageApi('https://example.com/a.png'), null);
