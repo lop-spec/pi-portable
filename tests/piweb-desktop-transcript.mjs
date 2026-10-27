@@ -81,6 +81,11 @@ test('manual tool expansion uses original plain command output; shell exit failu
  const f=fixture();f.toolResults.get('call').details.exitCode=2;
  assert.equal(runOutcome(adaptTool(f.entries[0].message.content[1],f.toolResults.get('call'),1000,false)),'failed');
 });
+test('Pi Read truncation metadata never displaces the original file text',{skip:!available},()=>{
+ const {adaptTool}=load(asset+'/vendor/model.ts');const {buildToolPresentation}=load(asset+'/vendor/tool-presentation.ts');
+ const message=adaptTool({type:'toolCall',toolCallId:'r',toolName:'read',input:{path:'index.ts'}},{role:'toolResult',content:[{type:'text',text:'原始文件内容\n[Showing 2000 lines]'}],details:{truncation:{truncated:true,outputLines:2000}}},1000,false);
+ const blocks=buildToolPresentation(message,{hideSummaryArg:true});assert.equal(blocks[0].role,'content');assert.equal(blocks[0].text,'原始文件内容\n[Showing 2000 lines]');
+});
 test('recovered/stopped/failed timing uses original recorded-state precedence',{skip:!available},()=>{
  const {turnProcessPhase,turnProcessTiming}=load(asset+'/vendor/turn-process.ts');
  const parts=[{kind:'message',message:{id:'x',content:'',role:'assistant',status:'aborted',createdAt:'2026-10-27T01:00:00Z'}}];

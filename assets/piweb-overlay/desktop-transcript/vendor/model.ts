@@ -28,7 +28,7 @@ export function adaptTool(block:ToolCallContent,result:ToolResultMessage|undefin
   let details:unknown=result?.details;
   // Desktop Bash/Read use structured payloads; Pi's tools often only provide text.
   if(action==="run" && result && !(details && typeof details==="object" && ("stdout" in details || "output" in details))) details={...(details&&typeof details==="object"?details:{}),stdout:text};
-  else if(action==="read" && result && !details) details={content:text,path:block.input?.path};
+  else if(action==="read" && result && !(details && typeof details==="object" && "content" in details)) details={...(details&&typeof details==="object"?details:{}),content:text,path:block.input?.path};
   const completed=result?.timestamp;
   return {id:block.toolCallId,role:"tool",toolCallId:block.toolCallId,toolName:block.toolName,toolArgs:block.input,
     content:text,toolResult:result?{content:result.content,...(details?{details}:{})}:undefined,
