@@ -1,9 +1,9 @@
 {
   "stage": "project-tree-after-excerpts",
   "files": {
-    "components/ProjectTree.tsx": "1e4ca239ad7a00a17f2f7027acf8d916bc7559f323dfa8e8413f9851777ef61f",
+    "components/ProjectTree.tsx": "7491fbc5891d9b52219d7f8706c3e0b23fa2d17bee710464bd73e0b9121154e0",
     "lib/session-reply-time.mjs": "0a65906bc49eee4e38056d2cb9f97d49f0df968a01c8bc145a9df46f7fee3182",
-    "lib/recent-tasks.mjs": "ec86c37aada4a78c94951fe7e6d764b3f755be3cc194a57b84309de59530c1c9",
+    "lib/recent-tasks.mjs": "5efccba473f693fd5bd92f4f3d4649ddd1c395a7601b24b749b626bfc0b18709",
     "app/api/session-reply-times/route.ts": "a0c5d8f4ceba56acdab564a55025d6b58db8a5f4679f1b534545e7b36693ab6f",
     "lib/project-routing.mjs": "128c4c4b880169a443ac193dbf1a5bba222c466113c9a5b273e2dc3886b5823c",
     "lib/project-capacity.mjs": "99095a4bbdbb0680cca4a98aa27f80c5ae10734b28a72114ba5450da26020da8",

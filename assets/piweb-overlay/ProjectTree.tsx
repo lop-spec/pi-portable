@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SessionInfo } from '@/lib/types';
 import { listSessionFamilies } from '@/lib/session-family';
 import { workspaceKeyOf } from '@/lib/workspace-memory';
-import { recentTaskCandidates, recentTasks } from '@/lib/recent-tasks.mjs';
+import { recentTaskCandidates, recentTasks, sortProjectGroups } from '@/lib/recent-tasks.mjs';
 import { SessionSearch } from './SessionSearch';
 import { SessionContextActions, ProjectActionMenu, ProjectActionDialog, NoticeDialog, type ProjectActionKind } from './PortableContextActions';
 import { projectRequest, type ProjectRegistry, type NamedProject } from './PortableProjects';
@@ -67,7 +67,7 @@ export function ProjectTree(props: Props) {
     const recent = recentTasks(allFamilies, runningSessionIds, allReplies, clock);
     const archivedIds = new Set(recentArchive.sessions.map(s => s.id));
     const result = projects.map(project => ({ project, families: listSessionFamilies(sessions.filter(s => (archiveView || !archivedIds.has(s.id)) && workspaceKeyOf(s) === project.key)) }));
-    return [{ project: { key: '__inbox', root: '', name: '最近任务' }, families: recent }, ...result];
+    return [{ project: { key: '__inbox', root: '', name: '最近任务' }, families: recent }, ...sortProjectGroups(result, allReplies)];
   }, [sessions, projects, allFamilies, runningSessionIds, allReplies, recentArchive, archiveView, clock]);
   const selectedGroup = groups.find(g => g.families.some(f => f.root.id === selectedSessionId || f.subagents.some(s => s.id === selectedSessionId)))?.project.key;
   useEffect(() => {

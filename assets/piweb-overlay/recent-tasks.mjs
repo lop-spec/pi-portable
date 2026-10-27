@@ -22,3 +22,13 @@ export function recentTasks(families, runningIds, replies, now) {
   const active = families.filter(f => [f.root, ...f.subagents].some(s => runningIds.has(s.id)) || Date.parse(replies[f.root.id] ?? '') >= now - 3600000);
   return active.sort((a, b) => (Date.parse(replies[b.root.id] ?? b.root.created) || 0) - (Date.parse(replies[a.root.id] ?? a.root.created) || 0));
 }
+/**
+ * @template {{families: {root: {id: string}}[]}} T
+ * @param {T[]} groups
+ * @param {Record<string, string | null>} replies
+ * @returns {T[]}
+ */
+export function sortProjectGroups(groups, replies) {
+  const latestReply = group => group.families.reduce((latest, family) => Math.max(latest, Date.parse(replies[family.root.id] ?? '') || 0), 0);
+  return [...groups].sort((a, b) => b.families.length - a.families.length || latestReply(b) - latestReply(a));
+}
