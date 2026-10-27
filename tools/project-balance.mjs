@@ -7,6 +7,8 @@ export const MAX_PROJECTS = 8;
 export const MIN_CONVERSATIONS = 5;
 export const MAX_CONVERSATIONS = 10;
 const task = s => /(?:^|[\\/])\.pi[\\/]agent[\\/]automations(?:[\\/]|$)/i.test(s.cwd ?? '');
+// The old generic registration may be a source, never a new destination.
+const validSourceName = name => name === '综合工作台' ? name : validProjectName(name);
 export function projectCounts(registry, sessions, archived = {}) {
   const roots = sessions.filter(s => s.relation?.kind !== 'subagent' && !archived[s.id] && !task(s));
   return registry.projects.map(p => ({ ...p, name: p.name ?? path.basename(p.root), count: roots.filter(s => projectKey(s.projectRoot ?? s.cwd) === p.key).length }));
@@ -25,10 +27,10 @@ export function validateProjectPlan(plan = {}) {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new Error('项目整理参数必须是对象');
   for (const key of Object.keys(plan)) if (!['renames', 'merges', 'moves', 'splits'].includes(key)) throw new Error('未知整理参数：' + key);
   for (const key of ['renames', 'merges', 'moves', 'splits']) if (plan[key] !== undefined && !Array.isArray(plan[key])) throw new Error(key + ' 必须是数组');
-  for (const item of plan.renames ?? []) { validProjectName(item.from); validProjectName(item.to); }
-  for (const item of plan.merges ?? []) { validProjectName(item.project); if (!Array.isArray(item.from) || !item.from.length) throw new Error('合并必须由模型指定来源'); item.from.forEach(validProjectName); }
-  for (const item of [...(plan.moves ?? []), ...(plan.splits ?? [])]) { validProjectName(item.project); if (!Array.isArray(item.ids) || !item.ids.length || item.ids.some(id => typeof id !== 'string')) throw new Error('分类必须由模型指定会话ID'); }
-  for (const item of plan.splits ?? []) validProjectName(item.from);
+  for (const item of plan.renames ?? []) { validSourceName(item.from); validProjectName(item.to); }
+  for (const item of plan.merges ?? []) { validProjectName(item.project); if (!Array.isArray(item.from) || !item.from.length) throw new Error('合并必须由模型指定来源'); item.from.forEach(validSourceName); }
+  for (const item of [...(plan.moves ?? []), ...(plan.splits ?? [])]) { validProjectName(item.project); if (!Array.isArray(item.ids) || !item.ids.length || item.ids.some(id => typeof id !== 'string')) throw new Error('分类必须由模型指定会话ID'); if (item.archived !== undefined && typeof item.archived !== 'boolean') throw new Error('archived 必须是布尔值'); }
+  for (const item of plan.splits ?? []) validSourceName(item.from);
   return plan;
 }
 // Simulate the model-supplied plan plus the incoming session before touching the registry.
@@ -46,9 +48,9 @@ export function previewProjectPlan({ registry, sessions, archived = {}, plan = {
       projects.push({ name, root: name, key: name });
     }
   };
-  const ids = (values, alreadyAt) => {
+  const ids = (values, alreadyAt, allowArchived = false) => {
     if (new Set(values).size !== values.length) throw new Error('会话ID重复');
-    return values.map(id => { const row = rows.find(s => s.id === id); if (!row || row.relation?.kind === 'subagent' || task(row) || archived[id] && row.projectName !== alreadyAt) throw new Error('不是可分类的未归档主对话：' + id); return row; });
+    return values.map(id => { const row = rows.find(s => s.id === id); if (!row || row.relation?.kind === 'subagent' || task(row) || archived[id] && row.projectName !== alreadyAt && !allowArchived) throw new Error('不是可分类的主对话或未明确指定归档迁移：' + id); return row; });
   };
   // As in the executor, genuinely empty registrations can be forgotten mechanically.
   projects = projects.filter(p => rows.some(s => s.projectName === p.name));
@@ -60,14 +62,14 @@ export function previewProjectPlan({ registry, sessions, archived = {}, plan = {
     for (const row of rows) if (row.projectName === item.from) row.projectName = item.to;
   }
   for (const item of plan.merges ?? []) {
-    if (!find(item.project)) throw new Error('合并目标须已存在；新合并名请先指定renames：' + item.project);
+    ensure(item.project);
     for (const name of item.from) {
       if (name === item.project || !find(name)) continue;
       for (const row of rows) if (row.projectName === name) row.projectName = item.project;
       projects = projects.filter(p => p.name !== name);
     }
   }
-  for (const item of plan.moves ?? []) { const selected = ids(item.ids, item.project); ensure(item.project); for (const row of selected) row.projectName = item.project; }
+  for (const item of plan.moves ?? []) { const selected = ids(item.ids, item.project, item.archived === true); ensure(item.project); for (const row of selected) row.projectName = item.project; }
   for (const item of plan.splits ?? []) {
     const selected = ids(item.ids, item.project), source = find(item.from), target = find(item.project);
     if (target && selected.every(s => s.projectName === item.project)) continue;
@@ -138,8 +140,12 @@ export async function balanceProjects({ agentDir, request, plan = {}, verify = t
       await request('/api/projects', { action: 'rename', cwd: source.root, name: item.to }); operations.push({ action: 'rename', ...item });
     }
     for (const item of plan.merges ?? []) {
-      const { registry, sessions } = await snapshot(), target = registry.projects.find(p => (p.name ?? path.basename(p.root)) === item.project);
-      if (!target) throw new Error('合并目标须已存在；新合并名请先指定renames：' + item.project);
+      let { registry, sessions } = await snapshot();
+      if (!registry.projects.some(p => (p.name ?? path.basename(p.root)) === item.project)) {
+        if (registry.projects.length >= MAX_PROJECTS) throw new Error('先按模型参数合并，不能创建第9个项目：' + item.project);
+        await request('/api/project-routing', { action: 'create', project: item.project });
+        ({ registry, sessions } = await snapshot());
+      }
       for (const name of item.from) {
         if (name === item.project) continue;
         const source = registry.projects.find(p => (p.name ?? path.basename(p.root)) === name); if (!source) continue;

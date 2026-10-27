@@ -19,6 +19,7 @@ function fixture(projects, conversations, archived = {}) {
     if (!body) return structuredClone(url.startsWith('/api/sessions') ? { sessions: conversations, runningSessionIds: [] } : registry);
     mutations.push(body);
     if (url === '/api/projects') { const p = registry.projects.find(p => p.root === body.cwd), next = project(body.name); for (const s of conversations) if (s.projectRoot === p.root) Object.assign(s, { projectRoot: next.root, projectKey: next.key }); Object.assign(p, next); return {}; }
+    if (body.action === 'create') { registry.projects.push(project(body.project)); return {}; }
     assert.equal(body.action, 'move');
     let destination = registry.projects.find(p => p.name === body.project); if (!destination) { destination = project(body.project); registry.projects.push(destination); }
     Object.assign(conversations.find(s => s.id === body.id), { projectRoot: destination.root, projectKey: destination.key }); return {};
@@ -106,6 +107,26 @@ test('archive-only category is merged only into the model-named target, preservi
   const a = project('旧项目'), b = project('数据运维'), archive = { old: { archivedAt: '2026-10-01' } }, f = fixture([a, b], [row('old', a), ...rows('live', b, 5)], archive);
   const result = await balanceProjects({ ...f.options, plan: { merges: [{ from: [a.name], project: b.name }] } });
   assert.equal(result.ok, true); assert.equal(f.registry.projects.length, 1); assert.equal(archive.old.archivedAt, '2026-10-01'); assert.deepEqual(f.mutations.map(m => m.project), [b.name]);
+});
+test('merges archived projects into an explicitly named new target without losing history', async () => {
+  const a = project('旧图文'), b = project('旧生活'), inbox = project('收件'), archive = { oldA: {}, oldB: {} };
+  const f = fixture([a, b], [row('oldA', a), row('oldB', b), ...rows('live', inbox, 5)], archive);
+  const plan = { merges: [{ from: [a.name, b.name], project: '生活图文' }], moves: [{ project: '生活图文', ids: ids('live', 5) }] };
+  const result = await balanceProjects({ ...f.options, plan });
+  assert.equal(result.ok, true); assert.deepEqual(result.projects.map(p => [p.name, p.count]), [['生活图文', 5]]);
+  assert.deepEqual(f.mutations.map(m => m.action), ['create', ...Array(7).fill('move')]);
+  assert.equal(Object.keys(archive).length, 2); assert.equal(f.rows.every(s => s.projectRoot === project('生活图文').root), true);
+  await balanceProjects({ ...f.options, plan });
+  assert.equal(f.mutations.length, 8);
+});
+test('legacy generic project can be merged while explicitly selected archived sessions move without unarchiving', async () => {
+  const a = project('综合工作台'), b = project('设备浏览器'), archived = { old: { archivedAt: '2026-10-01' } };
+  const f = fixture([a, b], [...rows('a', a, 5), ...rows('b', b, 5), row('old', a)], archived);
+  const plan = { merges: [{ from: [a.name], project: 'Pi工作台' }], moves: [{ project: b.name, ids: ['old'], archived: true }] };
+  assert.throws(() => previewProjectPlan({ registry: f.registry, sessions: f.rows, archived, plan: { ...plan, moves: [{ project: b.name, ids: ['old'] }] } }), /未明确指定归档迁移/);
+  const result = await balanceProjects({ ...f.options, plan });
+  assert.equal(result.ok, true); assert.equal(archived.old.archivedAt, '2026-10-01'); assert.equal(f.rows.find(s => s.id === 'old').projectRoot, b.root);
+  const mutations = f.mutations.length; await balanceProjects({ ...f.options, plan }); assert.equal(f.mutations.length, mutations);
 });
 test('plans require explicit names and IDs, with no automatic classifier', () => {
   assert.throws(() => validateProjectPlan({ autoClassify: true }), /未知整理参数/);

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SessionInfo } from '@/lib/types';
 import { listSessionFamilies } from '@/lib/session-family';
 import { workspaceKeyOf } from '@/lib/workspace-memory';
-import { recentTaskCandidates, recentTasks, sortProjectGroups } from '@/lib/recent-tasks.mjs';
+import { RECENT_TASK_VISIBLE, recentTaskCandidates, recentTasks, sortProjectGroups } from '@/lib/recent-tasks.mjs';
 import { SessionSearch } from './SessionSearch';
 import { SessionContextActions, ProjectActionMenu, ProjectActionDialog, NoticeDialog, type ProjectActionKind } from './PortableContextActions';
 import { projectRequest, type ProjectRegistry, type NamedProject } from './PortableProjects';
@@ -73,7 +73,7 @@ export function ProjectTree(props: Props) {
   useEffect(() => {
     if (!selectedGroup) return;
     setFolds(prev => { if (!prev.has(selectedGroup)) return prev; const next = new Set(prev); next.delete(selectedGroup); return next; });
-    setMore(prev => new Set(prev).add(selectedGroup));
+    if (selectedGroup !== '__inbox') setMore(prev => new Set(prev).add(selectedGroup));
   }, [selectedGroup, selectedSessionId]);
   useEffect(() => { if (props.searchOpen) search.current?.focus(); }, [props.searchOpen]);
   useEffect(() => {
@@ -143,15 +143,15 @@ export function ProjectTree(props: Props) {
         const members = families.flatMap(f => [f.root, ...f.subagents]);
         const running = members.some(s => runningSessionIds.has(s.id)), unread = members.some(s => unreadSessionIds.has(s.id));
         return <section className="pw-tree-project" key={project.key} data-project-key={project.key}>
-          <div className="pw-tree-project-head"><button type="button" className="pw-tree-toggle" aria-expanded={!closed} aria-controls={`tree-${project.key}`} title={project.root || '最近1小时回复过或正在运行的对话'} onClick={() => toggle(project.key)}>
+          <div className="pw-tree-project-head"><button type="button" className="pw-tree-toggle" aria-expanded={!closed} aria-controls={`tree-${project.key}`} title={project.root || '按最近回复排序的10个对话'} onClick={() => toggle(project.key)}>
             <Icon name={closed ? 'right' : 'down'} size={12} /><Icon name="folder" size={15} /><span className="pw-truncate">{project.name ?? project.root.split(/[/\\]/).at(-1)}</span>
             {running ? <span className="pw-spinner pw-spinner--sm" role="status" aria-label="运行中" /> : unread ? <span className="pw-dot" title="有新回复" /> : null}<span className="pw-num">{count}</span>
           </button>{project.key !== '__inbox' && <button type="button" className="pw-icon-btn pw-icon-btn--sm pw-tree-more" aria-label={`${project.name ?? '项目'}操作`} title="项目操作" onClick={e => setProjectMenu({ project, anchor: anchorFromElement(e.currentTarget, { align: 'end' }), element: e.currentTarget })}><Icon name="more" /></button>}</div>
           {!closed && <div id={`tree-${project.key}`} className="pw-tree-children">
             {project.key === '__inbox' && (recentError || archiveError) && <p className="pw-tree-empty" role="alert">最近回复时间加载不完整</p>}
             {count === 0 && <p className="pw-tree-empty">{project.key === '__inbox' ? '最近暂无任务' : '暂无对话'}</p>}
-            {(project.key === '__inbox' || more.has(project.key) ? ordered : ordered.slice(0, 5)).map(family => <div key={family.root.id}>{row(family.root, false, family, project.key === '__inbox')}{children.has(family.root.id) && family.subagents.map(s => row(s, true, family, project.key === '__inbox'))}</div>)}
-            {project.key !== '__inbox' && count > 5 && <button className="pw-tree-show-more" type="button" onClick={() => setMore(prev => { const next = new Set(prev); next.has(project.key) ? next.delete(project.key) : next.add(project.key); return next; })}>{more.has(project.key) ? '收起对话' : `显示全部 ${count} 个`}</button>}
+            {(more.has(project.key) ? ordered : ordered.slice(0, RECENT_TASK_VISIBLE)).map(family => <div key={family.root.id}>{row(family.root, false, family, project.key === '__inbox')}{children.has(family.root.id) && family.subagents.map(s => row(s, true, family, project.key === '__inbox'))}</div>)}
+            {count > RECENT_TASK_VISIBLE && <button className="pw-tree-show-more" type="button" aria-expanded={more.has(project.key)} onClick={() => setMore(prev => { const next = new Set(prev); next.has(project.key) ? next.delete(project.key) : next.add(project.key); return next; })}>{more.has(project.key) ? '收起对话' : `显示全部 ${count} 个`}</button>}
           </div>}
         </section>;
       })}

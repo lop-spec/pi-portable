@@ -5,17 +5,16 @@ import { listAllSessions, mergeSessionLists } from '@/lib/session-reader';
 import { getRpcSessionInfos } from '@/lib/rpc-manager';
 import { projectMutationAllowed } from '@/lib/portable-project-store.mjs';
 import { lastAssistantReplyTime } from '@/lib/session-reply-time.mjs';
+import { recentTasks } from '@/lib/recent-tasks.mjs';
 
 export const dynamic = 'force-dynamic';
 const cache = new Map<string, { fingerprint: string; time: number | null }>();
-async function replyTime(file: string, cutoff = 0) {
+async function replyTime(file: string) {
   const info = await stat(file);
-  // An append cannot precede its file mtime; skip cold old files for the recent-archive view.
-  if (cutoff && info.mtimeMs < cutoff) return null;
   const fingerprint = `${info.size}:${info.mtimeMs}:${info.ino}`, prior = cache.get(file);
   const time = prior?.fingerprint === fingerprint ? prior.time : await lastAssistantReplyTime(file);
   cache.delete(file); cache.set(file, { fingerprint, time });
-  while (cache.size > 500) cache.delete(cache.keys().next().value!);
+  while (cache.size > 5000) cache.delete(cache.keys().next().value!);
   return time;
 }
 async function limited<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -50,14 +49,16 @@ export async function GET() {
       const expected = path.resolve(agentDir, 'sessions', ...relative.split('/')), actual = path.resolve(s.path);
       return process.platform === 'win32' ? expected.toLowerCase() === actual.toLowerCase() : expected === actual;
     };
-    const all = await catalogue(), roots = all.filter(s => matching(s) && s.relation?.kind !== 'subagent'), cutoff = Date.now() - 3600000;
+    const all = await catalogue(), roots = all.filter(s => matching(s) && s.relation?.kind !== 'subagent');
     const values = await limited(roots, async session => {
-      try { const time = await replyTime(session.path, cutoff); return { session, time, incomplete: false }; }
+      try { const time = await replyTime(session.path); return { session, time, incomplete: false }; }
       catch { return { session, time: null, incomplete: true }; }
     });
-    const recent = values.filter(value => value.time !== null && value.time >= cutoff), ids = new Set(recent.map(value => value.session.id));
+    const replies = Object.fromEntries(values.map(value => [value.session.id, value.time === null ? null : new Date(value.time).toISOString()]));
+    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now());
+    const ids = new Set<string>(ranked.map((family: { root: { id: string } }) => family.root.id));
     let count = 0;
     while (count !== ids.size) { count = ids.size; for (const s of all) if (matching(s) && s.relation?.kind === 'subagent' && ids.has(s.relation.parentSessionId)) ids.add(s.id); }
-    return Response.json({ sessions: all.filter(s => ids.has(s.id)), replies: Object.fromEntries(recent.map(value => [value.session.id, new Date(value.time!).toISOString()])), incomplete: values.some(value => value.incomplete) }, { headers: { 'Cache-Control': 'no-store' } });
+    return Response.json({ sessions: all.filter(s => ids.has(s.id)), replies: Object.fromEntries([...ids].filter(id => id in replies).map(id => [id, replies[id]])), incomplete: values.some(value => value.incomplete) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 }); }
 }
