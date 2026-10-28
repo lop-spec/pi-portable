@@ -37,20 +37,21 @@ export function ProjectTree(props: Props) {
   const [creating, setCreating] = useState(false), [newName, setNewName] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null), search = useRef<HTMLInputElement>(null);
   const [clock, setClock] = useState(() => Date.now()), [replyTimes, setReplyTimes] = useState<Record<string, string | null>>({}), [recentError, setRecentError] = useState(false);
-  const [recentArchive, setRecentArchive] = useState<{ sessions: SessionInfo[]; replies: Record<string, string | null> }>({ sessions: [], replies: {} }), [archiveError, setArchiveError] = useState(false), [archiveView, setArchiveView] = useState(false);
+  const [recentArchive, setRecentArchive] = useState<{ sessions: SessionInfo[]; replies: Record<string, string | null>; testIds: string[] | null }>({ sessions: [], replies: {}, testIds: null }), [archiveError, setArchiveError] = useState(false), [archiveView, setArchiveView] = useState(false);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 30000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const controller = new AbortController();
     void fetch('/api/session-reply-times', { cache: 'no-store', signal: controller.signal })
       .then(response => { if (!response.ok) throw new Error('recent archive unavailable'); return response.json(); })
-      .then(data => { setRecentArchive({ sessions: data.sessions ?? [], replies: data.replies ?? {} }); setArchiveError(Boolean(data.incomplete)); })
+      .then(data => { if (!Array.isArray(data.testSessionIds)) throw new Error('test session registry unavailable'); setRecentArchive({ sessions: data.sessions ?? [], replies: data.replies ?? {}, testIds: data.testSessionIds }); setArchiveError(Boolean(data.incomplete)); })
       .catch(error => { if (error.name !== 'AbortError') setArchiveError(true); });
     return () => controller.abort();
   }, [clock]);
   const byId = useMemo(() => new Map([...recentArchive.sessions, ...sessions].map(s => [s.id, s])), [sessions, recentArchive]);
   const allFamilies = useMemo(() => listSessionFamilies([...byId.values()]), [byId]);
   const allReplies = useMemo(() => ({ ...recentArchive.replies, ...replyTimes }), [recentArchive, replyTimes]);
-  const recentCandidates = recentTaskCandidates(allFamilies, runningSessionIds, clock);
+  const testIds = useMemo(() => new Set(recentArchive.testIds ?? []), [recentArchive.testIds]);
+  const recentCandidates = recentArchive.testIds === null ? [] : recentTaskCandidates(allFamilies, runningSessionIds, clock, testIds);
   const candidateKey = recentCandidates.map(f => `${f.root.id}:${f.root.modified}`).sort().join('|');
   useEffect(() => {
     const ids = candidateKey ? candidateKey.split('|').map(item => item.split(':', 1)[0]) : [];
@@ -64,11 +65,11 @@ export function ProjectTree(props: Props) {
     return () => controller.abort();
   }, [candidateKey, clock]);
   const groups = useMemo(() => {
-    const recent = recentTasks(allFamilies, runningSessionIds, allReplies, clock);
+    const recent = recentArchive.testIds === null ? [] : recentTasks(allFamilies, runningSessionIds, allReplies, clock, testIds);
     const archivedIds = new Set(recentArchive.sessions.map(s => s.id));
     const result = projects.map(project => ({ project, families: listSessionFamilies(sessions.filter(s => (archiveView || !archivedIds.has(s.id)) && workspaceKeyOf(s) === project.key)) }));
     return [{ project: { key: '__inbox', root: '', name: '最近任务' }, families: recent }, ...sortProjectGroups(result, allReplies)];
-  }, [sessions, projects, allFamilies, runningSessionIds, allReplies, recentArchive, archiveView, clock]);
+  }, [sessions, projects, allFamilies, runningSessionIds, allReplies, recentArchive, archiveView, clock, testIds]);
   const selectedGroup = groups.find(g => g.families.some(f => f.root.id === selectedSessionId || f.subagents.some(s => s.id === selectedSessionId)))?.project.key;
   useEffect(() => {
     if (!selectedGroup) return;

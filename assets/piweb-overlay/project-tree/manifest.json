@@ -1,13 +1,13 @@
 {
   "stage": "project-tree-after-excerpts",
   "files": {
-    "components/ProjectTree.tsx": "8ccfff1174eb4dfe27a68b89faad4ab5a4c54e5b2e55521a4537dfbd1f4387c1",
+    "components/ProjectTree.tsx": "b230236d4e5fe01fdac9ec76e8e4d2c08b141e1082e528b09bfcfff0e6695beb",
     "lib/session-reply-time.mjs": "0a65906bc49eee4e38056d2cb9f97d49f0df968a01c8bc145a9df46f7fee3182",
-    "lib/recent-tasks.mjs": "01e62426abac5b40ab6421f7967fe014670d217bb89075532e36d168762b5830",
-    "app/api/session-reply-times/route.ts": "c054f88a901b1bcd526052598d1d6935a21c21d1b000c64e9b48ed7bb4defb1a",
+    "lib/recent-tasks.mjs": "ebff3c564d86234df5a8b83ca1f5c10000700de5414819f6b613204156bdafca",
+    "app/api/session-reply-times/route.ts": "79a4326a183f97bf4ffe5d17c77ef65caea2ab33c2989d987484d94d342fdaf1",
     "lib/project-routing.mjs": "128c4c4b880169a443ac193dbf1a5bba222c466113c9a5b273e2dc3886b5823c",
     "lib/project-capacity.mjs": "99095a4bbdbb0680cca4a98aa27f80c5ae10734b28a72114ba5450da26020da8",
-    "app/api/project-routing/route.ts": "59de691bf0e1eadfb55a2c9e334ae10b3cb40897916878bec2767007b6d2a5f6",
+    "app/api/project-routing/route.ts": "151e621b1e0ca0a34f6f2e93d3eef02eaf9138e9a284ad0bfda361e9163ced2d",
     "app/redesign-sidebar.css": "3cd67c1b7b4617244769183d921ce3ae13fb026d4c2a803d28da75681956af0b",
     "components/SessionSidebar.tsx": "9a4c5002b87fee6371adbcbfe18b6b2a18ee92adc0146baa1ebcee2f6bf61244",
     "components/AppShell.tsx": "d75766fcf32009623a0251223686833da3416cc8d24514f6e0072e6987829aac",

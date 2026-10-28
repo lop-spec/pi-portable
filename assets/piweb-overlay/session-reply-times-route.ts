@@ -40,9 +40,14 @@ export async function POST(request: Request) {
 }
 export async function GET() {
   try {
-    const agentDir = getAgentDir(); let archived: Record<string, { relativePath?: string }> = {};
+    const agentDir = getAgentDir(); let archived: Record<string, { relativePath?: string }> = {}, testSessionIds: string[] = [];
     try { archived = JSON.parse(await readFile(path.join(agentDir, 'session-archive.json'), 'utf8')).sessions ?? {}; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    try {
+      const testSessions = JSON.parse(await readFile(path.join(agentDir, 'recent-test-sessions.json'), 'utf8'));
+      if (testSessions.version !== 1 || !Array.isArray(testSessions.ids) || testSessions.ids.some((id: unknown) => typeof id !== 'string' || !/^[a-z0-9][a-z0-9._-]*$/i.test(id))) throw new Error('Invalid test session registry');
+      testSessionIds = [...new Set<string>(testSessions.ids)];
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const matching = (s: { id: string; path: string }) => {
       const relative = archived[s.id]?.relativePath;
       if (!relative) return false;
@@ -55,10 +60,10 @@ export async function GET() {
       catch { return { session, time: null, incomplete: true }; }
     });
     const replies = Object.fromEntries(values.map(value => [value.session.id, value.time === null ? null : new Date(value.time).toISOString()]));
-    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now());
+    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now(), new Set(testSessionIds));
     const ids = new Set<string>(ranked.map((family: { root: { id: string } }) => family.root.id));
     let count = 0;
     while (count !== ids.size) { count = ids.size; for (const s of all) if (matching(s) && s.relation?.kind === 'subagent' && ids.has(s.relation.parentSessionId)) ids.add(s.id); }
-    return Response.json({ sessions: all.filter(s => ids.has(s.id)), replies: Object.fromEntries([...ids].filter(id => id in replies).map(id => [id, replies[id]])), incomplete: values.some(value => value.incomplete) }, { headers: { 'Cache-Control': 'no-store' } });
+    return Response.json({ sessions: all.filter(s => ids.has(s.id)), replies: Object.fromEntries([...ids].filter(id => id in replies).map(id => [id, replies[id]])), testSessionIds, incomplete: values.some(value => value.incomplete) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 }); }
 }

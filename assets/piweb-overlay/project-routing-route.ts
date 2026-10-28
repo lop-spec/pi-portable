@@ -11,6 +11,9 @@ export const dynamic = 'force-dynamic';
 const catalogue = async () => mergeSessionLists(await listAllSessions({ force: true }), getRpcSessionInfos());
 export async function GET() {
   const agentDir = getAgentDir(), layout = routingLayout(agentDir), inbox = ensureInbox(agentDir);
+  // New/empty folders have no persisted session from which file-access can derive roots.
+  allowFileRoot(inbox);
+  for (const project of layout.data.projects) allowFileRoot(project.root);
   return Response.json({ ...layout.data, baseRoot: layout.baseRoot, inbox, ...routingReport(agentDir) }, { headers: { 'Cache-Control': 'no-store' } });
 }
 async function consolidate(agentDir: string, name: string) {
