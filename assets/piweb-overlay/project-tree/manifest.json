@@ -1,8 +1,8 @@
 {
   "stage": "project-tree-after-excerpts",
   "files": {
-    "components/ProjectTree.tsx": "0dc0c8c29840f4bb75e9b320cc678a8ae8c2736b2006535956a8673a957815df",
-    "components/CraftSessions.tsx": "d287ef232473051f41cb21060e139b98bad3773659825e2f5117210e8a6294cf",
+    "components/ProjectTree.tsx": "0fb900e77851c4c5180fbc28070289d0a39784e58d363425bc369ee3118d2522",
+    "components/CraftSessions.tsx": "42b62da0dd4fedca0a13a88e3622df9b07a6112985e120fee72bae7bd7da0756",
     "lib/craft-session/model.mjs": "df25a8944306806315c8041cb2e78e01e7d7fd2a321eaf19bf99f20334823e15",
     "lib/craft-session/store.mjs": "8325a2f327a7f8d6d745bdb30eb6db5f41f676352b815d1ef1c30a3287217ff2",
     "app/api/session-status/route.ts": "298e5978c4a086eb11be9656530067d3be5a331dc4c1b69338d09ba575065edd",
@@ -14,7 +14,7 @@
     "lib/project-routing.mjs": "128c4c4b880169a443ac193dbf1a5bba222c466113c9a5b273e2dc3886b5823c",
     "lib/project-capacity.mjs": "99095a4bbdbb0680cca4a98aa27f80c5ae10734b28a72114ba5450da26020da8",
     "app/api/project-routing/route.ts": "151e621b1e0ca0a34f6f2e93d3eef02eaf9138e9a284ad0bfda361e9163ced2d",
-    "app/redesign-sidebar.css": "a18732e6959b8b46cf200c8dcc8fadefd0f9ef25c55675a69d834c9655ef2193",
+    "app/redesign-sidebar.css": "9b5d7f5aa690d9c618e91b2b4008872bde23bc32f076b9310d554863efbdc969",
     "components/SessionSidebar.tsx": "9a4c5002b87fee6371adbcbfe18b6b2a18ee92adc0146baa1ebcee2f6bf61244",
     "components/AppShell.tsx": "d75766fcf32009623a0251223686833da3416cc8d24514f6e0072e6987829aac",
     "app/api/default-cwd/route.ts": "5f8a2aef732d3610df6379457fc415e6ab43268660a3c8a2256b4d3375e99009",

@@ -78,9 +78,23 @@ export function StatusButton({ id, records, onSave, archived, onArchive, disable
   </>;
 }
 
+export function WorkflowFilters({ sessions, records, filter, archived, onSelect, onPointerEnter, onPointerLeave }: {
+  sessions: SessionInfo[]; records: Records; filter: string; archived: boolean;
+  onSelect: (filter: string) => void; onPointerEnter: () => void; onPointerLeave: () => void;
+}) {
+  const roots = useMemo(() => sessions.filter(s => s.relation?.kind !== 'subagent'), [sessions]);
+  return <div className="pw-craft-filters" onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
+    <button type="button" role="menuitemradio" className={filter === 'all' && !archived ? 'is-active' : ''} aria-checked={filter === 'all' && !archived} onClick={() => onSelect('all')}><span className="pw-craft-all">☰</span><span>全部</span>{!archived && <small>{roots.length}</small>}</button>
+    {STATUSES.map(item => <button type="button" role="menuitemradio" key={item.id} className={filter === item.id && !archived ? 'is-active' : ''} aria-checked={filter === item.id && !archived} onClick={() => onSelect(item.id)}><StatusGlyph status={item.id}/><span>{item.label}</span>{!archived && <small>{roots.filter(s => statusOf(records, s.id) === item.id).length || ''}</small>}</button>)}
+    <div className="pw-craft-separator"/>
+    <button type="button" role="menuitemradio" className={filter === 'flagged' && !archived ? 'is-active' : ''} aria-checked={filter === 'flagged' && !archived} onClick={() => onSelect('flagged')}><FlagGlyph/><span>已标记</span>{!archived && <small>{roots.filter(s => isFlagged(records, s.id)).length || ''}</small>}</button>
+    <button type="button" role="menuitemradio" className={archived ? 'is-active' : ''} aria-checked={archived} onClick={() => onSelect('archived')}><ArchiveGlyph/><span>已归档</span></button>
+  </div>;
+}
+
 type ViewProps = {
   sessions: SessionInfo[]; records: Records; selectedSessionId: string | null; running: ReadonlySet<string>; unread: ReadonlySet<string>;
-  archived: boolean; filter: string; onFilter: (filter: string) => void; onArchiveView: (archived: boolean) => void;
+  archived: boolean; filter: string;
   onSelect: (session: SessionInfo) => void; onSave: (id: string, patch: StatusPatch) => Promise<void>;
   onArchive: (id: string, archived: boolean) => void; onMenu: (id: string, point: { x: number; y: number }) => void;
 };
@@ -89,21 +103,15 @@ export function CraftSessionView(props: ViewProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const roots = useMemo(() => sessions.filter(s => s.relation?.kind !== 'subagent'), [sessions]);
   const groups = useMemo(() => groupedSessions(roots, records, archived ? 'archived' : filter), [roots, records, filter, archived]);
-  const selectFilter = (value: string) => { props.onFilter(value); props.onArchiveView(value === 'archived'); };
+  const filterLabel = archived ? '已归档' : filter === 'flagged' ? '已标记' : STATUSES.find(item => item.id === filter)?.label;
   return <div className="pw-craft-view">
-    <nav className="pw-craft-filters" aria-label="会话状态分类">
-      <button type="button" className={filter === 'all' && !archived ? 'is-active' : ''} aria-pressed={filter === 'all' && !archived} onClick={() => selectFilter('all')}><span className="pw-craft-all">☰</span><span>全部</span>{!archived && <small>{roots.length}</small>}</button>
-      {STATUSES.map(item => <button type="button" key={item.id} className={filter === item.id && !archived ? 'is-active' : ''} aria-pressed={filter === item.id && !archived} onClick={() => selectFilter(item.id)}><StatusGlyph status={item.id}/><span>{item.label}</span>{!archived && <small>{roots.filter(s => statusOf(records, s.id) === item.id).length || ''}</small>}</button>)}
-      <div className="pw-craft-separator"/>
-      <button type="button" className={filter === 'flagged' && !archived ? 'is-active' : ''} aria-pressed={filter === 'flagged' && !archived} onClick={() => selectFilter('flagged')}><FlagGlyph/><span>已标记</span>{!archived && <small>{roots.filter(s => isFlagged(records, s.id)).length || ''}</small>}</button>
-      <button type="button" className={archived ? 'is-active' : ''} aria-pressed={archived} onClick={() => selectFilter('archived')}><ArchiveGlyph/><span>已归档</span></button>
-    </nav>
     <div className="pw-craft-list scrollbar-subtle" role="region" aria-label="对话列表" onKeyDown={event => {
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
       const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.pw-craft-open')];
       const index = buttons.indexOf(event.target as HTMLButtonElement); if (index < 0) return;
       event.preventDefault(); buttons[Math.max(0, Math.min(buttons.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus();
     }}>
+      {filterLabel && <div className="pw-craft-current-filter" aria-live="polite">{filterLabel}</div>}
       {!groups.length && <p className="pw-craft-empty">暂无对话</p>}
       {groups.map(group => <section key={group.label}>
         <button type="button" className="pw-craft-date" aria-expanded={!collapsed.has(group.label)} onClick={() => setCollapsed(previous => { const next = new Set(previous); next.has(group.label) ? next.delete(group.label) : next.add(group.label); return next; })}>{group.label} <span>{collapsed.has(group.label) ? '›' : '⌄'}</span></button>

@@ -9,10 +9,10 @@ import { SessionContextActions, ProjectActionMenu, ProjectActionDialog, NoticeDi
 import { projectRequest, type ProjectRegistry, type NamedProject } from './PortableProjects';
 import { SessionRow } from './sidebar/SessionRow';
 import { Icon } from './sidebar/icons';
-import { anchorFromElement, type MenuAnchor } from './sidebar/PopMenu';
+import { PopMenu, anchorFromElement, type MenuAnchor } from './sidebar/PopMenu';
 import { formatSessionDateTime, formatSessionTime } from './sidebar/session-time';
 import { dispatchSessionRowContextMenu } from '@/lib/session-row-context-menu';
-import { CraftSessionView, StatusButton, useSessionWorkflow } from './CraftSessions';
+import { CraftSessionView, StatusButton, WorkflowFilters, useSessionWorkflow } from './CraftSessions';
 
 interface Props {
   sessions: SessionInfo[]; projects: NamedProject[]; hiddenProjects: NamedProject[]; registry: ProjectRegistry;
@@ -31,7 +31,14 @@ export function ProjectTree(props: Props) {
   const { sessions, projects, hiddenProjects, registry, selectedSessionId, runningSessionIds, unreadSessionIds } = props;
   const [mode, setMode] = useState<'status' | 'project'>('status');
   const [filter, setFilter] = useState('all');
+  const [statusMenu, setStatusMenu] = useState<{ anchor: MenuAnchor; element: HTMLElement; focus: 'none' | 'checked' } | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null), closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workflow = useSessionWorkflow();
+  const clearHover = () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); hoverTimer.current = null; };
+  const clearClose = () => { if (closeTimer.current) clearTimeout(closeTimer.current); closeTimer.current = null; };
+  const scheduleClose = () => { clearHover(); clearClose(); if (statusMenu?.focus !== 'checked') closeTimer.current = setTimeout(() => setStatusMenu(null), 250); };
+  const showStatusMenu = (element: HTMLElement, focus: 'none' | 'checked') => { clearHover(); clearClose(); setStatusMenu({ anchor: anchorFromElement(element), element, focus }); };
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
   const [folds, setFolds] = useState(readFolds), [more, setMore] = useState<Set<string>>(() => new Set());
   const [children, setChildren] = useState<Set<string>>(() => new Set());
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -143,12 +150,13 @@ export function ProjectTree(props: Props) {
     onSelect={id => { const s = byId.get(id); if (s) props.onSelect(s); }} onToggleFamily={id => setChildren(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })}
     onOpenMenu={openMenu} onRenameCommit={(id, value) => void rename(id, value)} /></div>;
   return <div className={`pw-tree${mode === 'status' ? ' pw-tree-status' : ''}`} ref={root}>
-    <div className="pw-tree-head"><div className="pw-craft-modes" role="group" aria-label="会话视图"><button type="button" aria-pressed={mode === 'status'} onClick={() => setMode('status')}>状态</button><button type="button" aria-pressed={mode === 'project'} onClick={() => setMode('project')}>项目 <small>{registry.projects.length}/8</small></button></div><span data-pi-archive-slot="" /><button type="button" className="pw-icon-btn pw-icon-btn--sm" title={registry.projects.length >= 8 ? '已满8个，按新名称自动合并并重命名' : '新建项目'} aria-label="新建项目" onClick={() => { setMode('project'); setCreating(v => !v); }}><Icon name="plus" /></button></div>
+    <div className="pw-tree-head"><div className="pw-craft-modes" role="group" aria-label="会话视图"><button type="button" aria-pressed={mode === 'status'} aria-haspopup="menu" aria-expanded={Boolean(statusMenu)} title="悬停或点击筛选状态" onPointerEnter={event => { if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return; clearClose(); clearHover(); const element = event.currentTarget; if (!statusMenu) hoverTimer.current = setTimeout(() => { if (element.isConnected) showStatusMenu(element, 'none'); }, 200); }} onPointerLeave={scheduleClose} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setMode('status'); showStatusMenu(event.currentTarget, 'checked'); } }} onClick={event => { if (mode !== 'status') { setMode('status'); showStatusMenu(event.currentTarget, 'checked'); } else if (statusMenu) { clearHover(); clearClose(); setStatusMenu(null); } else showStatusMenu(event.currentTarget, 'checked'); }}>状态</button><button type="button" aria-pressed={mode === 'project'} onClick={() => { clearHover(); clearClose(); setStatusMenu(null); setMode('project'); }}>项目 <small>{registry.projects.length}/8</small></button></div><span data-pi-archive-slot="" /><button type="button" className="pw-icon-btn pw-icon-btn--sm" title={registry.projects.length >= 8 ? '已满8个，按新名称自动合并并重命名' : '新建项目'} aria-label="新建项目" onClick={() => { clearHover(); clearClose(); setStatusMenu(null); setMode('project'); setCreating(v => !v); }}><Icon name="plus" /></button></div>
+    {statusMenu && <PopMenu anchor={statusMenu.anchor} returnFocus={statusMenu.element} ariaLabel="会话状态分类" width={156} initialFocus={statusMenu.focus} ignoreOutside={target => statusMenu.element.contains(target)} onClose={() => { clearHover(); clearClose(); setStatusMenu(null); }} className="pw-craft-filters-menu"><WorkflowFilters sessions={sessions} records={workflow.records} filter={filter} archived={archiveView} onPointerEnter={clearClose} onPointerLeave={scheduleClose} onSelect={value => { clearHover(); clearClose(); setFilter(value); setMode('status'); changeArchiveView(value === 'archived'); setStatusMenu(null); }} /></PopMenu>}
     {workflow.error && <div role="alert" className="pw-craft-error">{workflow.error} <button type="button" onClick={() => void workflow.reload()}>重试</button></div>}
     {creating && <form className="pw-tree-create" onSubmit={e => { e.preventDefault(); void create(); }}><input className="pw-input" autoFocus aria-label="项目名称" placeholder={registry.projects.length >= 8 ? '合并后的准确名称' : '准确的项目名称'} maxLength={40} value={newName} onChange={e => setNewName(e.target.value)} /><button className="pw-btn pw-btn--sm" disabled={busy || !newName.trim()}>创建</button></form>}
     {props.searchOpen && <div className="pw-tree-search"><input ref={search} id="session-search-input" className="pw-input" type="search" placeholder="搜索所有会话…" aria-label="搜索所有会话" value={props.searchQuery} onChange={e => props.onSearchQueryChange(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') props.onSearchClose(); }} /><button className="pw-icon-btn" aria-label="关闭搜索" onClick={props.onSearchClose}><Icon name="close" /></button></div>}
     <SessionSearch open={props.searchOpen} query={props.searchQuery} selectedSessionId={selectedSessionId} onSelectSession={props.onSelect} labelForSession={props.labelForSession} />
-    {mode === 'status' && !(props.searchOpen && Boolean(props.searchQuery.trim())) && <CraftSessionView sessions={sessions} records={workflow.records} selectedSessionId={selectedSessionId} running={runningSessionIds} unread={unreadSessionIds} archived={archiveView} filter={filter} onFilter={setFilter} onArchiveView={changeArchiveView} onSelect={props.onSelect} onSave={workflow.save} onArchive={(id, archived) => void changeArchive(id, archived)} onMenu={openMenu} />}
+    {mode === 'status' && !(props.searchOpen && Boolean(props.searchQuery.trim())) && <CraftSessionView sessions={sessions} records={workflow.records} selectedSessionId={selectedSessionId} running={runningSessionIds} unread={unreadSessionIds} archived={archiveView} filter={filter} onSelect={props.onSelect} onSave={workflow.save} onArchive={(id, archived) => void changeArchive(id, archived)} onMenu={openMenu} />}
     <nav className="pw-tree-scroll scrollbar-subtle" aria-label="项目与对话" hidden={mode !== 'project' || (props.searchOpen && Boolean(props.searchQuery.trim()))} onKeyDown={e => {
       if (e.key === 'F2') {
         const id = (e.target as HTMLElement).closest<HTMLElement>('[data-pi-session-id]')?.dataset.piSessionId;

@@ -36,6 +36,19 @@ test('bad status, prototype ids and corrupt files fail closed without overwrite'
   assert.throws(() => updateStatusStore(dir, 'good', { status: 'done' }));
   assert.equal(fs.readFileSync(file, 'utf8'), '{broken');
 });
+test('status filters float on dwell, close on selection and never force a wide sidebar', () => {
+  const tree = fs.readFileSync(new URL('../assets/piweb-overlay/ProjectTree.tsx', import.meta.url), 'utf8');
+  const view = fs.readFileSync(new URL('../assets/piweb-overlay/craft-session/CraftSessions.tsx', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../assets/piweb-overlay/craft-session/craft-session.css', import.meta.url), 'utf8');
+  assert.match(tree, /onPointerEnter=.*setTimeout\(.*200\)/);
+  assert.match(tree, /onPointerLeave=\{scheduleClose\}/);
+  assert.match(tree, /ariaLabel="会话状态分类" width=\{156\}/);
+  assert.match(tree, /onSelect=\{value => \{[^}]*setStatusMenu\(null\)/);
+  assert.match(tree, /aria-haspopup="menu"/);
+  assert.match(view, /role="menuitemradio"/);
+  assert.match(view, /pw-craft-current-filter/);
+  assert.doesNotMatch(css, /sidebar-container[^\n]*480px|pw-craft-filters\{flex:0 0 142px/);
+});
 test('navigation keeps project view and uses existing guarded archive API', () => {
   const tree = fs.readFileSync(new URL('../assets/piweb-overlay/ProjectTree.tsx', import.meta.url), 'utf8');
   const view = fs.readFileSync(new URL('../assets/piweb-overlay/craft-session/CraftSessions.tsx', import.meta.url), 'utf8');
