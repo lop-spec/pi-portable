@@ -79,7 +79,7 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
   const current=activities.find(a=>a.status==='running')??activities.at(-1);
   const summary=end?.status==='stopped'?'已停止':end?.status==='error'?'执行失败':live?(current?.intent||current?.name||'正在处理…'):activities.some(a=>a.status==='unknown')?'部分结果未记录':undefined;
   const active=activities.find(a=>a.id===selected);
-  return <div className="craft-transcript" data-craft-transcript="1">
+  return <div className="craft-transcript" data-craft-transcript="1" data-timeline="craft">
     {activities.length>0&&<div className="craft-work-log">
       <div className="craft-log-header">
         <button ref={header} type="button" className="craft-summary" aria-expanded={expanded} onClick={toggle}>
