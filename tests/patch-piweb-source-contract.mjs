@@ -287,7 +287,7 @@ test('new draft model choices persist before sending; follow-up busy state retai
   assert.doesNotMatch(integrated.get('components/PortableNodes.tsx'), /onMouseEnter/);
 });
 
-test('turn process uses Desktop disclosures for history and live, with unfiltered available reasoning', () => {
+test('turn process uses Craft work log for history and live without independent reasoning blocks', () => {
   const chat = integrated.get('components/ChatWindow.tsx');
   assert.doesNotMatch(chat, /portableToolViews/);
   assert.doesNotMatch(chat, /<ProcessDetailsGroup /);
@@ -303,11 +303,11 @@ test('turn process uses Desktop disclosures for history and live, with unfiltere
   assert.match(chat, /if \(item\.role === "toolResult"\) continue;/);
   const timeline = integrated.get('components/PortableProcessTimeline.tsx');
   assert.ok(timeline.startsWith('"use client";'));
-  assert.match(timeline, /<TurnProcess /);
-  assert.match(timeline, /<ProcessActivityGroup /);
-  assert.match(timeline, /segmentTurnProcess\(projection.process,"fully-folded"\)/);
-  assert.match(timeline, /<ThinkingRow [^>]*autoOpen/);
-  assert.match(timeline, /<ToolRow /);
+  assert.match(timeline, /data-craft-transcript="1"/);
+  assert.match(timeline, /className="craft-log-body"/);
+  assert.match(timeline, /<ResultGlyph status=/);
+  assert.match(timeline, /<Details key=/);
+  assert.doesNotMatch(timeline, /desktop-transcript|ThinkingRow|TurnProcess|ProcessActivityGroup/);
   assert.doesNotMatch(timeline, /ToolChineseExcerpt|ThinkingGroup|showTool\(block\)/);
   const disclosure = integrated.get('components/desktop-transcript/disclosure.tsx');
   assert.match(disclosure, /const requestedOpen = choice \? choice.open : \(derivedOpen \|\| reading\)/);
@@ -320,7 +320,9 @@ test('turn process uses Desktop disclosures for history and live, with unfiltere
   assert.match(integrated.get('lib/session-reader.ts'), /block\.type === "thinking" && block\.thinking\.trim\(\)\.length > 2000/);
   // 2026-10-27: full Desktop behavior replaces the old Chinese-only filter.
   const display = integrated.get('lib/message-display.ts');
-  assert.match(display, /return block.type === "thinking" && !block.thinking.trim\(\) && !_options.isStreaming;/);
+  assert.match(display, /return block.type === "thinking";/);
+  assert.doesNotMatch(integrated.get('app/layout.tsx'), /import "\.\/desktop-transcript.css"/);
+  assert.match(integrated.get('app/layout.tsx'), /import "\.\/craft-transcript.css"/);
   assert.doesNotMatch(integrated.get('lib/session-reader.ts'), /toolChineseExcerpts|chineseExcerpts/);
   assert.match(integrated.get('app/redesign-conversation.css'), /\.pw-think-fold/);
   assert.match(integrated.get('app/redesign-conversation.css'), /\.pw-proc-narr/);

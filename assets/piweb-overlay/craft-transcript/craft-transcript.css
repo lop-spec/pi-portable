@@ -1,0 +1,35 @@
+/* Adapted from Craft Agents turn-classes.ts: shared 28px work-log grid. */
+.craft-transcript{min-width:0;width:100%;color:var(--text);font-size:13px;line-height:20px}
+.craft-work-log{min-width:0;margin:8px 0 16px;user-select:none}
+.craft-log-header{display:flex;align-items:center;gap:4px;min-width:0}
+.craft-summary,.craft-activity-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:28px;border:0;border-radius:4px;background:transparent;color:var(--text-muted);font:inherit;text-align:left;cursor:pointer;padding:2px 6px;width:100%;transition:background-color .1s}
+.craft-summary:hover,.craft-activity-row:hover,.craft-actions>button:hover{background:var(--bg-subtle,rgba(127,127,127,.08))}
+.craft-summary:focus-visible,.craft-activity-row:focus-visible{outline:2px solid var(--accent,#5685c5);outline-offset:-2px}
+.craft-summary{flex:1;margin-left:-6px;padding-right:8px}
+.craft-summary-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.craft-summary-text strong{font-weight:500;color:var(--text)}
+.craft-chevron{flex:none;transition:transform .15s}.craft-chevron.open{transform:rotate(90deg)}
+.craft-failed-count{flex:none;background:rgba(220,38,38,.09);color:#dc2626;border-radius:3px;padding:0 6px;font-size:12px;line-height:20px;white-space:nowrap}
+.craft-actions{position:relative;flex:none}.craft-actions>button{display:grid;place-items:center;border:0;border-radius:4px;background:none;color:var(--text-muted);width:28px;height:28px;cursor:pointer}
+.craft-menu{position:absolute;right:0;top:100%;z-index:30;background:var(--bg,#fff);border:1px solid var(--border,#ddd);border-radius:6px;padding:4px;min-width:110px;box-shadow:0 4px 16px #0001}
+.craft-menu button{display:block;white-space:nowrap;width:100%;padding:6px;border:0;background:none;text-align:left;color:inherit;cursor:pointer}
+.craft-log-body{margin:2px 0 2px 7px;padding-left:14px;border-left:1px solid var(--border,#ddd);max-height:420px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.craft-row-wrap{display:flex;min-width:0}.craft-activity-row{margin-left:-6px;flex:1;width:calc(100% + 6px)}
+.craft-icon-slot{width:16px;height:16px;display:flex;align-items:center;justify-content:center;flex:none;color:var(--text-dim,var(--text-muted))}
+.craft-tool-name{max-width:42%;flex-shrink:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.craft-object{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--text-dim,var(--text-muted))}
+.craft-object code{margin-left:8px;font:12px/20px var(--font-mono,monospace);background:none;padding:0}
+.craft-result{margin-left:auto;padding-left:4px;display:inline-flex;align-items:center;gap:6px;flex:none;font-size:12px;white-space:nowrap}
+.craft-result.completed{color:#168443}.craft-result.error,.craft-activity-row.error .craft-tool-name{color:#dc2626}.craft-result.running{color:var(--accent,#567bc1)}
+.craft-result.running svg,.craft-working svg{animation:craft-spin 1s linear infinite}@keyframes craft-spin{to{transform:rotate(360deg)}}
+.craft-working{display:flex;align-items:center;gap:8px;color:var(--text-muted);min-height:28px;font-size:13px}
+.craft-answer{font-size:15px;line-height:24px;margin:12px 0}.craft-answer p{margin:12px 0}.craft-answer>:first-child{margin-top:0}.craft-answer>:last-child{margin-bottom:0}
+.craft-compaction{color:var(--text-muted);font-size:12px;margin:8px 0}.craft-output-images:empty{display:none}.craft-output-image{display:block;max-width:100%;max-height:420px;object-fit:contain;margin:8px 0}
+.craft-details{padding:0;border:1px solid var(--border,#ddd);border-radius:8px;background:var(--bg,#fff);color:var(--text,#222);width:min(880px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:85vh;margin:auto;overflow:hidden;box-shadow:0 12px 48px #0003}
+.craft-details::backdrop{background:#0005}.craft-details>section{display:flex;flex-direction:column;max-height:85vh;min-width:0}.craft-details header{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border,#ddd);flex:none}
+.craft-details h2{font:500 15px/24px system-ui;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0}.craft-details h3{font-size:13px;font-weight:500;margin:12px 0 6px}
+.craft-details button{background:none;border:0;color:inherit;cursor:pointer;border-radius:4px;padding:4px;display:inline-flex;align-items:center;gap:5px;font-size:12px}.craft-details button:hover{background:var(--bg-subtle,#8881)}
+.craft-detail-content{padding:0 16px 16px;overflow:auto;min-height:0;user-select:text;font-size:13px}.craft-detail-content pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/20px var(--font-mono,monospace);margin:0;background:var(--bg-subtle,#8881);padding:10px;border-radius:4px}.craft-detail-heading{display:flex;align-items:center;justify-content:space-between}
+.craft-details .craft-file-link{color:var(--accent,#4674b8);overflow-wrap:anywhere;text-align:left}.craft-row-wrap[data-search-target=true]{background:rgba(234,179,8,.12)}
+@media(max-width:600px){.craft-summary,.craft-activity-row{min-height:36px}.craft-log-body{max-height:540px}.craft-tool-name{max-width:45%}.craft-details{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:90vh}.craft-details>section{max-height:90vh}.craft-details header,.craft-detail-content{padding-left:12px;padding-right:12px}}
+@media(prefers-reduced-motion:reduce){.craft-transcript *{transition:none!important;animation:none!important}}

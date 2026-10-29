@@ -24,6 +24,7 @@ import { integrateProjectTree } from './patch-piweb-project-tree.mjs';
 import { integrateDesktopTranscript } from './patch-piweb-desktop-transcript.mjs';
 import { integrateFileContext } from './patch-piweb-file-context.mjs';
 import { integrateCetusCraft } from './patch-piweb-cetus-craft.mjs';
+import { integrateCraftTranscript } from './patch-piweb-craft-transcript.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -373,6 +374,7 @@ export function integrate(getFile) {
   integrateDesktopTranscript({ get, set, change, template });
   integrateFileContext({ get, set, change, prepend, template });
   integrateCetusCraft({ get, set, change, prepend, template });
+  integrateCraftTranscript({ get, set, change, template });
   return files;
 }
 

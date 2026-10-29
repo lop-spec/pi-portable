@@ -1,0 +1,8 @@
+Craft Agents conversation work log adaptation
+Source: https://github.com/lop-spec/craft-agents-oss
+Commit: a883d64e8cccb0612b18f06820755db5f5d17a34
+Original files: packages/ui/src/components/chat/turn/{WorkLog.tsx,ActivityRow.tsx,turn-classes.ts}
+Copyright Craft Agents contributors. Apache License 2.0 (see LICENSE).
+Modified for Pi Web: host message adapter, Chinese labels, CSS instead of Tailwind,
+native dialog instead of Electron overlay, Pi file/session actions, hidden reasoning,
+streaming and historical result states. No model or execution behavior changes.
