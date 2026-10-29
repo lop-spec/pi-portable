@@ -6,6 +6,7 @@ import { getRpcSessionInfos } from '@/lib/rpc-manager';
 import { projectMutationAllowed } from '@/lib/portable-project-store.mjs';
 import { lastAssistantReplyTime } from '@/lib/session-reply-time.mjs';
 import { recentTasks } from '@/lib/recent-tasks.mjs';
+import { readStatusStore } from '@/lib/craft-session/store.mjs';
 
 export const dynamic = 'force-dynamic';
 const cache = new Map<string, { fingerprint: string; time: number | null }>();
@@ -60,7 +61,7 @@ export async function GET() {
       catch { return { session, time: null, incomplete: true }; }
     });
     const replies = Object.fromEntries(values.map(value => [value.session.id, value.time === null ? null : new Date(value.time).toISOString()]));
-    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now(), new Set(testSessionIds));
+    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now(), new Set(testSessionIds), readStatusStore(agentDir).sessions);
     const ids = new Set<string>(ranked.map((family: { root: { id: string } }) => family.root.id));
     let count = 0;
     while (count !== ids.size) { count = ids.size; for (const s of all) if (matching(s) && s.relation?.kind === 'subagent' && ids.has(s.relation.parentSessionId)) ids.add(s.id); }

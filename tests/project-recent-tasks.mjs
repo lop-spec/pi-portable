@@ -5,16 +5,16 @@ import fs from 'node:fs';
 import { RECENT_TASK_LIMIT, RECENT_TASK_VISIBLE, isTestTask, recentTaskCandidates, recentTasks, sortProjectGroups } from '../assets/piweb-overlay/recent-tasks.mjs';
 const now = Date.parse('2026-10-27T12:00:00Z');
 const family = (id, modified, created = modified, child = []) => ({ root: { id, modified, created }, subagents: child });
-test('recent view takes ten by actual assistant reply, without a one-hour cutoff or running priority', () => {
-  const entries = Array.from({ length: 14 }, (_, i) => family(`task-${String(i).padStart(2, '0')}`, '2026-10-27T11:59:00Z', '2026-10-01T00:00:00Z'));
+test('recent view takes thirty by actual assistant reply, without a one-hour cutoff or running priority', () => {
+  const entries = Array.from({ length: 34 }, (_, i) => family(`task-${String(i).padStart(2, '0')}`, '2026-10-27T11:59:00Z', '2026-10-01T00:00:00Z'));
   entries[0].subagents = [{ id: 'child' }];
   const running = new Set(['child']), replies = Object.fromEntries(entries.map((f, i) => [f.root.id, new Date(Date.UTC(2026, 9, i + 1)).toISOString()]));
-  assert.equal(recentTaskCandidates(entries, running, now).length, 14);
+  assert.equal(recentTaskCandidates(entries, running, now).length, 34);
   const expected = entries.slice(4).reverse().map(f => f.root.id);
   assert.deepEqual(recentTasks(entries, running, replies, now).map(f => f.root.id), expected);
   assert.deepEqual(recentTasks(entries, new Set(), replies, now + 86400000).map(f => f.root.id), expected);
-  assert.equal(RECENT_TASK_LIMIT, 10); assert.equal(RECENT_TASK_VISIBLE, 5);
-  assert.deepEqual(entries.map(f => f.root.id), Array.from({ length: 14 }, (_, i) => `task-${String(i).padStart(2, '0')}`));
+  assert.equal(RECENT_TASK_LIMIT, 30); assert.equal(RECENT_TASK_VISIBLE, 5);
+  assert.deepEqual(entries.map(f => f.root.id), Array.from({ length: 34 }, (_, i) => `task-${String(i).padStart(2, '0')}`));
 });
 test('explicit test sessions are excluded before ranking and older real work fills the list', () => {
   const entries = Array.from({ length: 14 }, (_, i) => family(`s${String(i).padStart(2, '0')}`, new Date(Date.UTC(2026, 9, i + 1)).toISOString()));
@@ -27,8 +27,26 @@ test('explicit test sessions are excluded before ranking and older real work fil
   assert.equal(isTestTask(entries[11].root, ids), false); assert.equal(isTestTask(entries[10].root, ids), false);
   const candidates = recentTaskCandidates(entries, running, now, ids);
   assert.equal(candidates.length, 11);
-  assert.deepEqual(recentTasks(entries, running, {}, now, ids).map(f => f.root.id), ['s11', 's10', 's08', 's07', 's06', 's05', 's04', 's03', 's02', 's01']);
+  assert.deepEqual(recentTasks(entries, running, {}, now, ids).map(f => f.root.id), ['s11', 's10', 's08', 's07', 's06', 's05', 's04', 's03', 's02', 's01', 's00']);
   assert.equal(entries.length, 14); assert.equal(entries[9].root.id, 's09');
+});
+test('all explicitly assigned statuses leave recent, but defaults and flags stay; refill before limiting', async () => {
+  const { updateStatusStore, readStatusStore } = await import('../assets/piweb-overlay/craft-session/store.mjs');
+  const os = await import('node:os'), path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recent-status-'));
+  try {
+    for (const status of ['todo', 'backlog', 'needs-review', 'done', 'cancelled']) updateStatusStore(dir, status, { status });
+    updateStatusStore(dir, 'flag-only', { flagged: true });
+    const records = readStatusStore(dir).sessions;
+    records.legacy = { status: 'done', flagged: false };
+    records['legacy-flag'] = { status: 'todo', flagged: true };
+    const entries = [...Object.keys(records), 'default'].map(id => family(id, new Date(now).toISOString()));
+    assert.deepEqual(recentTasks(entries, new Set(), {}, now, new Set(), records).map(f => f.root.id), ['default', 'flag-only', 'legacy-flag']);
+    const older = Array.from({ length: 35 }, (_, i) => family(`older-${i}`, new Date(now - (i + 1) * 1000).toISOString()));
+    assert.equal(recentTasks([...entries, ...older], new Set(), {}, now, new Set(), records).length, 30);
+    updateStatusStore(dir, 'todo', { flagged: true });
+    assert.equal(readStatusStore(dir).sessions.todo.statusAssigned, true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 test('missing replies use creation time; equal timestamps have a deterministic order', () => {
   const entries = [family('b', '2026-10-27T11:59:00Z', '2026-10-01T00:00:00Z'), family('a', '2026-10-27T12:00:00Z', '2026-10-01T00:00:00Z')];
@@ -48,7 +66,7 @@ test('sidebar labels recent tasks, removes month headings and keeps monthly stor
   assert.match(tree, /name: '最近任务'[^\n]*\.\.\.sortProjectGroups\(result, allReplies\)/);
   assert.doesNotMatch(tree, /pw-tree-month|monthOf\(|最近1小时/); assert.match(tree, /ordered\.slice\(0, RECENT_TASK_VISIBLE\)/);
   assert.match(tree, /selectedGroup !== '__inbox'/); assert.match(tree, /aria-expanded=\{more\.has\(project\.key\)\}/);
-  assert.match(tree, /recentArchive\.testIds === null \? \[\]/); assert.match(tree, /recentTasks\(allFamilies, runningSessionIds, allReplies, clock, testIds\)/);
+  assert.match(tree, /recentArchive\.testIds === null \? \[\]/); assert.match(tree, /recentTasks\(allFamilies, runningSessionIds, allReplies, clock, testIds, workflow\.records\)/);
   const route = fs.readFileSync(new URL('../assets/piweb-overlay/session-reply-times-route.ts', import.meta.url), 'utf8');
   assert.match(route, /recentTasks\(values\.map/); assert.doesNotMatch(route, /3600000|cutoff/);
   assert.match(route, /recent-test-sessions\.json/); assert.match(route, /new Set\(testSessionIds\)/); assert.match(route, /testSessionIds, incomplete/);

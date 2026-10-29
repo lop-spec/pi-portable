@@ -62,7 +62,7 @@ export function ProjectTree(props: Props) {
   const allFamilies = useMemo(() => listSessionFamilies([...byId.values()]), [byId]);
   const allReplies = useMemo(() => ({ ...recentArchive.replies, ...replyTimes }), [recentArchive, replyTimes]);
   const testIds = useMemo(() => new Set(recentArchive.testIds ?? []), [recentArchive.testIds]);
-  const recentCandidates = recentArchive.testIds === null ? [] : recentTaskCandidates(allFamilies, runningSessionIds, clock, testIds);
+  const recentCandidates = recentArchive.testIds === null ? [] : recentTaskCandidates(allFamilies, runningSessionIds, clock, testIds, workflow.records);
   const candidateKey = recentCandidates.map(f => `${f.root.id}:${f.root.modified}`).sort().join('|');
   useEffect(() => {
     const ids = candidateKey ? candidateKey.split('|').map(item => item.split(':', 1)[0]) : [];
@@ -76,11 +76,11 @@ export function ProjectTree(props: Props) {
     return () => controller.abort();
   }, [candidateKey, clock]);
   const groups = useMemo(() => {
-    const recent = recentArchive.testIds === null ? [] : recentTasks(allFamilies, runningSessionIds, allReplies, clock, testIds);
+    const recent = recentArchive.testIds === null ? [] : recentTasks(allFamilies, runningSessionIds, allReplies, clock, testIds, workflow.records);
     const archivedIds = new Set(recentArchive.sessions.map(s => s.id));
     const result = projects.map(project => ({ project, families: listSessionFamilies(sessions.filter(s => (archiveView || !archivedIds.has(s.id)) && workspaceKeyOf(s) === project.key)) }));
     return [{ project: { key: '__inbox', root: '', name: '最近任务' }, families: recent }, ...sortProjectGroups(result, allReplies)];
-  }, [sessions, projects, allFamilies, runningSessionIds, allReplies, recentArchive, archiveView, clock, testIds]);
+  }, [sessions, projects, allFamilies, runningSessionIds, allReplies, recentArchive, archiveView, clock, testIds, workflow.records]);
   const selectedGroup = groups.find(g => g.families.some(f => f.root.id === selectedSessionId || f.subagents.some(s => s.id === selectedSessionId)))?.project.key;
   useEffect(() => {
     if (!selectedGroup) return;
@@ -174,7 +174,7 @@ export function ProjectTree(props: Props) {
         const members = families.flatMap(f => [f.root, ...f.subagents]);
         const running = members.some(s => runningSessionIds.has(s.id)), unread = members.some(s => unreadSessionIds.has(s.id));
         return <section className="pw-tree-project" key={project.key} data-project-key={project.key}>
-          <div className="pw-tree-project-head"><button type="button" className="pw-tree-toggle" aria-expanded={!closed} aria-controls={`tree-${project.key}`} title={project.root || '按最近回复排序的10个对话'} onClick={() => toggle(project.key)}>
+          <div className="pw-tree-project-head"><button type="button" className="pw-tree-toggle" aria-expanded={!closed} aria-controls={`tree-${project.key}`} title={project.root || '最近30个未设置状态的非测试对话'} onClick={() => toggle(project.key)}>
             <Icon name={closed ? 'right' : 'down'} size={12} /><Icon name="folder" size={15} /><span className="pw-truncate">{project.name ?? project.root.split(/[/\\]/).at(-1)}</span>
             {running ? <span className="pw-spinner pw-spinner--sm" role="status" aria-label="运行中" /> : unread ? <span className="pw-dot" title="有新回复" /> : null}<span className="pw-num">{count}</span>
           </button>{project.key !== '__inbox' && <button type="button" className="pw-icon-btn pw-icon-btn--sm pw-tree-more" aria-label={`${project.name ?? '项目'}操作`} title="项目操作" onClick={e => setProjectMenu({ project, anchor: anchorFromElement(e.currentTarget, { align: 'end' }), element: e.currentTarget })}><Icon name="more" /></button>}</div>

@@ -20,12 +20,12 @@ test('status survives reload, independent flag changes and project path moves', 
   const id = 'session-123';
   updateStatusStore(dir, id, { status: 'needs-review' });
   updateStatusStore(dir, id, { flagged: true });
-  assert.deepEqual(readStatusStore(dir).sessions[id], { status: 'needs-review', flagged: true });
+  assert.deepEqual(readStatusStore(dir).sessions[id], { status: 'needs-review', flagged: true, statusAssigned: true });
   updateStatusStore(dir, id, { status: 'done' });
-  assert.deepEqual(readStatusStore(dir).sessions[id], { status: 'done', flagged: true });
+  assert.deepEqual(readStatusStore(dir).sessions[id], { status: 'done', flagged: true, statusAssigned: true });
   updateStatusStore(dir, id, { flagged: false });
   updateStatusStore(dir, id, { status: 'todo' });
-  assert.equal(readStatusStore(dir).sessions[id], undefined);
+  assert.deepEqual(readStatusStore(dir).sessions[id], { status: 'todo', flagged: false, statusAssigned: true });
 });
 test('bad status, prototype ids and corrupt files fail closed without overwrite', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-craft-status-'));

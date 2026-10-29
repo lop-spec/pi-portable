@@ -1,5 +1,6 @@
 // Recent tasks are a view over project families, never a second physical classification.
-export const RECENT_TASK_LIMIT = 10;
+import { hasAssignedStatus } from './craft-session/model.mjs';
+export const RECENT_TASK_LIMIT = 30;
 export const RECENT_TASK_VISIBLE = 5;
 
 // Only explicit test markers/IDs count. A conversation mentioning testing is not a test session.
@@ -14,9 +15,9 @@ export function isTestTask(session, testIds = new Set()) {
  * @param {ReadonlySet<string>} [testIds]
  * @returns {T[]}
  */
-export function recentTaskCandidates(families, _runningIds, _now, testIds = new Set()) {
+export function recentTaskCandidates(families, _runningIds, _now, testIds = new Set(), records = {}) {
   // The catalogue's modified time can be the start of a long response, not its completion.
-  return families.filter(family => !isTestTask(family.root, testIds));
+  return families.filter(family => !isTestTask(family.root, testIds) && !hasAssignedStatus(records, family.root.id));
 }
 /**
  * @template {{root: {id: string, modified: string, created: string}, subagents: {id: string}[]}} T
@@ -27,9 +28,9 @@ export function recentTaskCandidates(families, _runningIds, _now, testIds = new 
  * @param {ReadonlySet<string>} [testIds]
  * @returns {T[]}
  */
-export function recentTasks(families, _runningIds, replies, _now, testIds = new Set()) {
+export function recentTasks(families, _runningIds, replies, _now, testIds = new Set(), records = {}) {
   const time = family => Date.parse(replies[family.root.id] ?? family.root.created) || 0;
-  return families.filter(family => !isTestTask(family.root, testIds)).sort((a, b) => time(b) - time(a) || a.root.id.localeCompare(b.root.id)).slice(0, RECENT_TASK_LIMIT);
+  return recentTaskCandidates(families, _runningIds, _now, testIds, records).sort((a, b) => time(b) - time(a) || a.root.id.localeCompare(b.root.id)).slice(0, RECENT_TASK_LIMIT);
 }
 /**
  * @template {{families: {root: {id: string}}[]}} T

@@ -9,6 +9,11 @@ export const STATUSES = Object.freeze([
 export const DEFAULT_STATUS = 'todo';
 export function validStatus(value) { return STATUSES.some(item => item.id === value); }
 export function statusOf(records, id) { return validStatus(records[id]?.status) ? records[id].status : DEFAULT_STATUS; }
+// Legacy non-default statuses were explicitly assigned; flag-only todo records were not.
+export function hasAssignedStatus(records, id) {
+  const value = records[id];
+  return value?.statusAssigned === true || (validStatus(value?.status) && value.status !== DEFAULT_STATUS);
+}
 export function isFlagged(records, id) { return records[id]?.flagged === true; }
 export function dateGroup(value, now = new Date()) {
   const date = new Date(value);
