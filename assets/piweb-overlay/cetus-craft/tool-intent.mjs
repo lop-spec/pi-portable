@@ -20,11 +20,22 @@ export function withMetadata(tool) {
 export function installToolIntent(session) {
   const agent = session.agent;
   if (agent[installed]) return;
-  if (typeof agent.setTools !== 'function') throw new Error('Pi tool registry unavailable');
+  const state = agent.state;
+  if (!state || !Array.isArray(state.tools)) throw new Error('Pi tool registry unavailable');
+  const descriptor = Object.getOwnPropertyDescriptor(state, 'tools');
+  if (descriptor && !descriptor.configurable) throw new Error('Pi tool registry is not configurable');
+  let tools = state.tools;
+  Object.defineProperty(state, 'tools', {
+    configurable: true, enumerable: true,
+    get() { return descriptor?.get ? descriptor.get.call(state) : tools; },
+    set(next) {
+      const decorated = next.map(withMetadata);
+      if (descriptor?.set) descriptor.set.call(state, decorated);
+      else tools = decorated;
+    },
+  });
+  state.tools = tools;
   agent[installed] = true;
-  const setTools = agent.setTools;
-  agent.setTools = function(tools) { return setTools.call(this, tools.map(withMetadata)); };
-  agent.setTools(agent.state.tools);
   // SDK validation clones arguments before this hook; the model message is untouched.
   const before = agent.beforeToolCall;
   agent.beforeToolCall = function(event) {
