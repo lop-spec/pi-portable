@@ -43,14 +43,15 @@ test('native Agent loop advertises intent, executes clean arguments, and persist
   let requests = 0; const received = [];
   const tool = { name:'inspect', label:'Inspect', description:'Inspect fixture', parameters:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}, async execute(id,args){received.push(args);return {content:[{type:'text',text:'ok'}],details:{}};} };
   const agent = new Agent({initialState:{tools:[tool]},streamFn:(_model,context)=>{
-    assert.ok(context.tools[0].parameters.required.includes('_intent'));
+    const advertised = context.tools?.[0] ?? context.messages.flatMap(message=>message.toolsAdded ?? []).filter(tool=>tool.name==='inspect').at(-1);
+    assert.ok(advertised?.parameters.required.includes('_intent'));
     const first = requests++ === 0;
     const message = {role:'assistant',content:first?[{type:'toolCall',id:'native-call',name:'inspect',arguments:{path:'fixture',_displayName:'检查文件',_intent:'确认测试文件可读取。'}}]:[{type:'text',text:'完成'}],stopReason:first?'toolUse':'stop',api:'fixture',provider:'fixture',model:'fixture',timestamp:Date.now(),usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
     const stream=new AssistantMessageEventStream();stream.push({type:'start',partial:message});stream.push({type:'done',reason:message.stopReason,message});return stream;
   }});
   installToolIntent({agent});
   await agent.prompt('【测试任务】检查文件');
-  assert.equal(requests,2);
+  assert.equal(requests,2,JSON.stringify(agent.state.messages));
   assert.deepEqual(received,[{path:'fixture'}]);
   assert.equal(agent.state.messages.find(m=>m.role==='assistant').content[0].arguments._intent,'确认测试文件可读取。');
   assert.equal(agent.state.messages.find(m=>m.role==='toolResult').isError,false);
