@@ -14,7 +14,7 @@ export type PortableTimelineEntry =
  | {kind:'compaction';key:string;entryId?:string;timestamp?:number}
  | {kind:'failure';key:string;entryId?:string;message:AssistantMessage};
 export type TimelineEnd = {status:'done'|'error'|'stopped';at?:number};
-type Props = {entries:PortableTimelineEntry[];toolResults:Map<string,ToolResultMessage>;cwd?:string;sessionId?:string;searchEntryId?:string;searchBlock?:AssistantContentBlock;live?:boolean;modelNames?:Record<string,string>;collapseKey?:string;startedAt?:number;end?:TimelineEnd|null;phase?:string|null;streamingMessage?:AssistantMessage|null;onOpenFile?:(path:string,page?:number)=>void;onOpenSession?:(session:string)=>void};
+type Props = {entries:PortableTimelineEntry[];toolResultEntryIds?:Map<string,string>;toolResults:Map<string,ToolResultMessage>;cwd?:string;sessionId?:string;searchEntryId?:string;searchBlock?:AssistantContentBlock;live?:boolean;modelNames?:Record<string,string>;collapseKey?:string;startedAt?:number;end?:TimelineEnd|null;phase?:string|null;streamingMessage?:AssistantMessage|null;onOpenFile?:(path:string,page?:number)=>void;onOpenSession?:(session:string)=>void};
 type Activity = {id:string;entryId?:string;block:AssistantContentBlock;timestamp?:number;type:string;result?:ToolResultMessage;status:string;name:string;intent:string;input:string};
 function ToolIcon({activity}:{activity:Activity}) {
   const name = activity.block.type === 'toolCall' ? activity.block.toolName.toLowerCase() : '';
@@ -34,10 +34,24 @@ function Images({result}:{result?:ToolResultMessage}) {
     return src?<ImagePreview key={index} src={src}><img className="craft-output-image" src={src} alt="工具生成图片"/></ImagePreview>:null;
   })}</>;
 }
-function Details({activity,onClose,cwd,onOpenFile,onOpenSession}:{activity:Activity;onClose:()=>void;cwd?:string;onOpenFile?:Props['onOpenFile'];onOpenSession?:Props['onOpenSession']}) {
+function Details({activity,onClose,cwd,onOpenFile,onOpenSession,sessionId,resultEntryId}:{activity:Activity;onClose:()=>void;cwd?:string;onOpenFile?:Props['onOpenFile'];onOpenSession?:Props['onOpenSession'];sessionId?:string;resultEntryId?:string}) {
   const dialog=useRef<HTMLDialogElement>(null),title=useId();const [copyState,setCopyState]=useState('复制');
   useEffect(()=>{const previous=document.activeElement as HTMLElement|null;dialog.current?.showModal();return()=>{dialog.current?.close();previous?.focus({preventScroll:true});};},[]);
-  const block=activity.block, result=activity.result;
+  const [full,setFull]=useState<{block:AssistantContentBlock;result?:ToolResultMessage}|null>(null),[loadError,setLoadError]=useState(''),[retry,setRetry]=useState(0),[loading,setLoading]=useState(false);
+  const deferred=Boolean((activity.block as unknown as {chatView?:unknown}).chatView || (activity.result as unknown as {chatView?:unknown})?.chatView);
+  useEffect(()=>{
+    if(!deferred||!sessionId||!activity.entryId)return;
+    const controller=new AbortController();setLoading(true);setLoadError('');
+    const load=async(id:string)=>{const response=await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(id)}`,{signal:controller.signal});if(!response.ok)throw new Error(`详情读取失败（${response.status}）`);return (await response.json()).message;};
+    Promise.all([load(activity.entryId),resultEntryId?load(resultEntryId):Promise.resolve(null)]).then(([message,result])=>{
+      if(controller.signal.aborted)return;
+      const block=message?.content?.find((b:ToolCallContent)=>b.type==='toolCall'&&b.toolCallId===activity.id);
+      if(!block)throw new Error('未找到完整工具参数');
+      setFull({block,result:result??activity.result});
+    }).catch(error=>{if(!controller.signal.aborted)setLoadError(String(error.message??error));}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
+    return()=>controller.abort();
+  },[deferred,sessionId,activity.entryId,activity.id,resultEntryId,retry]);
+  const block=full?.block??activity.block, result=full?.result??activity.result;
   const output=result?.content.filter((b):b is {type:'text';text:string}=>b.type==='text').map(b=>b.text).join('\n')??(activity.status==='running'?'工具正在执行…':'没有记录到工具结果');
   const input=block.type==='toolCall'?Object.fromEntries(Object.entries(block.input??{}).filter(([key])=>!key.startsWith('_'))):{};
   const details=result?.details as {sessionId?:string;diff?:string}|undefined;
@@ -45,6 +59,8 @@ function Details({activity,onClose,cwd,onOpenFile,onOpenSession}:{activity:Activ
     <section onClick={event=>event.stopPropagation()}>
       <header><ToolIcon activity={activity}/><h2 id={title}>{activity.name}</h2><ResultGlyph status={activity.status}/><button type="button" aria-label="关闭详情" title="关闭详情（Esc）" onClick={onClose}><X size={18}/></button></header>
       <div className="craft-detail-content">
+        {loading&&<p role="status">正在加载完整详情…</p>}
+        {loadError&&<p role="alert">{loadError} <button type="button" onClick={()=>setRetry(retry+1)}>重试</button></p>}
         {activity.intent&&<p>{activity.intent}</p>}
         {block.type==='text'?<PortableTextBlock block={block} cwd={cwd} onOpenFile={onOpenFile}/>:<>
           <div className="craft-detail-heading"><h3>输入</h3><button type="button" onClick={()=>{void navigator.clipboard.writeText(JSON.stringify(input,null,2)+'\n\n'+output).then(()=>setCopyState('已复制')).catch(()=>setCopyState('复制失败'));}}><Copy size={14}/>{copyState}</button></div>
@@ -98,6 +114,6 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
     {responses.map(activity=>activity.block.type==='text'?<div key={activity.id} className="craft-answer" data-entry-id={activity.entryId}><PortableTextBlock block={activity.block} isStreaming={live} cwd={cwd} onOpenFile={onOpenFile}/></div>:null)}
     {(projection.nodes as PortableTimelineEntry[]).map(entry=><Fragment key={entry.key}>{entry.kind==='node'?entry.node:entry.kind==='compaction'?<div className="craft-compaction">上下文已压缩</div>:entry.kind==='failure'?<InlineFailure failures={[{entryId:entry.entryId,raw:entry.message.errorMessage??'',truncated:entry.message.stopReason==='length',timestamp:entry.message.timestamp}]} continued={live}/>:null}</Fragment>)}
     <div className="craft-output-images">{activities.filter(a=>a.result?.content.some(b=>b.type==='image')).map(a=><Images key={a.id} result={a.result}/>)}</div>
-    {active&&<Details key={active.id} activity={active} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} onClose={()=>setSelected(null)}/>}
+    {active&&<Details key={active.id} activity={active} sessionId={sessionId} resultEntryId={props.toolResultEntryIds?.get(active.id)} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} onClose={()=>setSelected(null)}/>}
   </div>;
 });
