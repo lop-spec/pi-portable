@@ -1,0 +1,18 @@
+{
+  "stage": "cetus-craft-after-file-context",
+  "files": {
+    "components/PortableFilePreview.tsx": "4c93ab4d38be8f36dbea2e6286e97b3f1dfbe842372e769be1d137c191ee3e27",
+    "components/PortableArtifactThumbnail.tsx": "160bd615e1d437e74f70e61c3f1c1921b3228c1a7bdd3d90a180e43f432f54c3",
+    "components/FileViewer.tsx": "e553ddce971a1b139631edc2fa7364766cc4839fc896b37cfeabc06b56e28fe8",
+    "lib/portable-preview-html.ts": "3a87cff05f50e932ecc2826458ab2464b17e62090ba3e4a38715e20aba3bf625",
+    "lib/portable-tool-intent.mjs": "7775b906e314cafb2129fa9af483c8260006a018de213ea24115b9760770081c",
+    "app/cetus-craft.css": "5c68614f05139551a6af83f4cf24bc867a99967cfa5cd26832d94b6f3083ae2d",
+    "app/layout.tsx": "498673a4475b86b3ebb16d11b4aab65821d0b7ad9a24a5348d54b95056a28eee",
+    "lib/rpc-manager.ts": "52d88f12615797d4b3996b0b77b6c3bfe214bbb7628f1e28debfe5db3f8f5a57",
+    "lib/session-reader.ts": "977b00b9ec67e3e74c02452c1e9cf54dd38cb33985c1664807f519fa72732f9b",
+    "components/desktop-transcript/ToolRow.tsx": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
+    "public/licenses/pi-desktop/source/ToolRow.tsx.txt": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
+    "components/AppShell.tsx": "4e98616072391dcfcc9971ac35bf403b5f6d93a5e55e50a359e268f17b669d49",
+    "components/TurnWrittenFiles.tsx": "b7baf43953e15626aba0d78ac63177a953a0e88471e0584b731aad4359f06d3f"
+  }
+}
