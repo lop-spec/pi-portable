@@ -1,0 +1,13 @@
+{
+  "stage": "craft-transcript-after-cetus",
+  "files": {
+    "components/PortableProcessTimeline.tsx": "b11dceb37b891d4f4f3f017041bf06e1a829fd2fe1e01fa7b398ea8aecb1c8d4",
+    "lib/craft-transcript-model.mjs": "5433f801830547f777330f7ac6d2816198a6b46b452e3ef3813c923cabba85de",
+    "app/craft-transcript.css": "3da9a168377f4f26de070eded1cb95e46d9479482b56e375f2c9d0b0ea54d659",
+    "app/layout.tsx": "e91de5c94a6abfcd9df9e040bc70d300a56805503340ca696bcc85b62ebb25e5",
+    "lib/message-display.ts": "fb452c6728a4d34b3388e7bdfa4e54b67361b2911666d6f0cd4d4ba3cb399912",
+    "package.json": "e5e1c57950623fa250a14c56de13ccf037e5fac14a17ef162e979b9bfd48c5e3",
+    "public/licenses/craft-transcript/LICENSE": "9a75ace1224f0f880ddfdd8442d14d5a0d865152c61a2fd363d8e2c351f94d2c",
+    "public/licenses/craft-transcript/NOTICE": "1b55827049354078a34ceb0fc7afa3fb7bba7a7510094a3ed7ae34ca487bbe77"
+  }
+}

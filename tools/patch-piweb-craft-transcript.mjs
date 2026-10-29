@@ -1,4 +1,5 @@
 // Final presentation stage: Craft replaces Desktop, retaining Pi execution/data APIs.
+import crypto from 'node:crypto';
 export function integrateCraftTranscript({get,set,change,template}) {
   set('components/PortableProcessTimeline.tsx',template('craft-transcript/PortableProcessTimeline.tsx'));
   set('lib/craft-transcript-model.mjs',template('craft-transcript/model.mjs'));
@@ -10,4 +11,6 @@ export function integrateCraftTranscript({get,set,change,template}) {
   set('package.json',JSON.stringify(pkg,null,2)+'\n');
   set('public/licenses/craft-transcript/LICENSE',template('craft-transcript/LICENSE'));
   set('public/licenses/craft-transcript/NOTICE',template('craft-transcript/NOTICE'));
+  const manifest=JSON.parse(template('craft-transcript/manifest.json'));
+  for(const [name,sha] of Object.entries(manifest.files))if(crypto.createHash('sha256').update(get(name)).digest('hex')!==sha)throw new Error(name+': Craft final-stage hash mismatch; zero writes');
 }
