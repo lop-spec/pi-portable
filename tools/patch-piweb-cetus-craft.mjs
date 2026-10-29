@@ -2,7 +2,6 @@
 export function integrateCetusCraft({ get, set, change, prepend, template }) {
   for (const [out, input] of Object.entries({
     'components/PortableFilePreview.tsx': 'PortableFilePreview.tsx',
-    'components/PortableArtifactThumbnail.tsx': 'PortableArtifactThumbnail.tsx',
     'lib/portable-tool-intent.mjs': 'tool-intent.mjs',
     'app/cetus-craft.css': 'preview.css',
     'lib/portable-preview-html.ts': 'preview-html.ts',
@@ -50,10 +49,7 @@ ${viewer}
   }, [selectedSession?.id]);
   const handleOpenLinkedFile = useCallback(`);
   const written = 'components/TurnWrittenFiles.tsx';
-  prepend(written, 'import { PortableArtifactThumbnail } from "./PortableArtifactThumbnail";\n');
-  change(written, 'className="pw-turn-files"', 'className="pw-artifact-cards"');
-  change(written, 'className="pw-chip"', 'className="pw-artifact-card"');
+  // Keep compact file-name chips: no thumbnails or content reads before a click.
   change(written, 'onClick={() => onOpenFile?.(filePath)}', 'onClick={() => { window.dispatchEvent(new CustomEvent("pi-web:preview-files", { detail: { paths: files.map(file => file.filePath) } })); onOpenFile?.(filePath); }}');
-  change(written, '            <FilePenIcon />', '            <PortableArtifactThumbnail path={filePath} name={name} />');
   set('public/licenses/pi-desktop/source/ToolRow.tsx.txt', get(row));
 }

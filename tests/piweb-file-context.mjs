@@ -17,6 +17,16 @@ const original = name => {
 };
 const files = integrate(original);
 
+test('file outputs stay compact and load previews only after a click', () => {
+  const written = files.get('components/TurnWrittenFiles.tsx');
+  assert.match(written, /className="pw-turn-files"/);
+  assert.match(written, /className="pw-chip"/);
+  assert.match(written, /onClick=.*onOpenFile\?\./);
+  assert.doesNotMatch(written, /PortableArtifactThumbnail|pw-artifact-card|<img|<iframe|fetch\(/);
+  assert.equal(files.has('components/PortableArtifactThumbnail.tsx'), false);
+  assert.match(files.get('components/AppShell.tsx'), /rightPanelOpen && activeFileTab\?\.filePath && <PortableFilePreview/);
+});
+
 test('all conversation representations use the shared menu and session identity', () => {
   const menu = files.get('components/PortableFileContextMenu.tsx');
   assert.match(menu, />Open file</);
