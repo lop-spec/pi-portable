@@ -1,0 +1,4 @@
+Session status glyphs and interaction patterns are adapted from Craft Agents OSS.
+Copyright Craft Agents contributors. Licensed under the Apache License, Version 2.0.
+Source: https://github.com/lop-spec/craft-agents-oss/tree/a883d64e8cccb0612b18f06820755db5f5d17a34
+The pi-web adaptation changes the layout, data model, persistence, and host integration.

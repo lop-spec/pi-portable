@@ -12,6 +12,7 @@ import { Icon } from './sidebar/icons';
 import { anchorFromElement, type MenuAnchor } from './sidebar/PopMenu';
 import { formatSessionDateTime, formatSessionTime } from './sidebar/session-time';
 import { dispatchSessionRowContextMenu } from '@/lib/session-row-context-menu';
+import { CraftSessionView, StatusButton, useSessionWorkflow } from './CraftSessions';
 
 interface Props {
   sessions: SessionInfo[]; projects: NamedProject[]; hiddenProjects: NamedProject[]; registry: ProjectRegistry;
@@ -28,6 +29,9 @@ const foldKey = 'pi-web:project-tree-folds';
 function readFolds(): Set<string> { try { return new Set(JSON.parse(localStorage.getItem(foldKey) ?? '[]')); } catch { return new Set(); } }
 export function ProjectTree(props: Props) {
   const { sessions, projects, hiddenProjects, registry, selectedSessionId, runningSessionIds, unreadSessionIds } = props;
+  const [mode, setMode] = useState<'status' | 'project'>('status');
+  const [filter, setFilter] = useState('all');
+  const workflow = useSessionWorkflow();
   const [folds, setFolds] = useState(readFolds), [more, setMore] = useState<Set<string>>(() => new Set());
   const [children, setChildren] = useState<Set<string>>(() => new Set());
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -115,19 +119,37 @@ export function ProjectTree(props: Props) {
     try { const data = await projectRequest('/api/project-routing', { action: 'create', project: newName }); props.onCreated(data.cwd, data); setCreating(false); setNewName(''); }
     catch (error) { setNotice(String(error)); } finally { setBusy(false); }
   };
-  const row = (session: SessionInfo, sub: boolean, family: ReturnType<typeof listSessionFamilies>[number], recent = false) => <SessionRow key={session.id}
+  const changeArchiveView = (wantArchived: boolean) => {
+    const current = document.documentElement.dataset.piSessionArchiveView === 'archived';
+    if (current === wantArchived) return;
+    const control = document.querySelector<HTMLButtonElement>('button[data-pi-session-archive-control]');
+    if (!control) { setNotice('归档组件未就绪，请刷新后重试'); return; }
+    control.click();
+  };
+  const changeArchive = async (id: string, archived: boolean) => {
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/${archived ? 'restore' : 'archive'}`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || '归档操作失败');
+      document.dispatchEvent(new Event('pi-web:refresh-sessions'));
+      setClock(Date.now());
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+  };
+  const row = (session: SessionInfo, sub: boolean, family: ReturnType<typeof listSessionFamilies>[number], recent = false) => <div className="pw-project-session" key={session.id} data-session-id={session.id}>{!sub && <StatusButton id={session.id} records={workflow.records} onSave={workflow.save} archived={archiveView || recentArchive.sessions.some(s => s.id === session.id)} onArchive={(id, archived) => void changeArchive(id, archived)} disabled={session.transient} />}<SessionRow
     session={session} depth={sub ? 1 : 0} timeLabel={formatSessionTime(recent ? allReplies[session.id] ?? session.modified : session.modified, new Date())} tooltipTime={formatSessionDateTime(recent ? allReplies[session.id] ?? session.modified : session.modified, new Date())}
     isSelected={session.id === selectedSessionId} isRunning={[session, ...(!sub ? family.subagents : [])].some(s => runningSessionIds.has(s.id))}
     isUnread={[session, ...(!sub ? family.subagents : [])].some(s => unreadSessionIds.has(s.id))} subagentCount={sub ? 0 : family.subagents.length}
     expanded={children.has(session.id)} renaming={renaming === session.id} tabbable menuOpen={menuId === session.id} subagentGlyph={props.subagentGlyph}
     onSelect={id => { const s = byId.get(id); if (s) props.onSelect(s); }} onToggleFamily={id => setChildren(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })}
-    onOpenMenu={openMenu} onRenameCommit={(id, value) => void rename(id, value)} />;
-  return <div className="pw-tree" ref={root}>
-    <div className="pw-tree-head"><span>项目 <small>{registry.projects.length}/8</small></span><span data-pi-archive-slot="" /><button type="button" className="pw-icon-btn pw-icon-btn--sm" title={registry.projects.length >= 8 ? '已满8个，按新名称自动合并并重命名' : '新建项目'} aria-label="新建项目" onClick={() => setCreating(v => !v)}><Icon name="plus" /></button></div>
+    onOpenMenu={openMenu} onRenameCommit={(id, value) => void rename(id, value)} /></div>;
+  return <div className={`pw-tree${mode === 'status' ? ' pw-tree-status' : ''}`} ref={root}>
+    <div className="pw-tree-head"><div className="pw-craft-modes" role="group" aria-label="会话视图"><button type="button" aria-pressed={mode === 'status'} onClick={() => setMode('status')}>状态</button><button type="button" aria-pressed={mode === 'project'} onClick={() => setMode('project')}>项目 <small>{registry.projects.length}/8</small></button></div><span data-pi-archive-slot="" /><button type="button" className="pw-icon-btn pw-icon-btn--sm" title={registry.projects.length >= 8 ? '已满8个，按新名称自动合并并重命名' : '新建项目'} aria-label="新建项目" onClick={() => { setMode('project'); setCreating(v => !v); }}><Icon name="plus" /></button></div>
+    {workflow.error && <div role="alert" className="pw-craft-error">{workflow.error} <button type="button" onClick={() => void workflow.reload()}>重试</button></div>}
     {creating && <form className="pw-tree-create" onSubmit={e => { e.preventDefault(); void create(); }}><input className="pw-input" autoFocus aria-label="项目名称" placeholder={registry.projects.length >= 8 ? '合并后的准确名称' : '准确的项目名称'} maxLength={40} value={newName} onChange={e => setNewName(e.target.value)} /><button className="pw-btn pw-btn--sm" disabled={busy || !newName.trim()}>创建</button></form>}
     {props.searchOpen && <div className="pw-tree-search"><input ref={search} id="session-search-input" className="pw-input" type="search" placeholder="搜索所有会话…" aria-label="搜索所有会话" value={props.searchQuery} onChange={e => props.onSearchQueryChange(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') props.onSearchClose(); }} /><button className="pw-icon-btn" aria-label="关闭搜索" onClick={props.onSearchClose}><Icon name="close" /></button></div>}
     <SessionSearch open={props.searchOpen} query={props.searchQuery} selectedSessionId={selectedSessionId} onSelectSession={props.onSelect} labelForSession={props.labelForSession} />
-    <nav className="pw-tree-scroll scrollbar-subtle" aria-label="项目与对话" hidden={props.searchOpen && Boolean(props.searchQuery.trim())} onKeyDown={e => {
+    {mode === 'status' && !(props.searchOpen && Boolean(props.searchQuery.trim())) && <CraftSessionView sessions={sessions} records={workflow.records} selectedSessionId={selectedSessionId} running={runningSessionIds} unread={unreadSessionIds} archived={archiveView} filter={filter} onFilter={setFilter} onArchiveView={changeArchiveView} onSelect={props.onSelect} onSave={workflow.save} onArchive={(id, archived) => void changeArchive(id, archived)} onMenu={openMenu} />}
+    <nav className="pw-tree-scroll scrollbar-subtle" aria-label="项目与对话" hidden={mode !== 'project' || (props.searchOpen && Boolean(props.searchQuery.trim()))} onKeyDown={e => {
       if (e.key === 'F2') {
         const id = (e.target as HTMLElement).closest<HTMLElement>('[data-pi-session-id]')?.dataset.piSessionId;
         if (id) { e.preventDefault(); setRenaming(id); } return;

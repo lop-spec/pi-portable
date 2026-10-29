@@ -1,6 +1,12 @@
 // Applied last to source, not compiled assets. All creation and moves share the CLI core.
 export function integrateProjectTree({ get, set, change, prepend, template }) {
   set('components/ProjectTree.tsx', template('ProjectTree.tsx'));
+  set('components/CraftSessions.tsx', template('craft-session/CraftSessions.tsx'));
+  set('lib/craft-session/model.mjs', template('craft-session/model.mjs'));
+  set('lib/craft-session/store.mjs', template('craft-session/store.mjs'));
+  set('app/api/session-status/route.ts', template('craft-session/route.ts'));
+  set('public/licenses/craft-agents/LICENSE', template('craft-session/LICENSE'));
+  set('public/licenses/craft-agents/NOTICE', template('craft-session/NOTICE'));
   set('lib/project-routing.mjs', template('project-routing.mjs'));
   set('lib/project-capacity.mjs', template('project-capacity.mjs'));
   set('lib/session-reply-time.mjs', template('session-reply-time.mjs'));
@@ -9,7 +15,7 @@ export function integrateProjectTree({ get, set, change, prepend, template }) {
   set('app/api/project-routing/route.ts', template('project-routing-route.ts'));
   prepend('lib/rpc-manager.ts', 'import { monthlySessionDir } from "@/lib/project-routing.mjs";\n');
   change('lib/rpc-manager.ts', 'SessionManager.create(cwd, undefined)', 'SessionManager.create(cwd, monthlySessionDir(getAgentDir(), cwd))');
-  set('app/redesign-sidebar.css', get('app/redesign-sidebar.css') + '\n' + template('project-tree.css'));
+  set('app/redesign-sidebar.css', get('app/redesign-sidebar.css') + '\n' + template('project-tree.css') + '\n' + template('craft-session/craft-session.css'));
   change('components/SettingsPanel.tsx', '每天凌晨 5 点（本机时间），归档超过 7 天未更新的会话；跳过运行中会话，可在侧栏“归档”中恢复。', '每天凌晨5点按月归档：归档上月及更早未更新的会话，跳过运行中会话；可在侧栏“归档”中恢复。');
   const sidebar = 'components/SessionSidebar.tsx';
   prepend(sidebar, 'import { ProjectTree } from "./ProjectTree";\n');
