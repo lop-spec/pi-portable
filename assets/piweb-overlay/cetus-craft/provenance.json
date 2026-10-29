@@ -1,0 +1,4 @@
+{
+  "cetus": { "repository": "https://github.com/drewnekota/cetus", "commit": "12eb880489aa5e0c6bbc74a13df7bcd6e2abea8d", "source": "src/components/chat/artifact-view.tsx", "license": "MIT", "adaptation": "Modal file preview, artifact cards, keyboard navigation, copy/download/open/reveal and sandbox HTML Escape/link bridge; Pi file renderer and authorization retained." },
+  "craft": { "repository": "https://github.com/lop-spec/craft-agents-oss", "commit": "a883d64e8cccb0612b18f06820755db5f5d17a34", "source": "packages/shared/src/interceptor-common.ts", "adaptation": "Exact intentSchema/displayNameSchema descriptions; required metadata injected at native Pi tool registry, execution copy stripped, original model history retained." }
+}
