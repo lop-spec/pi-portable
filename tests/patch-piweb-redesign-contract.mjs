@@ -178,7 +178,10 @@ test('integrate() twice gives byte-identical results, with pinned templates and 
   // Earlier stages validate their own hashes during integration; assert the final stage here.
   const craftTranscript = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/craft-transcript/manifest.json'), 'utf8'));
   assert.equal(craftTranscript.stage, 'craft-transcript-after-cetus');
-  fileContext.files = { ...fileContext.files, ...cetusCraft.files, ...craftTranscript.files };
+  const stopSafety = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/immediate-stop/stop-safety-manifest.json'), 'utf8'));
+  assert.equal(stopSafety.stage, 'stop-safety-after-craft');
+  for (const [name, expected] of Object.entries(stopSafety.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its stop-safety output hash`);
+  fileContext.files = { ...fileContext.files, ...cetusCraft.files, ...craftTranscript.files, ...stopSafety.files };
   for (const [name, expected] of Object.entries(fileContext.files)) assert.equal(sha(first.get(name)), expected, `${name} matches its file-context-stage output hash`);
   for (const [name, expected] of Object.entries(desktop.files)) assert.equal(sha(first.get(name)), fileContext.files[name] ?? expected, `${name} matches its final output hash`);
   for (const [name, expected] of Object.entries(askBack.files)) assert.equal(sha(first.get(name)), fileContext.files[name] ?? desktop.files[name] ?? expected, `${name} matches its final output hash`);

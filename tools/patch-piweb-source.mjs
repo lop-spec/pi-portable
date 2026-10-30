@@ -17,7 +17,7 @@ import { integrateProcessTimeline } from './patch-piweb-process-timeline.mjs';
 import { integrateComposerLayout } from './patch-piweb-composer-layout.mjs';
 import { integrateRedesign } from './patch-piweb-redesign.mjs';
 import { integrateHistory } from './patch-piweb-history.mjs';
-import { integrateImmediateStop } from './patch-piweb-immediate-stop.mjs';
+import { integrateImmediateStop, integrateStopHandlerCleanup } from './patch-piweb-immediate-stop.mjs';
 import { integrateToolExcerpts } from './patch-piweb-tool-excerpts.mjs';
 import { integrateAskBack } from './patch-piweb-ask-back.mjs';
 import { integrateProjectTree } from './patch-piweb-project-tree.mjs';
@@ -212,6 +212,7 @@ export function integrate(getFile) {
           return { handled: false };`);
 
   change('lib/pi-types.ts', 'setModel(model: ModelLike): Promise<void>;', 'setModel(model: ModelLike, options?: { persist?: boolean }): Promise<void>;');
+  change('lib/pi-types.ts', '    state?: {', '    state: {');
   const rpc = 'lib/rpc-manager.ts';
   change(rpc, '        await this.inner.setModel(model);', `        const sessionThinkingLevel = this.inner.agent.state.thinkingLevel ?? "off";
         await this.inner.setModel(model, { persist: true });
@@ -363,7 +364,7 @@ export function integrate(getFile) {
   // Whole-file templates of the 2026-10 front-end rewrite go last: their pinned bases are the output above.
   integrateRedesign({ get, set });
   integrateHistory({ get, set, change, prepend, template });
-  integrateImmediateStop({ change });
+  integrateImmediateStop({ change, set, template });
   integrateToolExcerpts({ get, set, change, prepend, template });
   integrateAskBack({ change });
   // A steering interjection should not silently replace the work already in progress.
@@ -378,6 +379,7 @@ export function integrate(getFile) {
   integrateFileContext({ get, set, change, prepend, template });
   integrateCetusCraft({ get, set, change, prepend, template });
   integrateCraftTranscript({ get, set, change, template });
+  integrateStopHandlerCleanup({ get, change, template });
   return files;
 }
 
