@@ -33,5 +33,5 @@ test('queued choice is removed only after successful application and preserves n
 });
 test('model switching restores session strength, not model defaults',()=>{
  const rpc=files.get('lib/rpc-manager.ts');
- assert.match(rpc,/const sessionThinkingLevel = this.inner.agent.state.thinkingLevel \?\? "off";\s*await this.inner.setModel\(model, \{ persist: true \}\);[\s\S]*?this.inner.setThinkingLevel\(sessionThinkingLevel\)/);
+ assert.match(rpc,/const sessionThinkingLevel = this.inner.agent.state\?.thinkingLevel \?\? "off";\s*await this.inner.setModel\(model, \{ persist: true \}\);[\s\S]*?this.inner.setThinkingLevel\(sessionThinkingLevel\)/);
 });

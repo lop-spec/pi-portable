@@ -214,7 +214,7 @@ export function integrate(getFile) {
   change('lib/pi-types.ts', 'setModel(model: ModelLike): Promise<void>;', 'setModel(model: ModelLike, options?: { persist?: boolean }): Promise<void>;');
   change('lib/pi-types.ts', '    state?: {', '    state: {');
   const rpc = 'lib/rpc-manager.ts';
-  change(rpc, '        await this.inner.setModel(model);', `        const sessionThinkingLevel = this.inner.agent.state.thinkingLevel ?? "off";
+  change(rpc, '        await this.inner.setModel(model);', `        const sessionThinkingLevel = this.inner.agent.state?.thinkingLevel ?? "off";
         await this.inner.setModel(model, { persist: true });
         // SDK setModel reloads per-model/global defaults. A model choice is not an effort choice.
         this.inner.setThinkingLevel(sessionThinkingLevel);

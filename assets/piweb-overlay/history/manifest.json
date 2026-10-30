@@ -15,7 +15,7 @@
     "lib/agent-event-stream.ts": "5c840abaa6ab4992b79658f4609f1083fe74a837925a2492f0e932c029ff1d23",
     "lib/agent-event-wire.ts": "4511ae4488bbb6b21d18d6b477b8bab21aa9affdc425ca469582c83084d98ffc",
     "lib/passive-agent-events.mjs": "3290cf20a62cc7ab1ac1546e8d09483318b23397ee54f6e4bbe0d6af2b46b1a9",
-    "lib/rpc-manager.ts": "2e1c1ea57165908665313bf5c77954f60bc3571069b7890d8a6b70196c17fdf3",
+    "lib/rpc-manager.ts": "f1b4448dbc770a2f66e0294bff6f184ca474e4cb12eab9f663930b132e42cf17",
     "lib/session-disk-reader.mjs": "b8855ff0dfe89c0048e6dd3e327a1f2aa6ea6c9129362f25c9e3ba77a3c152cb",
     "lib/session-reader.ts": "4620f47e384b0739a42133b967d4d262df4cb7817d0fa125d6d7adee7f77892f",
     "lib/turn-written-files.ts": "3de194bcfa4ed4fd2dbd80a80d82b91e926f8c0a351de46e8d4ff50a7b34f675",

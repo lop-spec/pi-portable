@@ -3,7 +3,7 @@
   "files": {
     "components/ChatInput.tsx": "1679a00174cb864a3a4d0356cfbeb2c7b252e5c9b44a011066cbf75c47a094a0",
     "hooks/useAgentSession.ts": "534bccc84ffb3a14af846557dff2a9a3cd7f7bf0ae2415166f19a84f0339c69e",
-    "lib/rpc-manager.ts": "021b43c6f9808eac97ec0fb812e4ac31078b0ca6325e37e0220a822bcc85d5a5",
+    "lib/rpc-manager.ts": "dc5c24b9959f5070d79190847c344e72517c512f452b95fb39b0ff0e36ebd156",
     "components/ChatInput.streaming-thinking.test.mjs": "01d4975520e56a868c764a49095a17bbe87330ba887bc7ba52ddc394866eeefb"
   }
 }
