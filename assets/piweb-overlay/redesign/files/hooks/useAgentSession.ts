@@ -22,7 +22,7 @@ import {
 } from "@/lib/session-view-cache";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
-import { readThinkingPreference, writeThinkingPreference } from "@/lib/thinking-preference.mjs";
+import { readThinkingPreference, writeThinkingPreference, readPendingThinking, savePendingThinking, clearPendingThinking } from "@/lib/thinking-preference.mjs";
 import { CONFIGURED_TOOL_PRESET, getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";

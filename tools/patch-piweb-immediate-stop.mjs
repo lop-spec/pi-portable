@@ -12,7 +12,15 @@ export function integrateImmediateStop({change}) {
   const stoppedSessionsRef = useRef(new Set<string>());
   const stopBarriersRef = useRef(new Map<string, Promise<unknown>>());
   const stopTicketsRef = useRef(new Map<string, string>());
-  const nextSelectionRef = useRef(new Map<string, { model?: {provider: string; modelId: string}; thinking?: ThinkingLevelOption }>());`);
+  const nextSelectionRef = useRef(new Map<string, { model?: {provider: string; modelId: string}; thinking?: ThinkingLevelOption }>());
+  useLayoutEffect(() => {
+    const sid = sessionIdRef.current;
+    const pending = asConcreteThinkingLevel(readPendingThinking(sid));
+    if (sid && pending) {
+      nextSelectionRef.current.set(sid, {...nextSelectionRef.current.get(sid), thinking: pending});
+      setCurrentThinkingOverride(pending);
+    }
+  }, []);`);
   change(hook,'setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);\n      setCurrentThinkingOverride(null);', 'if (!nextSelectionRef.current.get(sid)?.model) setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);\n      setCurrentThinkingOverride((current) => nextSelectionRef.current.get(sid)?.thinking ? current : null);');
   change(hook,'  const reconcileAgentState = useCallback(async (sid: string) => {', '  const reconcileAgentState = useCallback(async (sid: string) => {\n    if (stoppedSessionsRef.current.has(sid)) return;');
   change(hook,'  const handleAgentEvent = useCallback((event: AgentEvent) => {', '  const handleAgentEvent = useCallback((event: AgentEvent) => {\n    if (sessionIdRef.current && stoppedSessionsRef.current.has(sessionIdRef.current)) return;');
@@ -72,16 +80,25 @@ export function integrateImmediateStop({change}) {
   change(hook,'  const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {',`  const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {
     const selectionSid = sessionIdRef.current;
     if (selectionSid && level !== "auto" && (agentRunningRef.current || stopBarriersRef.current.has(selectionSid))) {
+      writeThinkingPreference(level);
+      savePendingThinking(selectionSid, level);
       nextSelectionRef.current.set(selectionSid, {...nextSelectionRef.current.get(selectionSid), thinking: level});
       setCurrentThinkingOverride(level);
       if (isNew) setNewSessionThinkingLevel(level);
       return;
+    }
+    if (selectionSid && level !== "auto") {
+      const queued = nextSelectionRef.current.get(selectionSid);
+      if (queued?.thinking) {
+        clearPendingThinking(selectionSid, queued.thinking);
+        if (queued.model) nextSelectionRef.current.set(selectionSid, {model: queued.model});
+        else nextSelectionRef.current.delete(selectionSid);
+      }
     }`);
   change(hook,'    let promptRequestStarted = false;\n\n    try {',`    let promptRequestStarted = false;
     const selectionSid = sessionIdRef.current;
     const selection = selectionSid ? nextSelectionRef.current.get(selectionSid) : undefined;
     const stopTicket = selectionSid ? stopTicketsRef.current.get(selectionSid) : undefined;
-    if (selectionSid) nextSelectionRef.current.delete(selectionSid);
     const prepareNextRequest = async (sid: string) => {
       const barrier = stopBarriersRef.current.get(sid);
       if (barrier) await Promise.race([barrier.catch(() => undefined), new Promise<void>((resolve) => setTimeout(resolve, 750))]);
@@ -90,7 +107,12 @@ export function integrateImmediateStop({change}) {
       stopTicketsRef.current.delete(sid);
       stoppedSessionsRef.current.delete(sid);
       if (selection?.model) await sendAgentCommand(sid, {type: "set_model", ...selection.model});
-      if (selection?.thinking) await sendAgentCommand(sid, {type: "set_thinking_level", level: selection.thinking});
+      if (selection?.thinking) {
+        await sendAgentCommand(sid, {type: "set_thinking_level", level: selection.thinking});
+        clearPendingThinking(sid, selection.thinking);
+        if (sessionIdRef.current === sid) setLiveThinkingLevel(asConcreteThinkingLevel(selection.thinking));
+      }
+      if (nextSelectionRef.current.get(sid) === selection) nextSelectionRef.current.delete(sid);
     };
 
     try {`);

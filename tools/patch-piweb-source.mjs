@@ -213,7 +213,10 @@ export function integrate(getFile) {
 
   change('lib/pi-types.ts', 'setModel(model: ModelLike): Promise<void>;', 'setModel(model: ModelLike, options?: { persist?: boolean }): Promise<void>;');
   const rpc = 'lib/rpc-manager.ts';
-  change(rpc, '        await this.inner.setModel(model);', `        await this.inner.setModel(model, { persist: true });
+  change(rpc, '        await this.inner.setModel(model);', `        const sessionThinkingLevel = this.inner.thinkingLevel;
+        await this.inner.setModel(model, { persist: true });
+        // SDK setModel reloads per-model/global defaults. A model choice is not an effort choice.
+        this.inner.setThinkingLevel(sessionThinkingLevel);
         await this.inner.settingsManager.flush();
         const errors = this.inner.settingsManager.drainErrors();
         if (errors.length) { console.error('[pi-web] global model default persist failed:', errors); throw new Error('Failed to persist global model default'); }`);

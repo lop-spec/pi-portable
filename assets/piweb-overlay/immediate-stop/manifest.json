@@ -2,8 +2,8 @@
   "stage": "immediate-stop-after-history",
   "files": {
     "components/ChatInput.tsx": "1679a00174cb864a3a4d0356cfbeb2c7b252e5c9b44a011066cbf75c47a094a0",
-    "hooks/useAgentSession.ts": "c4f5add10057b1f6d724a48cd36c6ff863bf2f3d57d8348fadc612b8e0b60017",
-    "lib/rpc-manager.ts": "fb4e6c408118121302a2a26b37a931411640511aaa99a2ba30e627d6e6f8fe2f",
+    "hooks/useAgentSession.ts": "534bccc84ffb3a14af846557dff2a9a3cd7f7bf0ae2415166f19a84f0339c69e",
+    "lib/rpc-manager.ts": "057a4fa5a501c75ed0ebf3245482f36dfaf1bf020b58d69b790992f58af469cc",
     "components/ChatInput.streaming-thinking.test.mjs": "01d4975520e56a868c764a49095a17bbe87330ba887bc7ba52ddc394866eeefb"
   }
 }
