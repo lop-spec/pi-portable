@@ -22,6 +22,7 @@ import {
 } from "@/lib/session-view-cache";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
+import { readThinkingPreference, writeThinkingPreference } from "@/lib/thinking-preference.mjs";
 import { CONFIGURED_TOOL_PRESET, getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
@@ -484,6 +485,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const thinkingLevelOverrideRef = useRef<ConcreteThinkingLevel | null>(null);
   const thinkingLevelPinsRef = useRef<Record<string, string>>({});
   const defaultThinkingLevelRef = useRef<ConcreteThinkingLevel | null>(null);
+  // Hydrate before model-list responses arrive; use the same explicit value for display and create.
+  useLayoutEffect(() => {
+    if (!isNew) return;
+    const inherited = asConcreteThinkingLevel(readThinkingPreference());
+    if (inherited && thinkingLevelOverrideRef.current === null) {
+      thinkingLevelOverrideRef.current = inherited;
+      setNewSessionThinkingLevel(inherited);
+    }
+  }, [isNew]);
   const promptRunIdRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
   const modelSwitchPendingRef = useRef(false);
@@ -625,11 +635,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const displayModel = isNew
     ? (newSessionModel ?? newSessionDefaultModel)
     : currentModel ?? (data?.context.messages.length === 0 ? newSessionDefaultModel : null);
-  const contextThinkingLevel = asConcreteThinkingLevel(
-    data?.context.thinkingLevel && data.context.thinkingLevel !== "off"
-      ? data.context.thinkingLevel
-      : null,
-  );
+  const contextThinkingLevel = asConcreteThinkingLevel(data?.context.thinkingLevel);
   const currentThinkingLevel = currentThinkingOverride ?? liveThinkingLevel ?? contextThinkingLevel;
   const displayThinkingLevel = isNew
     ? (newSessionThinkingLevel ?? newSessionDefaultThinkingLevel)
@@ -818,7 +824,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         eventConnectionRef.current?.close();
         eventConnectionRef.current?.maintain(sid);
       }
-      if (!includeState && d.context.thinkingLevel && d.context.thinkingLevel !== "off") {
+      if (!includeState && d.context.thinkingLevel) {
         setLiveThinkingLevel(asConcreteThinkingLevel(d.context.thinkingLevel));
       }
 
@@ -951,7 +957,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Only send explicit user overrides. The server resolves the current
       // enabledModels scope atomically with AgentSession construction.
       const selectedModel = newSessionModelOverrideRef.current;
-      const selectedThinkingLevel = thinkingLevelOverrideRef.current;
+      const selectedThinkingLevel = thinkingLevelOverrideRef.current ?? newSessionDefaultThinkingLevel;
+      // Freeze the displayed choice for this draft; later defaults must not alter the request.
+      thinkingLevelOverrideRef.current = selectedThinkingLevel;
       if (selectedModel) setPendingModel(selectedModel);
       // Undefined means the user never overrode the loadout: omit the field entirely
       // so pi resolves settings.json defaultTools instead of being pinned to ours (#700).
@@ -986,10 +994,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         result.thinkingLevel
         && thinkingLevelOverrideRef.current === selectedThinkingLevel
       ) {
-        setLiveThinkingLevel(asConcreteThinkingLevel(result.thinkingLevel));
-        if (!selectedThinkingLevel) {
-          setNewSessionDefaultThinkingLevel(asConcreteThinkingLevel(result.thinkingLevel));
-        }
+        const resolved = asConcreteThinkingLevel(result.thinkingLevel);
+        setLiveThinkingLevel(resolved);
+        setNewSessionThinkingLevel(resolved);
+        thinkingLevelOverrideRef.current = resolved;
+        // Runtime may clamp for model capability. Never persist that as a new user preference.
       }
       return realId;
     })();
@@ -1000,7 +1009,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, toolPreset]);
+  }, [isNew, newSessionCwd, toolPreset, newSessionDefaultThinkingLevel]);
 
   // Opening the System or Tools panel may initialize an otherwise dormant
   // session. This is deliberately a non-prompt command: it creates no message
@@ -2307,6 +2316,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } else {
       setCurrentThinkingOverride(level);
     }
+    // Record intent synchronously, not in a potentially out-of-order RPC response.
+    writeThinkingPreference(level);
     const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
     if (!sid) return;
     try {

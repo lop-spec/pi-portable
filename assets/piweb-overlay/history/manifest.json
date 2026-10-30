@@ -11,7 +11,7 @@
     "components/MessageView.tsx": "15c6a8e54969b6e063d8bda8527c1719050a80bd4af9d2603b601d055576e9aa",
     "components/PortableNodes.tsx": "338080d47b8d2264b98cdb45a8b2d6bca282185aaa76e5d8adcad7ea64e6e3d2",
     "components/PortableProcessTimeline.tsx": "608352cdf65af6c00faae689695bd4a24c918ad8ede3e215714ec9c124675384",
-    "hooks/useAgentSession.ts": "6c686decbeae932fda1380b0717141e93957860fffca1a4cf0191b3ac2cf2f3a",
+    "hooks/useAgentSession.ts": "a45c6c6a510afffe2299162724dfc31b61226b144b96fe608555b189442a7694",
     "lib/agent-event-stream.ts": "5c840abaa6ab4992b79658f4609f1083fe74a837925a2492f0e932c029ff1d23",
     "lib/agent-event-wire.ts": "4511ae4488bbb6b21d18d6b477b8bab21aa9affdc425ca469582c83084d98ffc",
     "lib/passive-agent-events.mjs": "3290cf20a62cc7ab1ac1546e8d09483318b23397ee54f6e4bbe0d6af2b46b1a9",

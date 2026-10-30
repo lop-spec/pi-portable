@@ -107,6 +107,7 @@ jobs:
           node --test tests/patch-piweb-worktree-sessions-contract.mjs
           node --test tests/patch-piweb-live-models-contract.mjs
           node --test tests/piweb-service-tier-contract.mjs
+          node --test tests/piweb-thinking-preference.mjs
           node --test tests/codex-overload-retry.mjs
           node tests/bridge-5xx-retry-e2e.mjs
           node tests/pi-pretool-contract.mjs --static

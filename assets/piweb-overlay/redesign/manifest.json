@@ -369,9 +369,13 @@
       "baseSha": "b044e35f031d5572df9e9a99b2fcbc02be185ccd00ed7ea4b1726cb2aedb525b",
       "sha": "b936e2cdb863f5dcbace5fd93e4fcebc8834f25ebbec3913b1e538aa31b811a6"
     },
+    "lib/thinking-preference.mjs": {
+      "baseSha": null,
+      "sha": "afbe8bcfea963e0e6684462714ebaa42814fd8ae1d8541c5850d8041116e5863"
+    },
     "hooks/useAgentSession.ts": {
       "baseSha": "a567bb09aff1749ed1b24f9f59f07e50eb461ae8281c1304e00030c69aab3d37",
-      "sha": "91c6f3f11dbd0a13caf8da0eebe1bc078e3fda1d845c64e004959fcfd031a8df"
+      "sha": "9a8411336898f24c947cb042a055b2aeb54b35aacabb9c98daca8800e3c098f1"
     },
     "hooks/useI18n.tsx": {
       "baseSha": "6d6369843895f6a87dc1d990b5fda1566c7b9d6e3b2edaa26d25d3675d66d9d6",
