@@ -7,7 +7,7 @@
     "lib/portable-tool-intent.mjs": "674bfe0a02d4dd5ebf5ead4ed6d4b83ce165015770f88c571e9bfea971001565",
     "app/cetus-craft.css": "4fa881a4f5285301aa4a5eb16cc95b132063d4c8b437aaf3c29565ce64244372",
     "app/layout.tsx": "498673a4475b86b3ebb16d11b4aab65821d0b7ad9a24a5348d54b95056a28eee",
-    "lib/rpc-manager.ts": "057a4fa5a501c75ed0ebf3245482f36dfaf1bf020b58d69b790992f58af469cc",
+    "lib/rpc-manager.ts": "021b43c6f9808eac97ec0fb812e4ac31078b0ca6325e37e0220a822bcc85d5a5",
     "lib/session-reader.ts": "977b00b9ec67e3e74c02452c1e9cf54dd38cb33985c1664807f519fa72732f9b",
     "components/desktop-transcript/ToolRow.tsx": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
     "public/licenses/pi-desktop/source/ToolRow.tsx.txt": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
