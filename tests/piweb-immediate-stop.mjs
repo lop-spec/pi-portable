@@ -24,7 +24,7 @@ test('busy model/effort selections are deferred and applied before the next prom
  assert.match(rpc,/event: "pi-agent-stop"/);assert.match(hook,/stopToken, stopSource/);
  const keyboard=files.get('hooks/useKeyboardShortcuts.ts');assert.match(keyboard,/shouldStopOnGlobalEscape\(e\)/);assert.match(keyboard,/globalAbortHandler === handler/);
  const chat=files.get('components/ChatWindow.tsx');assert.match(chat,/useEffect\(\(\) => registerAbortHandler\(sessionBusy/);assert.match(chat,/handleAbort\("keyboard-global"\)/);
- assert.match(rpc, /const sessionThinkingLevel = this\.inner\.agent\.state\.thinkingLevel/);
+ assert.match(rpc, /const sessionThinkingLevel = this\.inner\.agent\.state\?\.thinkingLevel/);
 });
 
 test('actual global Esc handler respects a dismissed panel and unregisters stale sessions',()=>{
