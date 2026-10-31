@@ -1,7 +1,7 @@
 {
   "stage": "craft-transcript-after-cetus",
   "files": {
-    "components/ChatWindow.tsx": "6bf872552c969eed499cf9dd39c5496ee80dd6f22c0cd832d41b7a922a723d35",
+    "components/ChatWindow.tsx": "9171eefd10beab0fc6679dac314e05a3d23659ce3b2a237db4cc0db61aa552ff",
     "lib/session-reader.ts": "eaf4706055a056a8d6007336836dc3ae3e31939fe14fb7a0edeb8248f74e05ba",
     "components/PortableProcessTimeline.tsx": "6fb988db0ea8a1c16220e100e368043df4710e089a842ec23cc91bbd8f81efd9",
     "lib/craft-transcript-model.mjs": "5433f801830547f777330f7ac6d2816198a6b46b452e3ef3813c923cabba85de",

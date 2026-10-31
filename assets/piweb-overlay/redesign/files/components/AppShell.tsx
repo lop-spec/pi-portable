@@ -64,7 +64,7 @@ import {
 } from "@/lib/panel-layout";
 import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
 import type { ProjectTrustStatus } from "@/lib/api-types";
-import type { ChatInputHandle } from "./ChatInput";
+import type { AttachedImage, ChatInputHandle, ImageTaskStatus } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { FileViewerState } from "@/lib/file-viewer-state";
 import type { ToolEntry } from "@/lib/tool-presets";
@@ -129,6 +129,8 @@ export function AppShell() {
     if (soundEnabledRef.current) playDoneSound();
   }, [playDoneSound, soundEnabledRef]);
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  const [imageTask, setImageTask] = useState<ImageTaskStatus>({ phase: "idle" });
+  const imageTaskBusyRef = useRef(false);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   // Latest catalogue for callbacks that only look a row up (hydrateSelectedSession),
   // so they stay stable instead of re-binding on every list refresh.
@@ -855,8 +857,49 @@ export function AppShell() {
       handleSelectSession(data.info);
     } catch (error) {
       console.error("[pi-web] failed to open session:", error instanceof Error ? error.message : error);
+      setImageTask((current) => current.sessionId === sessionId
+        ? { ...current, error: translate("chat.imageTask.openFailed") } : current);
     }
-  }, [handleSelectSession, sessionCatalog]);
+  }, [handleSelectSession, sessionCatalog, translate]);
+
+  // A picture always gets a fresh project session; never reuse or promote the
+  // currently selected chat. A lost response may mean it was already accepted.
+  const handleImageSend = useCallback(async (message: string, images?: AttachedImage[]) => {
+    if (imageTaskBusyRef.current || !message.trim()) return;
+    imageTaskBusyRef.current = true;
+    let sessionId: string | undefined;
+    let dispatched = false;
+    setImageTask({ phase: "preparing" });
+    try {
+      const routingResponse = await fetch("/api/project-routing", { cache: "no-store" });
+      const routing = await routingResponse.json() as { projects?: { name?: string; root?: string }[]; error?: string };
+      if (!routingResponse.ok) throw new Error(routing.error || `HTTP ${routingResponse.status}`);
+      const matches = (routing.projects ?? []).filter((project) => project.name === "生活图文");
+      if (matches.length !== 1 || typeof matches[0].root !== "string" || !matches[0].root.trim()) throw new Error("未找到唯一的生活图文项目");
+      const createdResponse = await fetch("/api/agent/new", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "ensure_session", cwd: matches[0].root }),
+      });
+      const created = await createdResponse.json() as { success?: boolean; sessionId?: string; error?: string };
+      if (!createdResponse.ok || !created.success || !created.sessionId) throw new Error(created.error || `HTTP ${createdResponse.status}`);
+      sessionId = created.sessionId;
+      setImageTask({ phase: "running", sessionId });
+      dispatched = true;
+      const result = await sendAgentCommand<{ imageSuccess?: boolean }>(sessionId, {
+        type: "codex_image", message,
+        ...(images?.length ? { images: images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })) } : {}),
+      });
+      setImageTask({ phase: result?.imageSuccess === true ? "done" : "uncertain", sessionId });
+      if (result?.imageSuccess === true) playDoneSound();
+    } catch (error) {
+      setImageTask(dispatched
+        ? { phase: "uncertain", sessionId }
+        : { phase: "failed", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      imageTaskBusyRef.current = false;
+      setRefreshKey((key) => key + 1);
+    }
+  }, [playDoneSound]);
 
   // Called by ChatWindow when a new session gets its real id from pi
   const handleSessionCreated = useCallback((session: SessionInfo, sourceDraftKey: string) => {
@@ -2060,6 +2103,9 @@ export function AppShell() {
               onAttentionNeeded={handleAttentionNeeded}
               onSessionCreated={handleSessionCreated}
               onSessionForked={handleSessionForked}
+              imageTask={imageTask}
+              onImageSend={handleImageSend}
+              onImageSessionOpen={handleOpenSession}
               modelsRefreshKey={modelsRefreshKey}
               chatInputRef={chatInputRef}
               onBranchDataChange={handleBranchDataChange}

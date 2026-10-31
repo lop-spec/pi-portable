@@ -4,12 +4,16 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = path.join(repo, 'assets/pi-async-compaction');
+const source = process.env.PI_ASYNC_COMPACTION_SOURCE || path.join(repo, 'assets/pi-async-compaction');
+if (!path.isAbsolute(source)) throw Error('Absolute extension source directory required');
 const agent = process.argv[2] || process.env.PI_CODING_AGENT_DIR;
 if (!agent || !path.isAbsolute(agent)) throw Error('Absolute managed agent directory required');
 const manifest = JSON.parse(fs.readFileSync(path.join(source, 'upstream-integrity.json'), 'utf8'));
-const files = ['index.ts', 'config.json', 'package.json', 'README.md', 'upstream-integrity.json', ...Object.keys(manifest.sha256).map(f => `upstream/${f}`)];
+const files = ['index.ts', 'compaction-only.ts', 'cached-summary.ts', 'reasoning-context.ts', 'config.json', 'package.json', 'README.md', 'upstream-integrity.json', ...Object.keys(manifest.sha256).map(f => `upstream/${f}`)];
 const sha = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+for (const [file, patch] of Object.entries(manifest.localPatches || {})) {
+  if (!manifest.sha256[file] || !/^[a-f0-9]{64}$/.test(patch.baseSha256 || '') || patch.baseSha256 === manifest.sha256[file] || !patch.reason) throw Error('Invalid local upstream patch declaration: ' + file);
+}
 for (const [file, hash] of Object.entries(manifest.sha256)) if (sha(path.join(source, 'upstream', file)) !== hash) throw Error('Unreviewed upstream content: ' + file);
 const target = path.join(agent, 'extensions/lop-async-compaction');
 if (fs.existsSync(target)) {

@@ -28,8 +28,10 @@ function shouldForceApplyReadyCompaction(ctx: ExtensionContext, deps: StartAsync
 	if (!ctx.signal || ctx.signal.aborted) return false;
 
 	const usage = ctx.getContextUsage();
-	if (!usage || usage.tokens === null || usage.contextWindow <= 0) return false;
-
+	if (!usage || usage.tokens === null) return false;
+	// A downstream caller may use one absolute token watermark with unknown capacity.
+	if (deps.getForceThreshold) return usage.tokens >= deps.getForceThreshold();
+	if (usage.contextWindow <= 0) return false;
 	return usage.tokens > Math.floor(usage.contextWindow * deps.getStartRatio());
 }
 
@@ -92,6 +94,7 @@ interface StartAsyncJobDependencies {
 	) => Promise<CompactionResult>;
 	readonly getCompactionSettings: (ctx: ExtensionContext) => ResolvedCompactionSettings;
 	readonly getStartRatio: () => number;
+	readonly getForceThreshold?: () => number;
 	readonly getTimeoutMs: () => number;
 	readonly isEnabled: () => boolean;
 	readonly setCliStatus: (ctx: ExtensionContext, statusKey: string, text: string | undefined) => void;

@@ -4,7 +4,7 @@ import test from "node:test";
 
 const source = await readFile(new URL("./ChatInput.tsx", import.meta.url), "utf8");
 const session = await readFile(new URL("../hooks/useAgentSession.ts", import.meta.url), "utf8");
-const thinkingControl = source.slice(source.indexOf("{onThinkingLevelChange && ("));
+const thinkingControl = source.slice(source.indexOf("{!imageMode && onThinkingLevelChange && ("));
 
 test("keeps one thinking control and disables it while the session is busy", () => {
   assert.doesNotMatch(source, /isStreaming && onThinkingLevelChange/);

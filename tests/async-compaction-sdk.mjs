@@ -56,7 +56,7 @@ try {
     assert.equal(captured.length, Number(history) + Number(prefix), label + ': no extra model calls');
     assert.equal(captured.length, baseline.length);
     for (let i = 0; i < captured.length; i++) {
-      assert.equal(captured[i].context.systemPrompt, baseline[i].context.systemPrompt + '\n\n' + mod.SUMMARY_INSTRUCTIONS);
+      assert.equal(captured[i].context.systemPrompt, [baseline[i].context.systemPrompt, mod.SUMMARY_INSTRUCTIONS].filter(Boolean).join('\n\n'));
       // Contract/delivery checks only: deterministic streams cannot prove model compliance.
       for (const clause of [
         'omitted content does not mean the read failed or was truncated',
@@ -74,26 +74,30 @@ try {
     assert.deepEqual(scoped, native, label + ': native result/boundary/file tracking unchanged');
     console.log('PASS scoped summary policy: ' + label);
   }
-  for (const { forceActive, switchPhase } of [
+  for (const { forceActive, switchPhase, requestMode = false } of [
     { forceActive: false }, { forceActive: true },
     { forceActive: false, switchPhase: 'pending' }, { forceActive: true, switchPhase: 'pending' },
-    { forceActive: false, switchPhase: 'ready' },
+    { forceActive: true, switchPhase: 'ready' },
+    { forceActive: false, switchPhase: 'pending', requestMode: true },
+    { forceActive: true, switchPhase: 'pending', requestMode: true },
+    { forceActive: true, switchPhase: 'ready', requestMode: true },
   ]) {
     const logs = [], events = [], summaryRequests = [];
+    const summaryLevel = requestMode ? 'high' : 'low';
     let mainCalls = 0, toolExecutions = 0, toolAborts = 0;
     const nativeSettings = { enabled: true, reserveTokens: 4096, keepRecentTokens: 256 };
     const settingsManager = sdk.SettingsManager.inMemory({ compaction: nativeSettings, retry: { enabled: false }, defaultThinkingLevel: 'high' });
     const beforeSettings = JSON.stringify(settingsManager.getCompactionSettings());
-    const sessionManager = sdk.SessionManager.create(temp, path.join(temp, `${forceActive ? 'active' : 'idle'}-${switchPhase || 'unchanged'}`));
+    const sessionManager = sdk.SessionManager.create(temp, path.join(temp, `${requestMode ? 'request' : 'fixed'}-${forceActive ? 'active' : 'idle'}-${switchPhase || 'unchanged'}`));
     for (let n = 0; n < 6; n++) {
       sessionManager.appendMessage({ role: 'user', content: `Completed request ${n}: ` + 'historical context '.repeat(200), timestamp: Date.now() });
       sessionManager.appendMessage(msg(model, [{ type: 'text', text: `Completed result ${n}: ` + 'confirmed result '.repeat(100) }], 'stop', 5000));
     }
     const builder = async (prep, m, ctx, level, signal, compactFn) => {
       assert.equal(compactFn, mod.compactWithInstructions);
-      assert.equal(m.id, model.id); assert.equal(level, 'low');
+      assert.equal(m.id, model.id); assert.equal(level, summaryLevel);
       assert.ok(!JSON.stringify(prep).includes('native-tool-1'));
-      await delay(20);
+      await delay(forceActive ? 20 : 100);
       const originalPrep = JSON.stringify(prep);
       const result = await compactFn(prep, m, 'offline-key', undefined, 'Existing caller focus must survive.', signal, level,
         (requestModel, context, options) => {
@@ -112,7 +116,7 @@ try {
     };
     const loader = new sdk.DefaultResourceLoader({ cwd: temp, agentDir: temp, settingsManager,
       noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
-      extensionFactories: [pi => mod.install(pi, { config: mod.readConfig(), log: e => logs.push(e), build: builder, settings: () => nativeSettings })],
+      extensionFactories: [pi => mod.install(pi, { config: { ...mod.readConfig(), thinkingMode: requestMode ? 'request' : 'fixed', thinkingLevel: 'low', startTokens: 128000 }, log: e => logs.push(e), build: builder, settings: () => nativeSettings })],
       systemPromptOverride: () => 'Offline lifecycle fixture.',
     });
     await loader.reload();
@@ -121,13 +125,18 @@ try {
       customTools: [{ name: 'native_test_tool', label: 'native test', description: 'offline tool phase', parameters: { type: 'object', properties: {} },
         execute: async (_id, _params, signal) => {
           toolExecutions++;
+          const waitForTool = new Promise(resolve => {
+            const timer = setTimeout(resolve, forceActive ? 200 : 50);
+            const abort = () => { toolAborts++; clearTimeout(timer); resolve(); };
+            if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+          });
           if (switchPhase) {
             if (switchPhase === 'ready') await until(() => logs.some(e => e.event === 'ready'), 'summary ready before main switch');
             session.setThinkingLevel('medium');
             await delay(0); // let the actual SDK dispatch thinking_level_select
             assert.ok(!logs.some(e => e.event === 'invalidated'), 'main switch must retain fixed-low job');
           }
-          await new Promise(resolve => { const timer = setTimeout(resolve, forceActive ? 200 : 50); signal?.addEventListener('abort', () => { toolAborts++; clearTimeout(timer); resolve(); }, { once: true }); });
+          await waitForTool;
           return { content: [{ type: 'text', text: 'NATIVE_TOOL_RESULT_MUST_SURVIVE' }], details: {} };
         } }],
     });
@@ -136,16 +145,16 @@ try {
       mainCalls++;
       assert.equal(options.reasoning, session.thinkingLevel, 'main requests must follow the real main selection, not summary low');
       assert.ok(mainCalls <= 4, 'no unexpected continuation loop');
-      return stream(msg(m, mainCalls === 1 ? [{ type: 'toolCall', id: 'native-tool-1', name: 'native_test_tool', arguments: {} }] : [{ type: 'text', text: 'NATIVE_FINAL_MUST_SURVIVE' }], mainCalls === 1 ? 'toolUse' : 'stop', forceActive ? 128000 : 5000));
+      return stream(msg(m, mainCalls === 1 ? [{ type: 'toolCall', id: 'native-tool-1', name: 'native_test_tool', arguments: {} }] : [{ type: 'text', text: 'NATIVE_FINAL_MUST_SURVIVE' }], mainCalls === 1 ? 'toolUse' : 'stop', mainCalls === 1 ? 128000 : 5000));
     };
     await session.bindExtensions({});
     try {
       await session.prompt('Perform the native tool fixture.');
-      await until(() => sessionManager.getEntries().some(e => e.type === 'compaction'), 'native saved compaction');
+      await until(() => sessionManager.getEntries().some(e => e.type === 'compaction'), 'native saved compaction').catch(e => { console.error('SDK fixture lifecycle:', JSON.stringify(logs)); throw e; });
       if (forceActive) await until(() => sessionManager.getEntries().some(e => e.type === 'message' && e.message.role === 'user' && (e.message.content === 'continue' || e.message.content?.some?.(b => b.type === 'text' && b.text === 'continue'))), 'native continue');
       await until(() => !session.isStreaming, 'agent idle');
       assert.equal(summaryRequests.length, 2, 'native history + prefix, no additional summary calls');
-      assert.ok(summaryRequests.every(r => r.reasoning === 'low'));
+      assert.ok(summaryRequests.every(r => r.reasoning === summaryLevel));
       assert.ok(summaryRequests.some(r => r.history), 'exercise real native history summarization');
       assert.equal(new Set(summaryRequests.map(r => r.systemPrompt)).size, 1, 'same scoped system policy on both native summary branches');
       assert.ok(summaryRequests.some(r => !r.history), 'exercise real native split-turn prefix summarization');
@@ -153,14 +162,16 @@ try {
       assert.equal(session.thinkingLevel, switchPhase ? 'medium' : 'high');
       assert.equal(logs.filter(e => e.event === 'started').length, 1, 'main switch must not restart summary');
       assert.ok(!logs.some(e => e.event === 'invalidated' || e.event === 'native-fallback'));
-      assert.equal(sessionManager.getEntries().filter(e => e.type === 'custom' && e.customType === mod.FIRST_JOB_MARKER).length, 1);
       assert.equal(sessionManager.getEntries().filter(e => e.type === 'compaction').length, 1);
+      const entry = sessionManager.getEntries().find(e => e.type === 'compaction');
+      assert.equal(entry.details.summaryThinkingLevel, summaryLevel, 'persist the actual frozen summary level');
+      assert.equal(entry.details.asyncPrefixCompaction.thinkingLevel, 'high', 'persist the original main snapshot level');
       assert.equal(toolExecutions, 1);
       const rebuilt = JSON.stringify(sessionManager.buildSessionContext().messages);
       assert.ok(rebuilt.includes('NATIVE_TOOL_RESULT_MUST_SURVIVE'));
       if (forceActive) assert.equal(toolAborts, 1); else assert.equal(toolAborts, 0);
       assert.ok(!logs.some(e => e.event === 'failed'));
-      console.log(`PASS native SDK ${forceActive ? 'abort/compact/continue' : 'idle apply'}: mainCalls=${mainCalls} summaryRequests=${summaryRequests.length} toolExecutions=${toolExecutions} toolAborts=${toolAborts} main=${session.thinkingLevel} switch=${switchPhase || 'none'} summary=low saved=1`);
+      console.log(`PASS native SDK ${forceActive ? 'abort/compact/continue' : 'idle apply'}: mainCalls=${mainCalls} summaryRequests=${summaryRequests.length} toolExecutions=${toolExecutions} toolAborts=${toolAborts} main=${session.thinkingLevel} switch=${switchPhase || 'none'} summary=${summaryLevel} mode=${requestMode ? 'request' : 'fixed'} saved=1`);
     } finally { session.dispose(); }
   }
   console.log('Native SDK regression passed; network/model requests=0. Test session files retained at ' + temp);

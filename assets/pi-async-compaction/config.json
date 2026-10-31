@@ -1,21 +1,18 @@
 {
   "enabled": true,
-  "startTokens": 128000,
-  "thinkingLevel": "low",
+  "startTokens": 800000,
+  "thinkingLevel": "high",
+  "thinkingMode": "request",
+  "cachedSummary": true,
   "timeoutMs": 300000,
-  "firstToolCompaction": true,
   "providers": {
-    "pi-chatgpt-web": {
-      "summaryModel": "chatgpt-web-instant",
-      "thinkingLevel": "high",
-      "startTokens": 400000,
-      "firstToolCompaction": false
-    },
-    "pi-qwen-web": {
-      "summaryModel": "qwen-web-max",
-      "thinkingLevel": "high",
-      "startTokens": 240000,
-      "firstToolCompaction": false
-    }
+    "pi-chatgpt-web": { "summaryModel": "chatgpt-web-instant", "thinkingLevel": "high" },
+    "pi-qwen-web": { "summaryModel": "qwen-web-max", "thinkingLevel": "high" },
+    "pi-mimo-web": { "summaryModel": "mimo-web-pro", "thinkingLevel": "high" },
+    "pi-gemini-web": { "summaryModel": "gemini-web-3.8-flash", "thinkingLevel": "high" },
+    "pi-kimi-web": { "summaryModel": "kimi-web-instant", "thinkingLevel": "high" },
+    "pi-stepfun-web": { "summaryModel": "stepfun-web-3.7-flash", "thinkingLevel": "high" },
+    "pi-deepseek-web": { "summaryModel": "deepseek-web-chat", "thinkingLevel": "high" },
+    "pi-zai-web": { "summaryModel": "zai-web-glm-5.3-flash", "thinkingLevel": "high" }
   }
 }

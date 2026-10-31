@@ -15,7 +15,7 @@ import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-fi
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { MessageView } from "./MessageView";
 import { MarkdownBody } from "./MarkdownBody";
-import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import { ChatInput, type AttachedImage, type ChatInputHandle, type ImageTaskStatus } from "./ChatInput";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
 import { useI18n } from "@/hooks/useI18n";
@@ -52,6 +52,9 @@ interface Props {
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
   onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
   onSessionForked?: (newSessionId: string) => void;
+  imageTask?: ImageTaskStatus;
+  onImageSend?: (message: string, images?: AttachedImage[]) => void;
+  onImageSessionOpen?: (sessionId: string) => void;
   modelsRefreshKey?: number;
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
@@ -514,7 +517,7 @@ function findScrollAnchorChild(content: HTMLElement, viewportTop: number) {
 // Scrolling up only starts a history page within this distance of the top.
 const HISTORY_PREFETCH_PX = 1200;
 
-function ChatWindowView({ session, searchTarget: externalSearchTarget, onSearchTargetHandled: externalSearchHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+function ChatWindowView({ session, searchTarget: externalSearchTarget, onSearchTargetHandled: externalSearchHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, imageTask, onImageSend, onImageSessionOpen, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const [nodeTarget, setNodeTarget] = useState<Props['searchTarget']>(null);
   const [nodeNavigationError, setNodeNavigationError] = useState("");
   const searchTarget = nodeTarget ?? externalSearchTarget;
@@ -1463,6 +1466,9 @@ function ChatWindowView({ session, searchTarget: externalSearchTarget, onSearchT
     <ChatInput
       ref={chatInputRef}
       onSend={handleSend}
+      onImageSend={onImageSend}
+      imageTask={imageTask}
+      onImageSessionOpen={onImageSessionOpen}
       onAbort={handleAbort}
       onSteer={agentRunning ? handleSteer : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
@@ -1504,7 +1510,7 @@ function ChatWindowView({ session, searchTarget: externalSearchTarget, onSearchT
       draftKey={session?.id ?? newSessionDraftKey ?? undefined}
       cwd={session?.cwd ?? newSessionCwd}
     />
-  ), [chatInputRef, handleSend, handleAbort, agentRunning, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, sessionBusy, loading, followupStatus, displayModelValue, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, handleModelChange, modelSwitching, session, isNew, handleCompact, handleAbortCompaction, isCompacting, compactError, compactResult, toolPreset, handleToolPresetChange, thinkingLevel, isAutoThinkingSelection, handleThinkingLevelChange, availableThinkingLevels, currentThinkingLevelMap, retryInfo, queuedMessages, inputHistory, handleRecallQueue, slashCommands, slashCommandsLoading, loadSlashCommands, handleBuiltinSlashCommand, soundEnabled, onSoundToggle, unlockAudio, newSessionDraftKey, newSessionCwd]);
+  ), [chatInputRef, handleSend, onImageSend, imageTask, onImageSessionOpen, handleAbort, agentRunning, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, sessionBusy, loading, followupStatus, displayModelValue, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, handleModelChange, modelSwitching, session, isNew, handleCompact, handleAbortCompaction, isCompacting, compactError, compactResult, toolPreset, handleToolPresetChange, thinkingLevel, isAutoThinkingSelection, handleThinkingLevelChange, availableThinkingLevels, currentThinkingLevelMap, retryInfo, queuedMessages, inputHistory, handleRecallQueue, slashCommands, slashCommandsLoading, loadSlashCommands, handleBuiltinSlashCommand, soundEnabled, onSoundToggle, unlockAudio, newSessionDraftKey, newSessionCwd]);
 
   // Keep the composer and layout mounted while the cold history loads.
   // Sending stays disabled until the authoritative response arrives.

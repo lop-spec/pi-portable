@@ -235,6 +235,19 @@ jobs:
           node -e "const p=require('./stage/app/node_modules/node-pty');if(typeof p.spawn !== 'function')throw new Error('terminal native module unavailable');console.log('terminal native module loaded')"
           if ($LASTEXITCODE -ne 0) { throw "terminal native prebuild load failed" }
 
+      - name: Verify and package single-watermark runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          node tools/build-single-watermark-asset.mjs stage/app single-watermark-asset single-watermark-backups
+          node tests/single-watermark-asset.mjs stage/app single-watermark-asset single-watermark-backups
+          $sdk = node --input-type=module -e "import { resolveSdk } from './tools/patch-pi-native-policy.mjs'; console.log(resolveSdk('stage/app/node_modules/@agegr/pi-web'))"
+          if (-not (Test-Path "$sdk/package.json")) { throw "Cannot locate staged Pi SDK" }
+          node tests/run-single-watermark-ci.mjs "$sdk" (Resolve-Path upstream) (Resolve-Path assets/pi-async-compaction)
+          Compress-Archive -Path single-watermark-asset -DestinationPath single-watermark-asset.zip
+          (Get-FileHash single-watermark-asset.zip -Algorithm SHA256).Hash | Set-Content single-watermark-asset.zip.sha256
+
       - name: Verify real Pi tool isolation (no model calls)
         shell: pwsh
         run: |
@@ -341,6 +354,8 @@ jobs:
             windows-silent-exec-host.exe.sha256
             pi-web-upstream.tgz
             pi-web-upstream.tgz.sha256
+            single-watermark-asset.zip
+            single-watermark-asset.zip.sha256
 
       - name: Publish release (tag only)
         if: github.ref_type == 'tag'
@@ -353,4 +368,6 @@ jobs:
             windows-silent-exec-host.exe.sha256
             pi-web-upstream.tgz
             pi-web-upstream.tgz.sha256
+            single-watermark-asset.zip
+            single-watermark-asset.zip.sha256
           generate_release_notes: true

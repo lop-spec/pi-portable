@@ -13,7 +13,8 @@ const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
 const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile } = await jiti.import("./ChatInput.tsx");
 const { ModelSelector } = await jiti.import("./ModelSelector.tsx");
-const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store.ts");
+// Match ChatInput's import so Windows jiti resolves the same draft-store singleton.
+const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
 test("preserves pasted HTML links as Markdown without changing plain text layout", () => {
@@ -70,13 +71,16 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
     ["available built-in commands take priority", { altKey: true }, { slashMenuOpen: true, slashQuery: "copy", value: "/copy", displayedSlashCommands: [{ name: "copy", source: "builtin", availableWhileStreaming: true }] }, "send"],
     ["file completion takes priority", { altKey: true }, { atMenuOpen: true, atQuery: {} }, "file"],
     ["history selection takes priority", { altKey: true }, { historyMenuOpen: true }, "history"],
+    ["image mode bypasses streaming queue", { altKey: true }, { imageMode: true }, "send"],
+    ["image mode bypasses slash menu", {}, { imageMode: true, slashMenuOpen: true, slashQuery: "help" }, "send"],
+    ["image mode bypasses file completion", {}, { imageMode: true, atMenuOpen: true, atQuery: {} }, "send"],
   ];
   for (const [name, keys, state, expected] of cases) {
     let action = "native";
     const handler = script.runInNewContext({
       Date: { now: () => 1000 },
       COMPOSITION_END_ENTER_GRACE_MS: 100,
-      isMobile: false, isStreaming: true,
+      isMobile: false, isStreaming: true, imageMode: false,
       isComposingRef: { current: false }, lastCompositionEndAtRef: { current: 0 },
       historyMenuOpen: false, inputHistory: ["previous"], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [{}], slashActiveIndex: 0,
@@ -116,7 +120,7 @@ test("file mention arrows wrap around the match list", () => {
     const handler = script.runInNewContext({
       Date: { now: () => 1000 },
       COMPOSITION_END_ENTER_GRACE_MS: 100,
-      isMobile: false, isStreaming: false,
+      isMobile: false, isStreaming: false, imageMode: false,
       isComposingRef: { current: false }, lastCompositionEndAtRef: { current: 0 },
       historyMenuOpen: false, inputHistory: [], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [], slashActiveIndex: 0,
@@ -157,6 +161,27 @@ test("cycleListIndex wraps in both directions", () => {
   assert.equal(cycleListIndex(0, 1, 1), 0);
   assert.equal(cycleListIndex(4, 0, 1), 0);
   assert.equal(cycleListIndex(-1, 4, 1), 0);
+});
+
+test("removes the compact and sound buttons without removing attachment or compaction stop", () => {
+  const render = (isCompacting) => renderToStaticMarkup(
+    React.createElement(I18nProvider, null, React.createElement(ChatInput, {
+      onSend() {}, onImageSend() {}, onAbort() {}, onCompact() {}, onAbortCompaction() {},
+      onSoundToggle() {}, soundEnabled: true, isStreaming: false, isCompacting,
+      onToolPresetChange() {},
+    })),
+  );
+  const idle = render(false);
+  assert.match(idle, /aria-label="Create image"/);
+  assert.match(idle, /aria-label="Attach image"/);
+  assert.ok(idle.indexOf('aria-label="Create image"') < idle.indexOf('aria-label="Attach image"'));
+  assert.match(idle, /aria-label="Change tool preset"/);
+  assert.doesNotMatch(idle, /Compact context|completion sound|Stop compaction/);
+  const compacting = render(true);
+  assert.match(compacting, /aria-label="Stop compaction"/);
+  assert.doesNotMatch(compacting, /Compact context|completion sound/);
+  const css = readFileSync(new URL("../app/redesign-chrome.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /\.pw-composer-wrap:not\(\.is-mobile\) \.pw-composer-extras\s*\{\s*margin-left:\s*2em/);
 });
 
 test("shows the follow-up shortcut in the button tooltip", () => {
@@ -689,6 +714,7 @@ test("renders image warnings for known text-only defaults without an explicit mo
         ),
       );
 
+      assert.match(html, /Describe this image/);
       assert.match(html, /<img/);
       assert.equal(html.includes("Images may not be sent"), warningExpected, `default model: ${modelId}`);
       if (warningExpected) {

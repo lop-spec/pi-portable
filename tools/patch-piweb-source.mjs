@@ -25,6 +25,7 @@ import { integrateDesktopTranscript } from './patch-piweb-desktop-transcript.mjs
 import { integrateFileContext } from './patch-piweb-file-context.mjs';
 import { integrateCetusCraft } from './patch-piweb-cetus-craft.mjs';
 import { integrateCraftTranscript } from './patch-piweb-craft-transcript.mjs';
+import { integrateSingleWatermark } from './patch-piweb-single-watermark.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -302,7 +303,7 @@ export function integrate(getFile) {
   const toolStart = get(tools).indexOf('export function getPreferredToolPreset(');
   const toolEnd = get(tools).indexOf('\nexport function setPreferredToolPreset', toolStart);
   change(tools, get(tools).slice(toolStart, toolEnd), 'export function getPreferredToolPreset(): ToolPreset { return "full"; }\n');
-  change('hooks/useAudio.ts', '    if (typeof window === "undefined") return true;\n    const stored = localStorage.getItem("pi-sound-enabled");\n    return stored === null ? true : stored === "true";', '    return false;');
+  change('hooks/useAudio.ts', '    if (typeof window === "undefined") return true;\n    const stored = localStorage.getItem("pi-sound-enabled");\n    return stored === null ? true : stored === "true";', '    // Keep the saved sound preference; removing the button must not override it.\n    if (typeof window === "undefined") return true;\n    const stored = localStorage.getItem("pi-sound-enabled");\n    return stored === null ? true : stored === "true";');
 
   prepend(chat, 'import { PortableNodes } from "./PortableNodes";\nimport { PortableScrollBottom } from "./PortableControls";\n');
   change(chat, 'export function ChatWindow({ session, searchTarget, onSearchTargetHandled,', 'export function ChatWindow({ session, searchTarget: externalSearchTarget, onSearchTargetHandled: externalSearchHandled,');
@@ -364,6 +365,7 @@ export function integrate(getFile) {
   // Whole-file templates of the 2026-10 front-end rewrite go last: their pinned bases are the output above.
   integrateRedesign({ get, set });
   integrateHistory({ get, set, change, prepend, template });
+  integrateSingleWatermark({ change });
   integrateImmediateStop({ change, set, template });
   integrateToolExcerpts({ get, set, change, prepend, template });
   integrateAskBack({ change });
@@ -375,6 +377,36 @@ export function integrate(getFile) {
           : message,
         streamingBehavior: behavior,`);
   integrateProjectTree({ get, set, change, prepend, template });
+  // Image generation never falls through to prompt processing or a chat-model turn.
+  set('lib/portable-image-dispatch.ts', template('portable-image-dispatch.ts'));
+  prepend('lib/rpc-manager.ts', 'import { dispatchPortableImage } from "@/lib/portable-image-dispatch";\n');
+  change('lib/rpc-manager.ts', '  private pendingPromptCount = 0;', '  private pendingPromptCount = 0;\n  private imageInFlight = false;');
+  change('lib/rpc-manager.ts', 'this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning', 'this.pendingPromptCount > 0 || this.imageInFlight || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning', 2);
+  change('lib/rpc-manager.ts', '    return type === "prompt"\n      || type === "steer"', '    return type === "codex_image"\n      || type === "prompt"\n      || type === "steer"');
+  change('lib/rpc-manager.ts', '    const tracksMutation = !allowedDuringReplacement;', `    if ((this.inner.sessionManager as unknown as Record<symbol, unknown>)[Symbol.for("pi.codex-imagegen.persistence-failed")] && !allowedDuringReplacement) {
+      throw new Error("会话记录保存异常，请勿继续当前会话，另开新会话。");
+    }
+    if (this.imageInFlight && !allowedDuringReplacement) {
+      throw new Error("图片正在生成，请等待结果；当前请求不能通过停止按钮取消。");
+    }
+    if (type === "codex_image") {
+      if (this.isRunning() || this.activeMutatingCommands > 0 || this.sessionReplacement) throw new Error("会话忙碌，请稍后再试");
+      this.imageInFlight = true;
+    }
+    const tracksMutation = !allowedDuringReplacement;`);
+  change('lib/rpc-manager.ts', '      if (type === "prompt" || type === "steer" || type === "follow_up") {', '      if (type === "codex_image" || type === "prompt" || type === "steer" || type === "follow_up") {');
+  change('lib/rpc-manager.ts', '      switch (type) {\n      case "prompt": {', `      switch (type) {
+      case "codex_image":
+        return await dispatchPortableImage(this.inner, command.message, command.images);
+      case "prompt": {`);
+  change('lib/rpc-manager.ts', '          isPromptRunning: this.pendingPromptCount > 0,', '          isPromptRunning: this.pendingPromptCount > 0 || this.imageInFlight,');
+  change('lib/rpc-manager.ts', '      if (tracksMutation) this.activeMutatingCommands = Math.max(0, this.activeMutatingCommands - 1);', `      if (tracksMutation) this.activeMutatingCommands = Math.max(0, this.activeMutatingCommands - 1);
+      if (type === "codex_image") {
+        this.imageInFlight = false;
+        invalidateSessionListCache();
+        if (this._alive) this.resetIdleTimer();
+        this.emit({ type: "prompt_done" });
+      }`);
   integrateDesktopTranscript({ get, set, change, template });
   integrateFileContext({ get, set, change, prepend, template });
   integrateCetusCraft({ get, set, change, prepend, template });

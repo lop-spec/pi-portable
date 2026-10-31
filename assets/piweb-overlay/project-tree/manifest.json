@@ -16,7 +16,7 @@
     "app/api/project-routing/route.ts": "151e621b1e0ca0a34f6f2e93d3eef02eaf9138e9a284ad0bfda361e9163ced2d",
     "app/redesign-sidebar.css": "9b5d7f5aa690d9c618e91b2b4008872bde23bc32f076b9310d554863efbdc969",
     "components/SessionSidebar.tsx": "9a4c5002b87fee6371adbcbfe18b6b2a18ee92adc0146baa1ebcee2f6bf61244",
-    "components/AppShell.tsx": "d75766fcf32009623a0251223686833da3416cc8d24514f6e0072e6987829aac",
+    "components/AppShell.tsx": "84578a55e22c8a515d6fdd4f01a800ad2bced3cad974e42f2ad3c36e7b76ffba",
     "app/api/default-cwd/route.ts": "5f8a2aef732d3610df6379457fc415e6ab43268660a3c8a2256b4d3375e99009",
     "app/api/sessions/[id]/move/route.ts": "86191080a5434c2cfe9bb53afb5a013f0cdd8c39fb50168beb2ce124da79c09c",
     "lib/session-reader.ts": "e882f2dc8a89e3b07503a6871c1e4e285da956933b0981002cd0dd5e3b150746",
@@ -24,6 +24,6 @@
     "components/PortableContextActions.tsx": "bb32e6884bbf4d5bc873fcb3a77f4a52f16db896e253de76c448c161cf7c927d",
     "components/PortableProjects.tsx": "9ffa780d2d32de9f6f6d9656e7f417142089c8ae36b96e5e69bd7db8dba1618e",
     "components/SettingsPanel.tsx": "da3eb4dddaf879db96621d6f9769edbd88fd860127fafe38668a57c3ab0d69c5",
-    "lib/rpc-manager.ts": "515381913c4c1d8eedcb56be6d46851d7011c8dcb0001736d869d19163c4cc07"
+    "lib/rpc-manager.ts": "45ed8bde75cdd75a53ace720ca8e2721365aeff09f88a52b59a435c07c9adf18"
   }
 }

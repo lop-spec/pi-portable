@@ -246,7 +246,7 @@ test('clipboard uploads cannot escape their draft or submit before all files set
   assert.match(input, /new Map<string, number>\(\)/);
   assert.match(input, /!pasteMountedRef.current \|\| target !== pasteTargetRef.current/);
   assert.match(input, /files saved in original project, not inserted into another draft/);
-  assert.match(input, /if \(loadingHistory \|\| \(pendingPastes\.current\.get\(pasteTargetRef\.current\) \?\? 0\) > 0\) return;/);
+  assert.match(input, /if \(loadingHistory \|\| pendingImageCountRef\.current > 0 \|\| \(pendingPastes\.current\.get\(pasteTargetRef\.current\) \?\? 0\) > 0\) return;/);
   assert.match(input, /if \(\(pendingPastes\.current\.get\(pasteTargetRef\.current\) \?\? 0\) > 0\) return;/);
   assert.match(input, /busy: pending > 0/);
 });
@@ -334,5 +334,6 @@ test('turn process uses Craft work log for history and live without independent 
   assert.ok(left > 0 && right > left && selector > right, 'model selector must be in the right group');
   assert.equal(input.split('<ModelSelector').length - 1, 1);
   assert.ok(input.indexOf('<PortableFollowup') > left && input.indexOf('<PortableFollowup') < right, 'follow-up stays left');
-  assert.ok(selector < input.indexOf('{onThinkingLevelChange && ('), 'model selector precedes the thinking level control');
+  const thinking = input.indexOf('{!imageMode && onThinkingLevelChange && (');
+  assert.ok(thinking > selector, 'model selector precedes the thinking level control');
 });

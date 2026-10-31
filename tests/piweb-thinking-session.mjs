@@ -1,9 +1,12 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {integrate} from '../tools/patch-piweb-source.mjs';
 import {readPendingThinking,savePendingThinking,clearPendingThinking} from '../assets/piweb-overlay/redesign/files/lib/thinking-preference.mjs';
-const files=integrate(n=>fs.readFileSync(new URL('../upstream/'+n,import.meta.url),'utf8'));
+const source=process.env.PIWEB_SOURCE || fileURLToPath(new URL('../upstream/',import.meta.url));
+const files=integrate(n=>fs.readFileSync(path.join(source,n),'utf8'));
 const hook=files.get('hooks/useAgentSession.ts');
 function handler(source,state) {
  let body=source.slice(source.indexOf('const handleThinkingLevelChange = useCallback(')+'const handleThinkingLevelChange = useCallback('.length);

@@ -2,9 +2,9 @@
   "stage": "stop-safety-after-craft",
   "files": {
     "hooks/useAgentSession.ts": "e1dc95e76531aa68b06836567681847e2579b294f43a782b1ceb595d001df023",
-    "lib/rpc-manager.ts": "336459f765fbc5196d1d974583dd4ae16772b572015b4a93f6f54466dc9c0974",
-    "components/ChatInput.tsx": "b9c8ad400b6a015d3ef8c7487fa8315c8d411ed689fa926f2f0299170a34e42e",
-    "components/ChatWindow.tsx": "c75f5e34001bfa2d086d049e37975569b8af7f694b1c0d67228530ba49111133",
+    "lib/rpc-manager.ts": "d73d969127862a98fdefadcbb2765351a6dc23d7b5b4778cc6c3457abc048a51",
+    "components/ChatInput.tsx": "2f7a65601b68d9664cd7678fdc4c193dbba635344b3d33a9255a4e5e96fbfa22",
+    "components/ChatWindow.tsx": "77188f95f63269c4659f98c0b42cde528bdd0f1f23a009fcdca891986233ee9b",
     "hooks/useKeyboardShortcuts.ts": "dcf17db70e15432576f60224d6d36c4d08e9653b82730666a788b012ca99a638",
     "lib/portable-stop-guard.ts": "dc1040527ea82a8c5da8d230e2867af1e9f6fb945e8de3c07539f608c6e00786"
   }

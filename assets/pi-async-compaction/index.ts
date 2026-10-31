@@ -11,9 +11,13 @@ import { getCompactionSettings, getThinkingLevel } from "./upstream/src/utils";
 import { markStale } from "./upstream/src/runtime-state";
 import { InvalidationReason } from "./upstream/src/constants";
 import type { RuntimeState } from "./upstream/src/types";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { CachedSummary, CACHED_SUMMARY_VERSION } from "./cached-summary";
+import { installReasoningContextPolicy, withReasoningContextPolicy, REASONING_CONTEXT_POLICY_VERSION } from "./reasoning-context";
+export { REASONING_CONTEXT_POLICY_VERSION };
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-export const FIRST_JOB_MARKER = "lop-async-compaction-first-job-v1";
+export const SUMMARY_THINKING_POLICY_VERSION = "request-snapshot-v1";
 export const SUMMARY_POLICY = "continuation-constraints-read-evidence-v3";
 export const SUMMARY_INSTRUCTIONS = `Aim for roughly 2,000-3,000 output tokens as a SOFT target, not a hard limit. Exceed it whenever necessary to preserve information needed to continue correctly.
 Preserve information, not repeated wording: merge duplicates and overlapping facts; condense completed history into its durable conclusions and consequences rather than replaying steps, transcripts, large examples, or copied document bodies.
@@ -28,49 +32,44 @@ Retain facts from completed work that affect current or pending work. For bulky 
  * providers without one (codex, ...) keep pi-ai's streamSimple exactly as before. */
 const providerStreams = new Map<string, typeof streamSimple>();
 export const summaryStream: typeof streamSimple = (model, context, options) =>
-  (providerStreams.get(model.provider) ?? streamSimple)(model, context, options);
+  (providerStreams.get(model.provider) ?? streamSimple)(model, context, { ...options,
+    transport: model.provider === "openai-codex" ? "auto" : "sse",
+    ...(model.provider === "openai-codex" && options?.sessionId ? { sessionId: `${options.sessionId}:summary` } : {}),
+  });
 export const compactWithInstructions: typeof compact = (...args) => {
   const delegate = args[7] ?? summaryStream;
   args[7] = (model, context, options) => delegate(model, {
     ...context,
     systemPrompt: [context.systemPrompt, SUMMARY_INSTRUCTIONS].filter(Boolean).join("\n\n"),
-  }, options);
+  }, { ...options, onPayload: withReasoningContextPolicy(model, options?.onPayload) });
   return compact(...args);
 };
 export const SUMMARY_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export interface Config {
   enabled: boolean;
+  /** Full-prefix cached summaries, with same-level native generation as the fallback. */
+  cachedSummary?: boolean;
+  /** request: freeze the captured request's level per job; omitted/fixed retains legacy settings. */
+  thinkingMode?: "request" | "fixed";
   startTokens: number;
-  /** Fixed reasoning level of every summary request; the main session's level never changes it. */
+  /** Used only by fixed mode; request mode does not downgrade to this value. */
   thinkingLevel: (typeof SUMMARY_THINKING_LEVELS)[number];
   timeoutMs: number;
-  firstToolCompaction: boolean;
-  /** Summary target by the session model's provider (lop 2026-09-27: agent models keep the
-   * defaults above; ChatGPT web-model sessions summarize with 5.6 Sol at high, since the web
-   * models have no low tier). */
-  providers?: Record<string, { summaryModel?: string; thinkingLevel?: (typeof SUMMARY_THINKING_LEVELS)[number];
-    /** lop 2026-09-27: web models start at 400k and skip the early first-tool job. */
-    startTokens?: number; firstToolCompaction?: boolean }>;
-}
-/** The thresholds that apply to a session on `provider`: its override, else the defaults. */
-export function configFor(config: Config, provider: string | undefined): Config {
-  const t = provider ? config.providers?.[provider] : undefined;
-  return t ? { ...config, startTokens: t.startTokens ?? config.startTokens, firstToolCompaction: t.firstToolCompaction ?? config.firstToolCompaction } : config;
+  /** Provider-specific summary model/level. Unsupported levels fail visibly; no downgrade. */
+  providers?: Record<string, { summaryModel?: string; thinkingLevel?: (typeof SUMMARY_THINKING_LEVELS)[number] }>;
 }
 function validProviders(p: unknown): boolean {
   if (p === undefined) return true;
   if (!p || typeof p !== "object" || Array.isArray(p)) return false;
   return Object.values(p).every(t => !!t && typeof t === "object" &&
     (t.summaryModel === undefined || (typeof t.summaryModel === "string" && t.summaryModel.length > 0)) &&
-    (t.thinkingLevel === undefined || SUMMARY_THINKING_LEVELS.includes(t.thinkingLevel)) &&
-    (t.startTokens === undefined || (Number.isSafeInteger(t.startTokens) && t.startTokens > 0)) &&
-    (t.firstToolCompaction === undefined || typeof t.firstToolCompaction === "boolean"));
+    (t.thinkingLevel === undefined || SUMMARY_THINKING_LEVELS.includes(t.thinkingLevel)));
 }
 export function parseConfig(value: unknown): Config {
   const x = value as Config;
   if (!x || typeof x.enabled !== "boolean" || !Number.isSafeInteger(x.startTokens) || x.startTokens <= 0 ||
       !SUMMARY_THINKING_LEVELS.includes(x.thinkingLevel) || !Number.isSafeInteger(x.timeoutMs) || x.timeoutMs <= 0 ||
-      typeof x.firstToolCompaction !== "boolean" || !validProviders(x.providers))
+      (x.thinkingMode !== undefined && !["request", "fixed"].includes(x.thinkingMode)) || (x.cachedSummary !== undefined && typeof x.cachedSummary !== "boolean") || !validProviders(x.providers))
     throw new Error("Invalid async compaction config; disabled rather than silently defaulting");
   return x;
 }
@@ -83,14 +82,12 @@ export function readConfig(agentDir = process.env.PI_CODING_AGENT_DIR): Config {
   const base = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
   const file = agentDir ? path.join(agentDir, INSTANCE_CONFIG) : "";
   const local = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-  return parseConfig({ ...base, ...local });
+  // The extension config owns the sole watermark; legacy instance overrides cannot introduce another one.
+  return parseConfig({ ...base, ...local, startTokens: base.startTokens });
 }
-export function startBlocker(usage: { tokens: number | null; contextWindow: number } | undefined,
-    settings: { reserveTokens: number }, config: Config, first = false): string | undefined {
-  if (!usage || usage.tokens === null || usage.contextWindow <= 0) return "context_unknown";
-  if (!first && usage.tokens < config.startTokens) return "below_threshold";
-  if (usage.tokens > usage.contextWindow - settings.reserveTokens) return "above_force_threshold";
-  return undefined;
+export function startBlocker(usage: { tokens: number | null } | undefined, config: Config): string | undefined {
+  if (!usage || usage.tokens === null) return "context_unknown";
+  return usage.tokens < config.startTokens ? "below_threshold" : undefined;
 }
 /** The active assistant tool-call message and everything after it must remain verbatim. */
 export function completedPrefix(entries: SessionEntry[], toolCallId: string): SessionEntry[] {
@@ -117,49 +114,50 @@ export function install(pi: ExtensionAPI, overrides: {
   log?: (record: Record<string, unknown>) => void;
   build?: typeof buildAsyncCompactionResult;
   settings?: typeof getCompactionSettings;
+  mainReasoningContextPolicy?: boolean;
 } = {}): void {
   const log = overrides.log ?? writeLog;
+  // Register before CachedSummary so its snapshot sees the final default scope.
+  // Lightweight sessions opt out to retain their existing main request policy.
+  if (overrides.mainReasoningContextPolicy !== false) installReasoningContextPolicy(pi, log);
   let config: Config;
   try { config = overrides.config ? parseConfig(overrides.config) : readConfig(); }
   catch (error) { log({ event: "disabled", reason: String(error) }); return; }
   const settingsFor = overrides.settings ?? getCompactionSettings;
-  const firstClaimed = new Map<string, boolean>();
   let toolCallId: string | undefined;
   let upstreamHandedOff = false;
   let context: ExtensionContext | undefined;
   let state: RuntimeState | undefined;
   let previousSkip = "";
+  let activeSummaryThinkingLevel: ThinkingLevel | undefined;
   const emit = (record: Record<string, unknown>) => log({ sessionId: context?.sessionManager.getSessionId(), ...record });
-  // Every job in this adapter runs at the configured summary level. Only rebase upstream's main-thinking
-  // validation metadata; leave the snapshot boundary, model, session, settings and result intact.
+  // Each job freezes its summary level at dispatch (request or configured mode). Rebase only
+  // upstream's current-main validation field; retain the original marker and summary result.
   function alignReadyThinking(ctx: ExtensionContext, current = state): void {
     const ready = current?.status === "ready" ? current.ready : undefined;
     if (!ready || !current || ready.sessionId !== ctx.sessionManager.getSessionId()) return;
     const thinkingLevel = getThinkingLevel(ctx.sessionManager.getBranch());
     if (ready.thinkingLevel === thinkingLevel) return;
-    current.ready = { ...ready, thinkingLevel, result: { ...ready.result, details: {
-      ...ready.result.details,
-      asyncPrefixCompaction: { ...ready.result.details.asyncPrefixCompaction, thinkingLevel },
-    } } };
-    emit({ event: "thinking-validation-aligned", reason: "fixed-summary-thinking", jobId: ready.jobId,
-      previousLevel: ready.thinkingLevel, level: thinkingLevel, summaryThinkingLevel: config.thinkingLevel });
+    current.ready = { ...ready, thinkingLevel };
+    emit({ event: "thinking-validation-aligned", reason: "summary-thinking-frozen", jobId: ready.jobId,
+      previousLevel: ready.thinkingLevel, level: thinkingLevel, summaryThinkingLevel: (ready.result.details as any)?.summaryThinkingLevel ?? activeSummaryThinkingLevel });
   }
   const skip = (reason: string) => {
     const key = `${context?.sessionManager.getSessionId()}:${reason}`;
     if (key !== previousSkip) emit({ event: "skipped", reason });
     previousSkip = key;
   };
-  function hasFirstClaim(ctx: ExtensionContext): boolean {
-    const id = ctx.sessionManager.getSessionId();
-    if (!firstClaimed.has(id)) firstClaimed.set(id, ctx.sessionManager.getEntries().some(e =>
-      e.type === "custom" && e.customType === FIRST_JOB_MARKER));
-    return firstClaimed.get(id)!;
-  }
-  const adapter = createBuiltinPiCompactionAdapter(async (preparation, model, ctx, _mainThinking, signal) => {
+  const cached = new CachedSummary(pi, SUMMARY_INSTRUCTIONS, emit, config.cachedSummary !== false);
+  const levelFor = (ctx: ExtensionContext, snapshotLevel: ThinkingLevel): ThinkingLevel => config.thinkingMode === "request"
+    ? cached.thinkingLevel(ctx) ?? snapshotLevel
+    : config.providers?.[ctx.model?.provider ?? ""]?.thinkingLevel ?? config.thinkingLevel;
+  const adapter = createBuiltinPiCompactionAdapter(async (preparation, model, ctx, mainSnapshotThinking, signal) => {
     const target = config.providers?.[model.provider];
     const summaryModel = target?.summaryModel ? ctx.modelRegistry?.find(model.provider, target.summaryModel) : model;
     if (!summaryModel) throw new Error(`Summary model ${model.provider}/${target?.summaryModel} is not registered; no fallback`);
-    const level = target?.thinkingLevel ?? config.thinkingLevel;
+    // Freeze before the first await. Main selection may change while this job is pending/ready.
+    const level = levelFor(ctx, mainSnapshotThinking);
+    activeSummaryThinkingLevel = level;
     if (!getSupportedThinkingLevels(summaryModel).includes(level)) throw new Error(`Model ${summaryModel.provider}/${summaryModel.id} does not support ${level}; no fallback`);
     const custom = ctx.modelRegistry?.getRegisteredProviderConfig?.(summaryModel.provider)?.streamSimple;
     if (custom) providerStreams.set(summaryModel.provider, custom);
@@ -167,9 +165,12 @@ export function install(pi: ExtensionAPI, overrides: {
       ...(summaryModel !== model ? { sessionModel: `${model.provider}/${model.id}` } : {}), ...(custom ? { stream: "provider" } : {}),
       tokensBefore: preparation.tokensBefore, summaryPolicy: SUMMARY_POLICY });
     emit({ event: "instructions-scope", scope: "all-async-summary-requests", historyInstructionApplied: preparation.messagesToSummarize.length > 0, turnPrefixInstructionApplied: preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0 });
-    const result = await (overrides.build ?? buildAsyncCompactionResult)(preparation, summaryModel, ctx, level, signal, compactWithInstructions);
-    emit({ event: "summary", usage: result.usage });
-    return result;
+    // Cached and native paths share this job's frozen request level.
+    const fromCache = overrides.build ? undefined : await cached.run(preparation, summaryModel, ctx, level, signal);
+    if (signal.aborted) throw new Error("Summary aborted");
+    const result = fromCache ?? await (overrides.build ?? buildAsyncCompactionResult)(preparation, summaryModel, ctx, level, signal, compactWithInstructions);
+    emit({ event: "summary", path: fromCache ? "full-prefix" : "native", thinkingLevel: level, usage: result.usage });
+    return { ...result, details: { ...result.details, summaryThinkingLevel: level } };
   });
   adapter.prepare = ({ ctx, settings }) => {
     if (!ctx.model) return undefined;
@@ -182,6 +183,7 @@ export function install(pi: ExtensionAPI, overrides: {
     const preparation = prepareAsyncCompaction(safe, settings);
     const leaf = safe[safe.length - 1];
     if (!preparation || !leaf) return undefined;
+    cached.prepare(preparation, safe, ctx);
     return { preparation, model: ctx.model, thinkingLevel: getThinkingLevel(full), snapshotLeafId: leaf.id };
   };
   function jobDeps(ctx: ExtensionContext): Dependencies {
@@ -189,7 +191,9 @@ export function install(pi: ExtensionAPI, overrides: {
       adapter,
       buildAsyncCompactionResult: overrides.build ?? buildAsyncCompactionResult,
       getCompactionSettings: settingsFor,
-      getStartRatio: () => (configFor(config, ctx.model?.provider).startTokens - 1) / (ctx.model?.contextWindow || 1),
+      // The upstream adapter accepts a token threshold directly; no simulated context window.
+      getStartRatio: () => 1,
+      getForceThreshold: () => config.startTokens,
       getTimeoutMs: () => config.timeoutMs,
       isEnabled: () => config.enabled && process.env.PI_ASYNC_PREFIX_COMPACTION !== "0",
       setCliStatus: (c, key, text) => { if (c.hasUI) c.ui.setStatus(key, text); },
@@ -198,14 +202,14 @@ export function install(pi: ExtensionAPI, overrides: {
     };
   }
   // Pinned upstream owns lifecycle, snapshot safety, native application and resume.
-  // Adapt only tool-phase triggering and main-thinking invalidation for fixed-level jobs.
+  // Adapt only tool-phase triggering and main-thinking invalidation for jobs with a frozen summary level.
   const facade = Object.create(pi) as ExtensionAPI;
   facade.on = ((event: string, handler: any) => {
     if (event === "thinking_level_select") return pi.on("thinking_level_select", (event, ctx) => {
       context = ctx;
       if (state?.status !== "pending" && state?.status !== "ready") return;
-      emit({ event: "thinking-change-retained", reason: "fixed-summary-thinking", jobId: state.jobId,
-        status: state.status, previousLevel: event.previousLevel, level: event.level, summaryThinkingLevel: config.thinkingLevel });
+      emit({ event: "thinking-change-retained", reason: "summary-thinking-frozen", jobId: state.jobId,
+        status: state.status, previousLevel: event.previousLevel, level: event.level, summaryThinkingLevel: activeSummaryThinkingLevel ?? config.thinkingLevel });
       alignReadyThinking(ctx);
     });
     if (event === "session_before_compact") return pi.on("session_before_compact", async (event, ctx) => {
@@ -218,6 +222,8 @@ export function install(pi: ExtensionAPI, overrides: {
       return result;
     });
     if (event !== "turn_end") return (pi.on as any)(event, handler);
+    // Also check completed turns (including chat-only); tool start allows background work sooner.
+    pi.on("turn_end", (event, ctx) => { context = ctx; return handler(event, ctx); });
     return pi.on("tool_execution_start", (event, ctx) => {
       context = ctx;
       toolCallId = event.toolCallId;
@@ -238,20 +244,14 @@ export function install(pi: ExtensionAPI, overrides: {
       state = current;
       alignReadyThinking(ctx, current);
       if (!config.enabled || process.env.PI_ASYNC_PREFIX_COMPACTION === "0") { skip("disabled"); return "disabled"; }
-      const effective = configFor(config, ctx.model?.provider);
-      const first = effective.firstToolCompaction && !hasFirstClaim(ctx);
       if (!options.force) {
-        const blocker = startBlocker(ctx.getContextUsage(), settingsFor(ctx), effective, first);
+        const blocker = startBlocker(ctx.getContextUsage(), config);
         if (blocker) { skip(blocker); return blocker as any; }
       }
       const outcome = startAsyncJobWithDeps(ctx, current, jobDeps(ctx), { ...options, force: true });
       if (outcome === "started") {
         previousSkip = "";
-        emit({ event: "trigger", reason: options.force ? "manual" : first ? "first-tool" : `${Math.round(effective.startTokens / 1000)}k-tool`, startTokens: effective.startTokens, contextTokens: ctx.getContextUsage()?.tokens });
-        if (!hasFirstClaim(ctx)) {
-          pi.appendEntry(FIRST_JOB_MARKER, { jobId: current.jobId, trigger: options.force ? "manual" : first ? "first-tool" : `${Math.round(effective.startTokens / 1000)}k-tool` });
-          firstClaimed.set(ctx.sessionManager.getSessionId(), true);
-        }
+        emit({ event: "trigger", reason: options.force ? "manual" : "watermark", startTokens: config.startTokens, contextTokens: ctx.getContextUsage()?.tokens });
       } else if (outcome !== "ready_reused") skip(outcome);
       return outcome;
     },
@@ -264,39 +264,48 @@ export function install(pi: ExtensionAPI, overrides: {
   pi.on("session_start", (_event, ctx) => {
     if (state && (state.status === "pending" || state.status === "ready")) markStale(state, InvalidationReason.SESSION_CHANGED);
     context = ctx;
-    emit({ event: "loaded", upstream: "0.1.8", ...config, summaryPolicy: SUMMARY_POLICY, mainThinkingInvalidatesSummary: false, nativeCompaction: settingsFor(ctx) });
+    emit({ event: "loaded", upstream: "0.1.8", ...config, cachedSummaryVersion: CACHED_SUMMARY_VERSION, summaryThinkingPolicy: SUMMARY_THINKING_POLICY_VERSION, reasoningContextPolicy: overrides.mainReasoningContextPolicy === false ? "unchanged-main" : REASONING_CONTEXT_POLICY_VERSION, summaryPolicy: SUMMARY_POLICY, mainThinkingInvalidatesSummary: false, nativeCompaction: settingsFor(ctx) });
   });
   pi.on("session_before_compact", async (event, ctx) => {
     context = ctx;
     if (upstreamHandedOff) { upstreamHandedOff = false; return undefined; }
-    const routed = event.customInstructions?.trim() ? undefined : await summarizeNatively(event, ctx);
-    if (routed) return { compaction: routed };
-    emit({ event: "native-fallback", reason: event.customInstructions?.trim() ? "custom-instructions" : "no-valid-ready-summary", nativeReason: event.reason });
+    const routed = await summarizeNatively(event, ctx);
+    if (routed) return routed;
+    emit({ event: "native-fallback", reason: "no-valid-ready-summary", nativeReason: event.reason });
     return undefined;
   });
-  /** A native compaction (threshold, overflow) of a session whose provider has a summary target
-   * summarizes with that target too (lop 2026-09-27: web models compact with 5.6 Sol high).
-   * Before, an overflow compaction ran on the session's own tier (xhigh: 135-143 s per summary).
-   * Any failure is logged and leaves Pi's own summary in charge, so compaction never blocks. */
+  /** Native threshold/overflow/manual summaries resolve the same request-level policy too.
+   * Failures preserve history and cancel this attempt rather than reverting to the main level. */
   async function summarizeNatively(event: any, ctx: ExtensionContext) {
     const model = ctx.model;
     const target = model ? config.providers?.[model.provider] : undefined;
-    if (!model || !target || (!target.summaryModel && !target.thinkingLevel) || !event.preparation) return undefined;
+    if (!model || !event.preparation) return undefined;
+    // Incomplete synthetic/legacy events cannot be summarized. Real Pi preparations carry both arrays.
+    if (!target && (!Array.isArray(event.preparation.messagesToSummarize) || !Array.isArray(event.preparation.turnPrefixMessages))) return undefined;
+    if (event.customInstructions?.trim() && !Array.isArray(event.preparation.messagesToSummarize)) return undefined;
     const started = Date.now();
     try {
-      const summaryModel = target.summaryModel ? ctx.modelRegistry?.find(model.provider, target.summaryModel) : model;
-      if (!summaryModel) throw new Error(`Summary model ${model.provider}/${target.summaryModel} is not registered`);
-      const level = target.thinkingLevel ?? config.thinkingLevel;
+      const summaryModel = target?.summaryModel ? ctx.modelRegistry?.find(model.provider, target.summaryModel) : model;
+      if (!summaryModel) throw new Error(`Summary model ${model.provider}/${target?.summaryModel} is not registered`);
+      const level = levelFor(ctx, ctx.thinkingLevel ?? getThinkingLevel(ctx.sessionManager.getBranch()));
       if (!getSupportedThinkingLevels(summaryModel).includes(level)) throw new Error(`Model ${summaryModel.provider}/${summaryModel.id} does not support ${level}`);
       const custom = ctx.modelRegistry?.getRegisteredProviderConfig?.(summaryModel.provider)?.streamSimple;
       if (custom) providerStreams.set(summaryModel.provider, custom);
       emit({ event: "native-routed-request", model: `${summaryModel.provider}/${summaryModel.id}`, thinkingLevel: level, nativeReason: event.reason, tokensBefore: event.preparation.tokensBefore, ...(custom ? { stream: "provider" } : {}) });
-      const result = await (overrides.build ?? buildAsyncCompactionResult)(event.preparation, summaryModel, ctx, level, event.signal, compactWithInstructions);
-      emit({ event: "native-routed", durationMs: Date.now() - started, usage: result.usage });
-      return result;
+      const delegate: typeof compact = event.customInstructions?.trim() ? (...args) => {
+        args[4] = event.customInstructions;
+        return compactWithInstructions(...args);
+      } : compactWithInstructions;
+      const result = await (overrides.build ?? buildAsyncCompactionResult)(event.preparation, summaryModel, ctx, level, event.signal, delegate);
+      emit({ event: "native-routed", thinkingLevel: level, durationMs: Date.now() - started, usage: result.usage });
+      return { compaction: result };
     } catch (error) {
       emit({ event: "native-routed-failed", durationMs: Date.now() - started, error: String(error).slice(0, 300) });
-      return undefined;
+      // Do not silently downgrade or fall through to a different request level.
+      if (event.signal?.aborted) return { cancel: true as const };
+      const errorMessage = "压缩摘要失败；未降档，原历史保留。请查看 async-compaction 日志。";
+      if (ctx.hasUI) ctx.ui.notify(errorMessage, "warning");
+      return { cancel: true as const, errorMessage };
     }
   }
   pi.on("session_compact", (event, ctx) => {
@@ -305,9 +314,9 @@ export function install(pi: ExtensionAPI, overrides: {
     if (details && typeof details === "object" && "asyncPrefixCompaction" in details) emit({ event: "persisted", compactionId: event.compactionEntry.id, fromExtension: event.fromExtension });
   });
   pi.registerCommand("async-compact-status", {
-    description: "Show tool-phase async compaction settings/state (no model request)",
+    description: `Tool-phase compaction status; reasoningContextPolicy=${REASONING_CONTEXT_POLICY_VERSION}; cachedSummaryVersion=${CACHED_SUMMARY_VERSION}; summaryThinkingPolicy=${SUMMARY_THINKING_POLICY_VERSION} (no model request)`,
     handler: async (_args, ctx) => {
-      const text = JSON.stringify({ ...config, summaryPolicy: SUMMARY_POLICY, mainThinkingInvalidatesSummary: false, status: state?.status ?? "idle", firstJobStarted: hasFirstClaim(ctx), nativeCompaction: settingsFor(ctx) });
+      const text = JSON.stringify({ ...config, summaryThinkingPolicy: SUMMARY_THINKING_POLICY_VERSION, activeSummaryThinkingLevel, cachedSummaryVersion: CACHED_SUMMARY_VERSION, reasoningContextPolicy: overrides.mainReasoningContextPolicy === false ? "unchanged-main" : REASONING_CONTEXT_POLICY_VERSION, summaryPolicy: SUMMARY_POLICY, mainThinkingInvalidatesSummary: false, status: state?.status ?? "idle", nativeCompaction: settingsFor(ctx) });
       if (ctx.hasUI) ctx.ui.notify(text, "info"); else console.log(text);
     },
   });

@@ -25,6 +25,12 @@ test('CI builds pinned source, fails native commands and permits app-only withou
  assert.match(workflow,/node tools\/patch-piweb-source.mjs --source upstream/);
  assert.match(workflow,/npm run build/);
  assert.match(workflow,/Move-Item \$packed\[0\].filename pi-web-upstream.tgz/);
+ const watermark = workflow.slice(workflow.indexOf('- name: Verify and package single-watermark runtime'), workflow.indexOf('- name: Verify real Pi tool isolation'));
+ assert.match(watermark,/node tools\/build-single-watermark-asset\.mjs stage\/app single-watermark-asset single-watermark-backups/);
+ assert.match(watermark,/node tests\/single-watermark-asset\.mjs/);
+ assert.match(watermark,/node tests\/run-single-watermark-ci\.mjs/);
+ assert.doesNotMatch(watermark,/inputs\.app_only/);
+ assert.equal((workflow.match(/single-watermark-asset\.zip\.sha256/g) || []).length, 3, 'hash is generated and included in artifacts and releases');
  assert.match(workflow,/Build native no-console launcher\s+if: \$\{\{ !inputs.app_only \}\}/);
  assert.doesNotMatch(workflow,/@agegr\/pi-web@latest/);
 });

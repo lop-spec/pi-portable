@@ -34,14 +34,25 @@ import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
 
 export { filterModelOptions } from "./ModelSelector";
 
+const IMAGE_DRAFT_KEY = "\0codex-image-draft";
+
 export interface AttachedImage {
   data: string;   // base64, no prefix
   mimeType: string;
   previewUrl: string; // object URL for display
 }
 
+export interface ImageTaskStatus {
+  phase: "idle" | "preparing" | "running" | "done" | "failed" | "uncertain";
+  sessionId?: string;
+  error?: string;
+}
+
 interface Props {
   onSend: (message: string, images?: AttachedImage[]) => void;
+  onImageSend?: (message: string, images?: AttachedImage[]) => void;
+  imageTask?: ImageTaskStatus;
+  onImageSessionOpen?: (sessionId: string) => void;
   onAbort: () => void;
   onSteer?: (message: string, images?: AttachedImage[]) => void;
   onFollowUp?: (message: string, images?: AttachedImage[]) => void;
@@ -252,11 +263,9 @@ const Svg = ({ children }: { children: React.ReactNode }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
 );
 const ImageIcon = () => <Svg><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="1.5" /><path d="m21 15-4.5-4.5L5 21" /></Svg>;
+const AttachIcon = () => <Svg><path d="m21 11-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-2.8-2.8l7.8-7.8" /></Svg>;
 const SlidersIcon = () => <Svg><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></Svg>;
 const WrenchIcon = () => <Svg><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z" /></Svg>;
-const ShrinkIcon = () => <Svg><path d="M4 14h6v6M20 10h-6V4M10 14l-7 7M21 3l-7 7" /></Svg>;
-const VolumeIcon = () => <Svg><path d="M11 5 6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M19 5a10 10 0 0 1 0 14" /></Svg>;
-const VolumeMuteIcon = () => <Svg><path d="M11 5 6 9H2v6h4l5 4V5z" /><path d="m22 9-6 6M16 9l6 6" /></Svg>;
 const BulbIcon = () => <Svg><path d="M9 18h6M10 21h4" /><path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z" /></Svg>;
 const ChevronIcon = () => <svg className="pw-composer-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>;
 const CheckIcon = () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>;
@@ -546,15 +555,15 @@ export function ModelScopeWarningBanner({ warnings }: { warnings?: string[] }) {
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, loadingHistory = false, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
-  onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
+  onSend, onImageSend, imageTask, onImageSessionOpen, onAbort, onSteer, onFollowUp, isStreaming, loadingHistory = false, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
+  onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   thinkingLevel, isAutoThinkingSelection = false, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
   slashCommands, slashCommandsLoading, onLoadSlashCommands,
   onBuiltinCommand,
-  soundEnabled, onSoundToggle, onAudioUnlock,
+  onAudioUnlock,
   onPromptWithStreamingBehavior,
-  draftKey,
+  draftKey: providedDraftKey,
   cwd,
   followupStatus,
   compact = false,
@@ -562,7 +571,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { t } = useI18n();
   const { fontSize } = useChatAppearance();
   const isMobile = useIsMobile();
-  const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
+  const localDraftId = React.useId();
+  const chatDraftKey = providedDraftKey ?? `\0local-chat:${localDraftId}`;
+  const chatDraftKeyRef = useRef(chatDraftKey);
+  const lastProvidedChatDraftKeyRef = useRef(chatDraftKey);
+  if (lastProvidedChatDraftKeyRef.current !== chatDraftKey) {
+    lastProvidedChatDraftKeyRef.current = chatDraftKey;
+    chatDraftKeyRef.current = chatDraftKey;
+  }
+  const [imageMode, setImageMode] = useState(false);
+  const draftKey = imageMode ? IMAGE_DRAFT_KEY : chatDraftKey;
+  const [value, setValue] = useState(() => getDraft(draftKey)?.value ?? "");
+  const imageBusy = imageTask?.phase === "preparing" || imageTask?.phase === "running";
   const [pasteStatus, setPasteStatus] = useState({ busy: false, error: "" });
   const pasteTarget = JSON.stringify([cwd, draftKey]);
   const pasteTargetRef = useRef(pasteTarget);
@@ -577,8 +597,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => (
     draftKey ? draftImagesToAttachedImages(getDraft(draftKey)?.images) : []
   ));
+  const imageAttachmentError = imageMode && attachedImages.length > 5
+    ? t("chat.imageTask.tooMany")
+    : imageMode && attachedImages.some((image) => !["image/png", "image/jpeg", "image/webp"].includes(image.mimeType))
+      ? t("chat.imageTask.badFormat") : "";
   const trimmedValue = value.trimStart();
-  const bashMode = attachedImages.length === 0 && trimmedValue.startsWith("!");
+  const bashMode = !imageMode && attachedImages.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -623,6 +647,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
+  const pendingImageTargetsRef = useRef(new Set<{ key: string }>());
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
 
@@ -684,6 +709,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     },
     rekeyDraft(previousKey: string, nextKey: string) {
       if (previousKey === nextKey) return;
+      if (chatDraftKeyRef.current === previousKey) chatDraftKeyRef.current = nextKey;
+      for (const target of pendingImageTargetsRef.current) {
+        if (target.key === previousKey) target.key = nextKey;
+      }
       if (draftKeyRef.current !== previousKey) {
         rekeyStoredDraft(previousKey, nextKey);
         return;
@@ -721,7 +750,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       // that queued state so a fast rejection cannot observe stale DOM text and
       // then get overwritten by the clear.
       const currentDraftKey = draftKeyRef.current;
-      const destinationDraftKey = targetDraftKey ?? currentDraftKey;
+      const destinationDraftKey = targetDraftKey ?? chatDraftKeyRef.current;
       const targetsCurrentComposer = destinationDraftKey === currentDraftKey;
       const storedDraft = !targetsCurrentComposer && destinationDraftKey
         ? getDraft(destinationDraftKey)
@@ -817,6 +846,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       .filter((f) => f.type.startsWith("image/") && f.size <= MAX_ATTACHED_IMAGE_BYTES)
       .slice(0, remaining);
     if (!imageFiles.length) return;
+    const imageTarget = { key: draftKeyRef.current };
+    pendingImageTargetsRef.current.add(imageTarget);
     pendingImageCountRef.current += imageFiles.length;
     try {
       const newImages = await Promise.all(
@@ -825,6 +856,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           previewUrl: URL.createObjectURL(file),
         }))
       );
+      if (imageTarget.key !== draftKeyRef.current || !pasteMountedRef.current) {
+        const original = getDraft(imageTarget.key) ?? { value: "", images: [] };
+        const accepted = newImages.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - original.images.length));
+        setDraft(imageTarget.key, { value: original.value, images: [...original.images, ...accepted.map(imageToDraftImage)] });
+        newImages.forEach(revokeImagePreview);
+        return;
+      }
       setAttachedImages((prev) => {
         const accepted = newImages.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - prev.length));
         newImages.slice(accepted.length).forEach(revokeImagePreview);
@@ -833,6 +871,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         return next;
       });
     } finally {
+      pendingImageTargetsRef.current.delete(imageTarget);
       pendingImageCountRef.current -= imageFiles.length;
     }
   }, [compact]);
@@ -948,8 +987,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [attachedImages.length, clearInput, onBuiltinCommand]);
 
   const handleSend = useCallback(async () => {
-    if (loadingHistory || (pendingPastes.current.get(pasteTargetRef.current) ?? 0) > 0) return;
+    if (loadingHistory || pendingImageCountRef.current > 0 || (pendingPastes.current.get(pasteTargetRef.current) ?? 0) > 0) return;
     const msg = value.trim();
+    if (imageMode) {
+      if (!msg || imageBusy || imageAttachmentError || !onImageSend) return;
+      onAudioUnlock?.();
+      onImageSend(msg, attachedImages.length ? attachedImages : undefined);
+      return;
+    }
     if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
     const builtinAllowed = !isStreaming || canRunBuiltinSlashCommandWhileStreaming(msg);
@@ -957,9 +1002,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (isStreaming) return;
     clearInput();
     onSend(msg, attachedImages.length ? attachedImages : undefined);
-  }, [value, attachedImages, isStreaming, loadingHistory, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, imageMode, imageBusy, imageAttachmentError, onImageSend, isStreaming, loadingHistory, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
 
-  const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
+  const slashQuery = !compact && !imageMode && value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
     : null;
 
@@ -1008,13 +1053,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // Recomputed from the text before the caret on every change/caret move.
   // Disabled entirely when there is no cwd (new session without a directory).
   const updateAtQuery = useCallback((text: string, cursor: number | null) => {
-    if (!cwd) {
+    if (!cwd || imageMode) {
       setAtQuery(null);
       return;
     }
     const pos = cursor ?? text.length;
     setAtQuery(extractAtQuery(text.slice(0, pos)));
-  }, [cwd]);
+  }, [cwd, imageMode]);
 
   const atQueryText = atQuery?.query ?? null;
   const atLocalMatches: FileIndexEntry[] = React.useMemo(() => (
@@ -1267,6 +1312,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         return;
       }
 
+      if (imageMode && !isComposing && e.key === "Escape") {
+        e.preventDefault();
+        setImageMode(false);
+        return;
+      }
+      if (imageMode && sendShortcut && !isComposing) {
+        e.preventDefault();
+        void handleSend();
+        return;
+      }
+
       if (historyMenuOpen && !isComposing) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
@@ -1361,7 +1417,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       }
 
-      if (e.key === "ArrowUp" && !isComposing && !isStreaming && inputHistory.length > 0 && value.trim().length === 0) {
+      if (e.key === "ArrowUp" && !imageMode && !isComposing && !isStreaming && inputHistory.length > 0 && value.trim().length === 0) {
         e.preventDefault();
         setSlashMenuOpen(false);
         setAtMenuOpen(false);
@@ -1386,7 +1442,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       }
     },
-    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isMobile, isStreaming, imageMode, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
   );
 
   const handleInput = useCallback(() => {
@@ -1582,8 +1638,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [isMobile]);
 
   const hasDraft = Boolean(value.trim() || attachedImages.length);
-  const sendDisabled = loadingHistory || pasteStatus.busy || !hasDraft;
-  const composerTone = isStreaming && (onSteer || onFollowUp) ? "warning" : undefined;
+  const sendDisabled = loadingHistory || pasteStatus.busy || (imageMode ? !value.trim() || imageBusy || Boolean(imageAttachmentError) : !hasDraft);
+  const composerTone = !imageMode && isStreaming && (onSteer || onFollowUp) ? "warning" : undefined;
   const showExtras = !isMobile || controlsMenuOpen;
 
   return (
@@ -1608,9 +1664,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       />}
       <div className="pw-composer-col">
         {(pasteStatus.busy || pasteStatus.error) && <div className="pw-paste-status" role={pasteStatus.error ? "alert" : "status"}>{pasteStatus.error ? `文件粘贴失败：${pasteStatus.error}` : "正在粘贴文件…"}</div>}
-        <ModelErrorBanner error={modelError} />
-        <ModelScopeWarningBanner warnings={modelScopeWarnings} />
-        {showImageUnsupportedWarning && (() => {
+        {imageMode && (
+          <div className="pw-composer-notice" data-tone={imageAttachmentError || imageTask?.phase === "failed" || imageTask?.phase === "uncertain" ? "warning" : undefined} role="status">
+            <span>{t("chat.imageMode")} · {imageAttachmentError || t(`chat.imageTask.${imageTask?.phase ?? "idle"}`)}{imageTask?.error ? `：${imageTask.error}` : ""}</span>
+            {!imageBusy && imageTask?.sessionId && onImageSessionOpen && <button type="button" className="pw-btn pw-btn--sm" onClick={() => onImageSessionOpen(imageTask.sessionId!)}>{t("chat.imageTask.open")}</button>}
+          </div>
+        )}
+        {!imageMode && <ModelErrorBanner error={modelError} />}
+        {!imageMode && <ModelScopeWarningBanner warnings={modelScopeWarnings} />}
+        {!imageMode && showImageUnsupportedWarning && (() => {
           const entry = modelList?.find((m) => m.provider === model?.provider && m.id === model?.modelId);
           return (
             <ModelNoticeBanner
@@ -1879,7 +1941,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <textarea
             ref={textareaRef}
             className="chat-input-textarea pw-composer-input"
-            aria-label={compact ? t("chat.quoteQuestion") : t("chat.messageInput")}
+            aria-label={compact ? t("chat.quoteQuestion") : imageMode ? t("chat.imageMode") : t("chat.messageInput")}
             value={value}
             onChange={(e) => {
               valueRef.current = e.target.value;
@@ -1904,7 +1966,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={
-              isStreaming && (onSteer || onFollowUp)
+              imageMode ? t("chat.imageMode") : isStreaming && (onSteer || onFollowUp)
                 ? t("chat.steerPlaceholder")
                 : isStreaming ? t("chat.agentPlaceholder")
                 : t("chat.messagePlaceholder")
@@ -1925,6 +1987,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div ref={controlsMenuRef} className="pw-composer-bar">
             {/* LEFT: attachments and session switches; on phones the switches fold behind "更多控件" */}
             <div className="pw-composer-group pw-composer-left">
+              {onImageSend && <button
+                type="button"
+                className={`pw-icon-btn${imageMode ? " is-on" : ""}`}
+                onClick={() => {
+                  setImageMode((mode) => !mode);
+                  setSlashMenuOpen(false); setAtQuery(null); setAtMenuOpen(false); setHistoryMenuOpen(false);
+                }}
+                aria-label={t("chat.imageMode")}
+                aria-pressed={imageMode}
+                data-pw-tip={t("chat.imageMode")}
+                data-pw-tip-pos="top"
+              ><ImageIcon /></button>}
               <button
                 type="button"
                 className={`pw-icon-btn${attachedImages.length ? " is-on" : ""}`}
@@ -1933,7 +2007,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 data-pw-tip={t("chat.attachImage")}
                 data-pw-tip-pos="top"
               >
-                <ImageIcon />
+                <AttachIcon />
               </button>
               {isMobile && (
                 <button
@@ -1952,8 +2026,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </button>
               )}
               <div className="pw-composer-group pw-composer-extras" hidden={!showExtras}>
-                <PortableFollowup disabled={isStreaming} run={onBuiltinCommand} load={onLoadSlashCommands} status={followupStatus} />
-                {!isStreaming && onToolPresetChange && (
+                <PortableFollowup disabled={isStreaming || imageMode} run={onBuiltinCommand} load={onLoadSlashCommands} status={followupStatus} />
+                {!imageMode && !isStreaming && onToolPresetChange && (
                   <div ref={toolDropdownRef} className="pw-composer-dropdown" onKeyDown={(e) => handleMenuKeys(e, () => setToolDropdownOpen(false))}>
                     <button
                       type="button"
@@ -2011,42 +2085,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     )}
                   </div>
                 )}
-                {!isStreaming && onCompact && (
-                  isCompacting ? (
-                    <button
-                      type="button"
-                      className="pw-composer-chip is-danger"
-                      onClick={onAbortCompaction}
-                      title={t("chat.stopCompaction")}
-                      aria-label={t("chat.stopCompaction")}
-                    >
-                      <StopIcon />
-                      <span className="pw-composer-chip-text">{t("chat.compacting")}</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="pw-icon-btn"
-                      onClick={onCompact}
-                      aria-label={t("chat.compactContext")}
-                      data-pw-tip={t("chat.compactContext")}
-                      data-pw-tip-pos="top"
-                    >
-                      <ShrinkIcon />
-                    </button>
-                  )
-                )}
-                {onSoundToggle !== undefined && (
-                  // The injected archive script finds this button by its title: keep the text in sync with dom-contract.md.
+                {!isStreaming && isCompacting && onAbortCompaction && (
                   <button
                     type="button"
-                    className="pw-icon-btn"
-                    onClick={onSoundToggle}
-                    title={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                    aria-label={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                    aria-pressed={soundEnabled}
+                    className="pw-composer-chip is-danger"
+                    onClick={onAbortCompaction}
+                    title={t("chat.stopCompaction")}
+                    aria-label={t("chat.stopCompaction")}
                   >
-                    {soundEnabled ? <VolumeIcon /> : <VolumeMuteIcon />}
+                    <StopIcon />
+                    <span className="pw-composer-chip-text">{t("chat.compacting")}</span>
                   </button>
                 )}
               </div>
@@ -2057,7 +2105,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               {/* React renders no children here: the injected script appends the quota and ⚡ controls (dom-contract.md). */}
               <span data-pi-composer-slot="" className="pw-composer-slot" />
               <span className="pw-composer-vsep" aria-hidden="true" />
-              {(modelOptions.length > 0 || model || modelError) && onModelChange && (
+              {!imageMode && (modelOptions.length > 0 || model || modelError) && onModelChange && (
                 <ModelSelector
                   options={modelOptions}
                   value={model}
@@ -2067,7 +2115,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   isAutoSelection={isAutoModelSelection}
                 />
               )}
-              {onThinkingLevelChange && (
+              {!imageMode && onThinkingLevelChange && (
                 <div ref={thinkingDropdownRef} className="pw-composer-dropdown" onKeyDown={(e) => handleMenuKeys(e, () => setThinkingDropdownOpen(false))}>
                   <button
                     type="button"
@@ -2128,7 +2176,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   )}
                 </div>
               )}
-              {isStreaming ? (
+              {isStreaming && !imageMode ? (
                 <>
                   {onSteer && (
                     <button

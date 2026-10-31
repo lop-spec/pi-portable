@@ -7,11 +7,11 @@
     "lib/portable-tool-intent.mjs": "674bfe0a02d4dd5ebf5ead4ed6d4b83ce165015770f88c571e9bfea971001565",
     "app/cetus-craft.css": "4fa881a4f5285301aa4a5eb16cc95b132063d4c8b437aaf3c29565ce64244372",
     "app/layout.tsx": "498673a4475b86b3ebb16d11b4aab65821d0b7ad9a24a5348d54b95056a28eee",
-    "lib/rpc-manager.ts": "dc5c24b9959f5070d79190847c344e72517c512f452b95fb39b0ff0e36ebd156",
+    "lib/rpc-manager.ts": "d73d969127862a98fdefadcbb2765351a6dc23d7b5b4778cc6c3457abc048a51",
     "lib/session-reader.ts": "977b00b9ec67e3e74c02452c1e9cf54dd38cb33985c1664807f519fa72732f9b",
     "components/desktop-transcript/ToolRow.tsx": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
     "public/licenses/pi-desktop/source/ToolRow.tsx.txt": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
-    "components/AppShell.tsx": "4e98616072391dcfcc9971ac35bf403b5f6d93a5e55e50a359e268f17b669d49",
+    "components/AppShell.tsx": "44b5eaf7d838192418aaacda5746a8c6a6dd05a6d9ae82e2c0dc6fed759d0f2e",
     "components/TurnWrittenFiles.tsx": "b1231ebd6a35c5c49af85446a7c01689a0089f7d25bf278b7ee5567295fbc8d4"
   }
 }

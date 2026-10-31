@@ -67,7 +67,7 @@
     },
     "components/AppShell.tsx": {
       "baseSha": "0591b0c1cb97d1520a12cc426200f4e8774300ab9167e301d460c10efd60a9ff",
-      "sha": "ddd677debdabf45864e3c40a50bd4ab8aa8ef845dd4e9e3e6e3dbc4c1ade65d0"
+      "sha": "bb85f566193953a4e8dd13b3fad1b22e531718d7021328c282ced231282ec464"
     },
     "components/AppShell.workspace-memory.test.mjs": {
       "baseSha": "747779462f2d235ead23e8ea32bcc97d4f93c51c86ea377a17be678535b58174",
@@ -87,15 +87,15 @@
     },
     "components/ChatInput.streaming-thinking.test.mjs": {
       "baseSha": "771e46835431876ec5d211234c8520672669c93225ea1cdfc33c67ccb3bf146b",
-      "sha": "c1e5ea54910d4c7c2c60e03c4b02e714cb37298088b50a30a780b88686bbd438"
+      "sha": "4693c1b1bf5f5fb189ae27d1028282b005ac5cb7ed7fa1e3c0b562131169103d"
     },
     "components/ChatInput.test.mjs": {
       "baseSha": "b031310a234978b3873a57c45ee81b82b5c49f32a714ad6e7693bd7d2193f580",
-      "sha": "642936d2ccd4036c81045c6ac0054cd26976908565e04c7504a0a5118aa2d82c"
+      "sha": "f0694722d44aa3499ab3e8c16811ff831df270584744b1cdd4c36f2b2149f719"
     },
     "components/ChatInput.tsx": {
       "baseSha": "1b796136c27f82d15b06b43e2180084267709b6f5b4a00cd77f41c57e6c7481c",
-      "sha": "1884e41dd28865869df5a0336d49a5c8ca72a27f88e34393d5de21b1a2c1142f"
+      "sha": "3eba1161bd33dcae512824ec887a34f3004c0736f6357ad66d203b65986f9b8a"
     },
     "components/ChatWindow.conversation-fixes.test.mjs": {
       "baseSha": null,
@@ -115,7 +115,7 @@
     },
     "components/ChatWindow.tsx": {
       "baseSha": "1871f16798894ae30dc49a6efc3f7b0db74b35a50152815ebbce5451d68e27b1",
-      "sha": "0bca898eb2204a46719a1cfabe1f8b7571411dca9557900a98c9f3be37a6d69d"
+      "sha": "3bde432f454d0096e311c917258bde19a380537a6dfdfeb4efb0bbcef89a1d68"
     },
     "components/CodeBlockHighlighter.tsx": {
       "baseSha": null,
@@ -399,15 +399,15 @@
     },
     "lib/i18n/messages/en.ts": {
       "baseSha": "8d19c7687bad0d619d574648587fd097e734137f2eaf1efe43fe362e53e628a0",
-      "sha": "7b93da1b00d78969fb4c15078f76b79be27c59f6da3ec2c40708acefa118be8e"
+      "sha": "3341e1e4f84c5431a951a2ca600f97e1f3e51739bbb5eb716a9002f0969a7d54"
     },
     "lib/i18n/messages/zh-CN.ts": {
       "baseSha": "b3114f06506a1aeb81096d9d6135200762e5f497ed3536914472c1f98b3c4411",
-      "sha": "7b245ed6371f5b9ac1a60e4828f579c4cfcfecdad675d02ed5ded7192c2bd1b0"
+      "sha": "2db787e5fbe01662606a695d5c977081203a9dd0e9ba5ffdb2540bc2e3994ce5"
     },
     "lib/i18n/messages/zh-TW.ts": {
       "baseSha": "6545bfa8390e1ec21c2996e929be1efc7342db5dcce606b37ae8f5347a0855da",
-      "sha": "3c3d83aa1cc310c1968b69072e2b311ac2e1939b99030754377fe6e20b7f3356"
+      "sha": "39914941717ea7d17dfeb95bb3a62859f317c5536c0bfa0577ae288c481d1451"
     },
     "lib/i18n/registry.test.mjs": {
       "baseSha": "4fe5e01fe7669309228199ecb31ce16af5fa72cb036750f2d1f0a86c1c20175d",

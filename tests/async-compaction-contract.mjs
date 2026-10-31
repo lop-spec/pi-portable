@@ -18,19 +18,29 @@ const { loadExtensions } = await import(pathToFileURL(path.join(host, 'dist/core
 const loaded = await loadExtensions([path.join(candidate, 'index.ts')], process.cwd());
 assert.deepEqual(loaded.errors, [], 'real host must load the extension');
 assert.equal(loaded.extensions.length, 1);
-assert.deepEqual(mod.readConfig(''), { enabled: true, startTokens: 128000, thinkingLevel: 'low', timeoutMs: 300000, firstToolCompaction: true, providers: { 'pi-chatgpt-web': { summaryModel: 'chatgpt-web-instant', thinkingLevel: 'high', startTokens: 400000, firstToolCompaction: false }, 'pi-qwen-web': { summaryModel: 'qwen-web-max', thinkingLevel: 'high', startTokens: 240000, firstToolCompaction: false } } });
-for (const providers of [[], { x: { thinkingLevel: 'pro' } }, { x: { summaryModel: '' } }, { x: null }, { x: { startTokens: 0 } }, { x: { firstToolCompaction: 'no' } }]) assert.throws(() => mod.parseConfig({ ...mod.readConfig(''), providers }), /Invalid async compaction config/);
-assert.equal(mod.startBlocker({ tokens: 127999, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), 'below_threshold');
-assert.equal(mod.startBlocker({ tokens: 128000, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), undefined);
-assert.equal(mod.startBlocker({ tokens: 900000, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), 'above_force_threshold');
-assert.equal(mod.startBlocker({ tokens: null, contextWindow: 1000000 }, { reserveTokens: 144000 }, mod.readConfig()), 'context_unknown');
+for (const thinkingMode of ['auto', '', true, null]) assert.throws(() => mod.parseConfig({ ...mod.readConfig(''), thinkingMode }), /Invalid async compaction config/);
+const expectedConfig = { enabled: true, startTokens: 800000, thinkingLevel: 'high', thinkingMode: 'request', cachedSummary: true, timeoutMs: 300000,
+  providers: Object.fromEntries([
+    ['pi-chatgpt-web','chatgpt-web-instant','high'],['pi-qwen-web','qwen-web-max','high'],
+    ['pi-mimo-web','mimo-web-pro','high'],['pi-gemini-web','gemini-web-3.8-flash','high'],
+    ['pi-kimi-web','kimi-web-instant','high'],['pi-stepfun-web','stepfun-web-3.7-flash','high'],
+    ['pi-deepseek-web','deepseek-web-chat','high'],['pi-zai-web','zai-web-glm-5.3-flash','high'],
+  ].map(([provider,summaryModel,thinkingLevel]) => [provider,{summaryModel,thinkingLevel}])) };
+assert.deepEqual(mod.readConfig(''), expectedConfig);
+for (const window of [0, 272000, 1000000]) {
+  assert.equal(mod.startBlocker({ tokens: 799999, contextWindow: window }, expectedConfig), 'below_threshold');
+  assert.equal(mod.startBlocker({ tokens: 800000, contextWindow: window }, expectedConfig), undefined);
+  assert.equal(mod.startBlocker({ tokens: 900000, contextWindow: window }, expectedConfig), undefined);
+}
+for (const providers of [[], { x: { thinkingLevel: 'pro' } }, { x: { summaryModel: '' } }, { x: null }]) assert.throws(() => mod.parseConfig({ ...mod.readConfig(''), providers }), /Invalid async compaction config/);
+assert.equal(mod.startBlocker({ tokens: null, contextWindow: 0 }, expectedConfig), 'context_unknown');
 assert.throws(() => mod.parseConfig({ enabled: true, startTokens: 0, thinkingLevel: 'low', timeoutMs: 300000 }));
 assert.throws(() => mod.parseConfig({ enabled: true, startTokens: 128000, thinkingLevel: 'off', timeoutMs: 300000 }));
-{ // per-instance override in the agent directory (pi-chat: Pro summaries, start at 400k)
+{ // Instance-specific thinking is retained; its legacy watermark is ignored.
   const agentDir = fs.mkdtempSync(path.join(process.env.TEMP || '.', 'async-override-'));
   assert.deepEqual(mod.readConfig(agentDir), mod.readConfig(''), 'no override file: shared defaults');
   fs.writeFileSync(path.join(agentDir, mod.INSTANCE_CONFIG), JSON.stringify({ thinkingLevel: 'max', startTokens: 400000 }));
-  assert.deepEqual(mod.readConfig(agentDir), { enabled: true, startTokens: 400000, thinkingLevel: 'max', timeoutMs: 300000, firstToolCompaction: true, providers: { 'pi-chatgpt-web': { summaryModel: 'chatgpt-web-instant', thinkingLevel: 'high', startTokens: 400000, firstToolCompaction: false }, 'pi-qwen-web': { summaryModel: 'qwen-web-max', thinkingLevel: 'high', startTokens: 240000, firstToolCompaction: false } } });
+  assert.deepEqual(mod.readConfig(agentDir), { ...expectedConfig, thinkingLevel: 'max' });
   fs.writeFileSync(path.join(agentDir, mod.INSTANCE_CONFIG), JSON.stringify({ thinkingLevel: 'pro' }));
   assert.throws(() => mod.readConfig(agentDir), /Invalid async compaction config/);
   fs.rmSync(agentDir, { recursive: true });
@@ -41,18 +51,20 @@ const entries = [
 ];
 assert.deepEqual(mod.completedPrefix(entries, 'call1'), entries.slice(0, 1));
 assert.throws(() => mod.completedPrefix(entries, 'missing'));
-console.log('PASS: actual host loading, independent inclusive 128K, invalid-config rejection, completed-prefix isolation');
+console.log('PASS: actual host loading, independent inclusive 800K, invalid-config rejection, completed-prefix isolation');
 const { createHash } = await import('node:crypto');
 const manifest = JSON.parse(fs.readFileSync(path.join(candidate, 'upstream-integrity.json'), 'utf8'));
-for (const [file, hash] of Object.entries(manifest.sha256)) assert.equal(createHash('sha256').update(fs.readFileSync(path.join(candidate, 'upstream', file))).digest('hex'), hash, `upstream unchanged: ${file}`);
+for (const [file, hash] of Object.entries(manifest.sha256)) assert.equal(createHash('sha256').update(fs.readFileSync(path.join(candidate, 'upstream', file))).digest('hex'), hash, `reviewed upstream content: ${file}`);
 const sdk = await import(pathToFileURL(path.join(host, 'dist/index.js')));
 const piAI = await import(pathToFileURL(path.join(host, 'node_modules/@earendil-works/pi-ai/dist/compat.js')));
-const model = { ...piAI.getModel('openai', 'gpt-5'), contextWindow: 1000000 };
+const model = { ...piAI.getModel('openai', 'gpt-5'), contextWindow: 1000000, thinkingLevelMap: { xhigh: 'xhigh', max: 'max' } };
 assert.ok(model.id && piAI.getSupportedThinkingLevels(model).includes('low'));
 const tick = () => new Promise(r => setTimeout(r, 10));
 const until = async (fn, label) => { for (let i = 0; i < 100; i++) { if (fn()) return; await tick(); } throw Error(`Timeout: ${label}`); };
-const config = mod.readConfig();
-function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, queued = false, build, configOverride = {}, persistedEntries, registry } = {}) {
+const deployedConfig = mod.readConfig();
+// Use a smaller test watermark to exercise the same lifecycle without provider requests.
+const config = { ...deployedConfig, thinkingMode: 'fixed', thinkingLevel: 'low', startTokens: 128000 };
+function fixture({ tokens = 128000, claimed = false, empty = false, idle = false, queued = false, build, configOverride = {}, persistedEntries, registry } = {}) {
   let serial = 0;
   const branch = persistedEntries ? [...persistedEntries] : [];
   const add = data => { const entry = { ...data, id: String(++serial).padStart(8, '0'), parentId: branch.at(-1)?.id ?? null, timestamp: new Date().toISOString() }; branch.push(entry); return entry; };
@@ -99,6 +111,21 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   return { branch, currentTool, ctx, handlers, logs, requests, sent, errors, emit, nextTool, message, add, finish: () => resolveBuild(), setTokens: n => { tokens = n; }, setIdle: x => { idle = x; }, setQueued: x => { queued = x; }, metrics: () => ({ aborts, compacts, synchronousFallbacks }) };
 }
 {
+  for (const tokens of [2000, 128000, 799999]) {
+    const f = fixture({ tokens, configOverride: deployedConfig });
+    await f.emit('tool_execution_start', f.currentTool);
+    assert.equal(f.requests.length, 0, 'deployed defaults: first tool cannot bypass 800K');
+    assert.ok(f.logs.some(e => e.event === 'skipped' && e.reason === 'below_threshold'));
+  }
+  const due = fixture({ tokens: 800000, configOverride: deployedConfig });
+  await due.emit('tool_execution_start', due.currentTool);
+  assert.equal(due.requests.length, 1);
+  assert.equal(due.requests[0].level, 'xhigh', 'without a captured request, freeze the current snapshot selection; main thinking is untouched');
+  assert.equal(due.logs.find(e => e.event === 'trigger').reason, 'watermark');
+  await due.emit('session_shutdown'); due.finish();
+  console.log('PASS: deployed 800K policy, no first-tool bypass, exact inclusive trigger');
+}
+{
   // Web-model sessions summarize with their provider's configured target (5.6 Sol at high)
   // through that provider's own stream handler; other providers keep the defaults above.
   const summary = { ...model, id: 'summary-model' }, marker = { routed: true };
@@ -118,22 +145,45 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   f.finish(); missing.finish();
 }
 {
-  // lop 2026-09-27: web-model sessions start at 400k and skip the early first-tool job; the
-  // defaults (128k, first tool) stay for every other provider.
-  const web = { providers: { [model.provider]: { startTokens: 400000, firstToolCompaction: false } } };
-  assert.deepEqual([mod.configFor({ ...config, ...web }, model.provider).startTokens, mod.configFor({ ...config, ...web }, model.provider).firstToolCompaction], [400000, false]);
-  assert.deepEqual([mod.configFor({ ...config, ...web }, 'other').startTokens, mod.configFor({ ...config, ...web }, 'other').firstToolCompaction], [128000, true]);
+  // Request mode overrides the provider's legacy fixed level, not its summary model.
+  const summary = { ...model, id: 'request-summary' };
+  const providers = { [model.provider]: { summaryModel: summary.id, thinkingLevel: 'high' } };
+  const registry = { find: (p, id) => p === model.provider && id === summary.id ? summary : undefined };
+  const background = fixture({ registry, configOverride: { thinkingMode: 'request', providers } });
+  await background.emit('tool_execution_start', background.currentTool);
+  assert.equal(background.requests.length, 1);
+  assert.equal(background.requests[0].model, summary);
+  assert.equal(background.requests[0].level, 'xhigh', 'request snapshot wins over provider fixed high');
+  const done = { summary: 'request level retained', firstKeptEntryId: 'x', tokensBefore: 500000, details: {} };
+  const manual = fixture({ registry, configOverride: { thinkingMode: 'request', providers }, build: async () => done });
+  const preparation = { tokensBefore: 500000, messagesToSummarize: [], turnPrefixMessages: [] };
+  const out = await manual.emit('session_before_compact', { preparation, reason: 'manual', signal: new AbortController().signal });
+  assert.equal(out?.compaction, done);
+  assert.equal(manual.requests[0].model, summary);
+  assert.equal(manual.requests[0].level, 'xhigh', 'manual compaction retains request level too');
+  const unsupported = { ...summary, reasoning: false };
+  const noDowngrade = fixture({ registry: { find: () => unsupported }, configOverride: { thinkingMode: 'request', providers }, build: async () => done });
+  const refused = await noDowngrade.emit('session_before_compact', { preparation, reason: 'manual', signal: new AbortController().signal });
+  assert.equal(refused?.cancel, true);
+  assert.match(refused?.errorMessage, /未降档，原历史保留/);
+  assert.equal(noDowngrade.requests.length, 0, 'unsupported request level is never silently downgraded');
+  background.finish();
+  console.log('PASS: request-level priority over provider fixed level; summary model routing and unsupported-level refusal');
+}
+{
+  // Legacy provider-specific and first-tool fields cannot create another watermark.
+  const web = { providers: { [model.provider]: { startTokens: 1, firstToolCompaction: true } } };
   const early = fixture({ tokens: 2000, configOverride: web });
   await early.emit('tool_execution_start', early.currentTool);
-  assert.equal(early.requests.length, 0, 'no first-tool job below 400k');
+  assert.equal(early.requests.length, 0, 'first-tool and provider override cannot bypass watermark');
   assert.ok(early.logs.some(e => e.event === 'skipped' && e.reason === 'below_threshold'));
-  const mid = fixture({ tokens: 399999, configOverride: web });
+  const mid = fixture({ tokens: 127999, configOverride: web });
   await mid.emit('tool_execution_start', mid.currentTool);
-  assert.equal(mid.requests.length, 0, '399,999 tokens is still below 400k');
-  const due = fixture({ tokens: 400000, configOverride: web });
+  assert.equal(mid.requests.length, 0, 'one token below the shared test watermark');
+  const due = fixture({ tokens: 128000, configOverride: web });
   await due.emit('tool_execution_start', due.currentTool);
-  assert.equal(due.requests.length, 1, 'starts at 400k');
-  assert.equal(due.logs.find(e => e.event === 'trigger').reason, '400k-tool');
+  assert.equal(due.requests.length, 1, 'starts at the shared test watermark');
+  assert.equal(due.logs.find(e => e.event === 'trigger').reason, 'watermark');
   early.finish(); mid.finish(); due.finish();
 }
 {
@@ -155,20 +205,19 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   assert.equal(await custom.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'manual', customInstructions: 'focus on X' }), undefined);
   assert.equal(custom.requests.length, 0);
   const broken = fixture({ registry, configOverride: web, build: async () => { throw new Error('web down'); } });
-  assert.equal(await broken.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'threshold' }), undefined, 'a failed routed summary leaves the native one in charge');
+  assert.deepEqual(await broken.emit('session_before_compact', { preparation: { tokensBefore: 500000 }, reason: 'threshold' }), { cancel: true, errorMessage: '压缩摘要失败；未降档，原历史保留。请查看 async-compaction 日志。' }, 'a failed routed summary must not silently use the main thinking level');
   assert.ok(broken.logs.some(e => e.event === 'native-routed-failed' && /web down/.test(e.error)));
 }
 {
   const f = fixture();
-  assert.equal(f.handlers.has('turn_end'), false);
-  await f.emit('turn_end'); assert.equal(f.requests.length, 0);
-  await f.emit('tool_execution_start', f.currentTool); assert.equal(f.requests.length, 1, 'first tool bypasses waterline');
+  assert.equal(f.handlers.has('turn_end'), true);
+  await f.emit('tool_execution_start', f.currentTool); assert.equal(f.requests.length, 1, 'tool starts at waterline');
   assert.equal(f.requests[0].model, model); assert.equal(f.requests[0].level, 'low');
   assert.equal(f.branch.find(e => e.type === 'thinking_level_change').thinkingLevel, 'xhigh');
   assert.ok(!JSON.stringify(f.requests[0].prep).includes(f.currentTool.toolCallId), 'in-flight call is excluded from summary input');
   await f.emit('tool_execution_start', f.currentTool); assert.equal(f.requests.length, 1, 'one job while pending');
   const newUser = f.message('user', 'NEW_MESSAGE_MUST_SURVIVE');
-  f.finish(); await until(() => f.logs.some(e => e.event === 'ready'), 'ready');
+  f.setTokens(2000); f.finish(); await until(() => f.logs.some(e => e.event === 'ready'), 'ready');
   assert.equal(f.metrics().aborts, 0, 'below 128K, native apply waits for idle');
   f.setIdle(true); await f.emit('agent_settled'); await until(() => f.logs.some(e => e.event === 'persisted'), 'persisted');
   const rebuilt = sdk.buildSessionContext(f.branch).messages;
@@ -179,7 +228,7 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
   assert.equal(f.sent.length, 0); assert.equal(f.errors.length, 0);
   const fresh = fixture({ persistedEntries: f.branch, tokens: 5000 });
   await fresh.emit('tool_execution_start', fresh.currentTool); assert.equal(fresh.requests.length, 0, 'reload must not repeat first job');
-  console.log('PASS: first-tool below 128K, low/main model isolation, single job, native idle apply, new tail retained, usage, reload marker');
+  console.log('PASS: test watermark, low/main model isolation, single job, native idle apply, new tail retained, usage, reload');
 }
 {
   const f = fixture({ claimed: true, tokens: 127999 });
@@ -193,7 +242,7 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
 {
   const f = fixture({ empty: true });
   await f.emit('tool_execution_start', f.currentTool); assert.equal(f.requests.length, 0); assert.ok(f.logs.some(e => e.reason === 'nothing_to_compact'));
-  assert.ok(!f.branch.some(e => e.customType === mod.FIRST_JOB_MARKER));
+  assert.ok(!f.branch.some(e => e.type === 'compaction'));
   for (let i = 0; i < 4; i++) { f.message('user', 'Completed content '.repeat(200)); f.message('assistant', [{ type: 'text', text: 'Done '.repeat(100) }]); }
   await f.emit('tool_execution_start', f.nextTool()); assert.equal(f.requests.length, 1, 'first job stays armed until history exists');
   await f.emit('session_shutdown'); assert.equal(f.requests[0].signal.aborted, true); f.finish(); await tick();
@@ -202,7 +251,7 @@ function fixture({ tokens = 2000, claimed = false, empty = false, idle = false, 
 // Fixed-low jobs must survive main-thinking changes both before and after becoming ready.
 // Missing select events also exercise the validation path independently of event suppression.
 for (const phase of ['pending', 'ready']) for (const notify of [true, false]) {
-  const f = fixture(); await f.emit('tool_execution_start', f.currentTool);
+  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.setTokens(2000);
   if (phase === 'ready') { f.finish(); await until(() => f.logs.some(e => e.event === 'ready'), 'ready before switching'); }
   for (const level of ['medium', 'high']) {
     f.add({ type: 'thinking_level_change', thinkingLevel: level });
@@ -218,10 +267,13 @@ for (const phase of ['pending', 'ready']) for (const notify of [true, false]) {
   assert.equal(sdk.buildSessionContext(f.branch).thinkingLevel, 'high', 'main selection must remain effective');
   assert.ok(JSON.stringify(sdk.buildSessionContext(f.branch).messages).includes(tail.message.content));
   assert.ok(!f.logs.some(e => e.event === 'invalidated' || e.event === 'native-fallback'));
-  assert.ok(f.logs.some(e => e.reason === 'fixed-summary-thinking'), 'retention/alignment must be observable');
+  assert.ok(f.logs.some(e => e.reason === 'summary-thinking-frozen'), 'retention/alignment must be observable');
+  const entry = f.branch.find(e => e.type === 'compaction');
+  assert.equal(entry.details.asyncPrefixCompaction.thinkingLevel, 'xhigh', 'original main snapshot remains auditable');
+  assert.equal(entry.details.summaryThinkingLevel, 'low', 'actual summary level remains auditable');
 }
 {
-  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.finish();
+  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.setTokens(2000); f.finish();
   await until(() => f.logs.some(e => e.event === 'ready'), 'ready for native hook');
   f.add({ type: 'thinking_level_change', thinkingLevel: 'medium' });
   const result = await f.emit('session_before_compact', { preparation: { settings: { enabled: true, reserveTokens: 4096, keepRecentTokens: 128 } }, reason: 'threshold' });
@@ -239,7 +291,7 @@ for (const phase of ['pending', 'ready']) for (const scenario of ['model_select'
   assert.equal(f.metrics().compacts, 0);
 }
 for (const reason of ['session_changed', 'model_changed', 'settings_changed', 'first_kept_missing', 'snapshot_leaf_missing', 'too_large', 'custom_instructions']) {
-  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.finish();
+  const f = fixture(); await f.emit('tool_execution_start', f.currentTool); f.setTokens(2000); f.finish();
   await until(() => f.logs.some(e => e.event === 'ready'), 'ready for safety checks');
   const settings = { enabled: true, reserveTokens: 4096, keepRecentTokens: 128 };
   if (reason === 'session_changed') f.ctx.sessionManager.getSessionId = () => 'another-session';
@@ -276,4 +328,16 @@ for (const reason of ['session_changed', 'model_changed', 'settings_changed', 'f
   const f = fixture({ build: async () => { throw Error('fixture provider failure'); } }); await f.emit('tool_execution_start', f.currentTool); await tick();
   assert.ok(f.logs.some(e => e.event === 'failed')); assert.equal(f.metrics().compacts, 0);
 }
-console.log('PASS: model/session/settings/boundary/budget/instructions/tree/shutdown invalidation, queue protection, native fallback, timeout, failure logging; upstream hashes unchanged');
+for (const level of ['high', 'xhigh', 'max']) {
+  const done = { summary: 'Request-level native fallback.', firstKeptEntryId: 'kept', tokensBefore: 50000, details: {} };
+  const f = fixture({ configOverride: deployedConfig, build: async () => done });
+  f.ctx.thinkingLevel = level;
+  await f.emit('context_with_system', { messages: [] });
+  // Native fallback must retain the captured request tier even if selection changed before compaction.
+  f.ctx.thinkingLevel = 'medium';
+  const out = await f.emit('session_before_compact', { preparation: { messagesToSummarize: [], turnPrefixMessages: [], tokensBefore: 50000 }, reason: 'overflow', signal: new AbortController().signal });
+  assert.equal(out?.compaction, done);
+  assert.equal(f.requests[0].level, level);
+}
+console.log('PASS: native overflow fallback follows captured high/xhigh/max despite later main-selection change');
+console.log('PASS: model/session/settings/boundary/budget/instructions/tree/shutdown invalidation, queue protection, native fallback, timeout, failure logging; reviewed hashes verified');
