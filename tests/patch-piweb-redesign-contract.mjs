@@ -155,10 +155,15 @@ const read = name => {
 };
 
 test('integrate() twice gives byte-identical results, with pinned templates and pinned history post-processing', { skip }, () => {
-  const first = integrate(read);
+  let beforeSound;
+  const output = integrate(read, { onBeforeRemoveSound: stage => { beforeSound = stage; } });
   const second = integrate(read);
-  assert.deepEqual([...second.keys()].sort(), [...first.keys()].sort());
-  for (const [name, value] of first) assert.equal(second.get(name), value, `${name} differs between two runs`);
+  assert.deepEqual([...second.keys()].sort(), [...output.keys()].sort());
+  for (const [name, value] of output) assert.equal(second.get(name), value, `${name} differs between two runs`);
+  assert.ok(beforeSound, 'pre-sound integration snapshot exists');
+  assert.doesNotMatch(output.get('components/AppShell.tsx'), /useAudio|playDoneSound|soundEnabled/);
+  assert.match(output.get('lib/browser-notifications.ts'), /silent: true/);
+  const first = beforeSound;
   const history = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/history/manifest.json'), 'utf8'));
   assert.equal(history.stage, 'history-after-redesign');
   const stop = JSON.parse(fs.readFileSync(path.join(repo, 'assets/piweb-overlay/immediate-stop/manifest.json'), 'utf8'));

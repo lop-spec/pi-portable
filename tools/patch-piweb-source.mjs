@@ -35,7 +35,7 @@ const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const normalize = value => value.replaceAll('\r\n', '\n');
 const template = name => normalize(fs.readFileSync(path.join(templates, name), 'utf8'));
 
-export function integrate(getFile) {
+export function integrate(getFile, { onBeforeRemoveSound } = {}) {
   const files = new Map();
   const get = name => files.has(name) ? files.get(name) : normalize(getFile(name));
   const set = (name, value) => files.set(name, value);
@@ -413,6 +413,7 @@ export function integrate(getFile) {
   integrateCetusCraft({ get, set, change, prepend, template });
   integrateCraftTranscript({ get, set, change, template });
   integrateStopHandlerCleanup({ get, change, template });
+  onBeforeRemoveSound?.(new Map(files));
   integrateRemoveSound({ get, set, change });
   return files;
 }
