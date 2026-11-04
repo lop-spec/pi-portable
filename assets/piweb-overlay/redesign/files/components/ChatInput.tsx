@@ -1594,7 +1594,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const compactResultText = compactResult
     ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
     : null;
-  const resolvedThinkingLevel = thinkingLevel && thinkingLevel !== "auto" ? thinkingLevel : null;
+  // lop 规则:推理强度下限是 low。历史会话里落盘的 off/minimal 已不是可选档,显示按 pi 的 clamp 上抬到模型支持的最低档。
+  const raisedThinkingLevel = thinkingLevel && (thinkingLevel === "off" || thinkingLevel === "minimal")
+    && availableThinkingLevels && !availableThinkingLevels.includes(thinkingLevel)
+    ? (THINKING_LEVELS.find((lvl) => availableThinkingLevels.includes(lvl)) ?? thinkingLevel)
+    : thinkingLevel;
+  const resolvedThinkingLevel = raisedThinkingLevel && raisedThinkingLevel !== "auto" ? raisedThinkingLevel : null;
   const thinkingShortLabel = resolvedThinkingLevel
     ? t(THINKING_LEVEL_SHORT_KEYS[resolvedThinkingLevel] ?? "chat.thinkingShortUnknown")
     : t("chat.thinkingShortUnknown");
@@ -2147,7 +2152,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     >
                       <div className="pw-menu-header"><span>{t("chat.reasoningMenuTitle")}</span></div>
                       {THINKING_LEVELS.filter((lvl) => {
-                        if (!availableThinkingLevels) return true;
+                        // lop 规则:推理强度下限是 low;模型清单未到时也不列 off/minimal。
+                        if (!availableThinkingLevels) return lvl !== "off" && lvl !== "minimal";
                         return availableThinkingLevels.includes(lvl);
                       }).map((lvl) => {
                         const isActive = resolvedThinkingLevel === lvl;

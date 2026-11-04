@@ -16,11 +16,17 @@ test("keeps one thinking control and disables it while the session is busy", () 
 });
 
 test("shows the resolved level and treats auto as an uncommitted default", () => {
-  assert.match(source, /resolvedThinkingLevel = thinkingLevel && thinkingLevel !== "auto"/);
+  assert.match(source, /resolvedThinkingLevel = raisedThinkingLevel && raisedThinkingLevel !== "auto"/);
   assert.match(source, /isAutoThinkingSelection/);
   // lop 规则：思考档位没有 auto，菜单只列模型支持的具体档位。
   assert.doesNotMatch(source, /const THINKING_LEVELS = \[[^\]]*"auto"/);
   assert.match(thinkingControl, /if \(!isActive \|\| isAutoThinkingSelection\) onThinkingLevelChange\(lvl\)/);
+});
+
+test("reasoning menu starts at low: off/minimal are neither listed nor shown for old sessions", () => {
+  assert.match(thinkingControl, /if \(!availableThinkingLevels\) return lvl !== "off" && lvl !== "minimal";/);
+  assert.match(source, /raisedThinkingLevel = thinkingLevel && \(thinkingLevel === "off" \|\| thinkingLevel === "minimal"\)/);
+  assert.match(source, /THINKING_LEVELS\.find\(\(lvl\) => availableThinkingLevels\.includes\(lvl\)\)/);
 });
 
 test("session hook layers thinking like the model selector", () => {
