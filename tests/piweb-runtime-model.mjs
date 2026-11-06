@@ -12,8 +12,8 @@ const requested={role:'assistant',model:'chatgpt-web-astra',provider:'pi-chatgpt
 const runtime=(modelId,reasoning)=>({provider:'pi-chatgpt-web',modelId,reasoning});
 const sol=reasoning=>({...requested,runtimeModel:runtime('chatgpt-web-instant',reasoning)});
 const props={entries:[],live:true};
-test('verified Sol max and xhigh replace the requested Astra label; recovery replaces it again',()=>{
- for(const [message,expected] of [[sol('max'),'GPT-5.6 Sol · 网页 · max'],[sol('xhigh'),'GPT-5.6 Sol · 网页 · xhigh'],[{...requested,runtimeModel:runtime('chatgpt-web-astra','max')},'GPT-6 Astra · 网页 · max']]){
+test('GPT-6 max → GPT-6 xhigh → Sol max → Sol xhigh → GPT-6 recovery keep the correct family name',()=>{
+ for(const [message,expected] of [[{...requested,runtimeModel:runtime('chatgpt-web-astra','max')},'GPT-6 · 网页 · max'],[{...requested,runtimeModel:runtime('chatgpt-web-astra','xhigh')},'GPT-6 · 网页 · xhigh'],[sol('max'),'GPT-5.6 Sol · 网页 · max'],[sol('xhigh'),'GPT-5.6 Sol · 网页 · xhigh'],[{...requested,runtimeModel:runtime('chatgpt-web-astra','max')},'GPT-6 · 网页 · max']]){
   const out=resolveTimelineModel({...props,streamingMessage:message});assert.equal(out.name,expected);assert.equal(out.reasoning,message.runtimeModel.reasoning);
  }
 });

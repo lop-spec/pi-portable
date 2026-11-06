@@ -13,7 +13,7 @@ export function resolveTimelineModel({entries=[],live=false,streamingMessage,act
   const provider=actual?.provider??reply?.provider??(live?activeModel?.provider:undefined);
   if(!modelId)return null;
   const key=provider?`${provider}/${modelId}`:modelId;
-  const webName=provider==='pi-chatgpt-web'?({'chatgpt-web-instant':'GPT-5.6 Sol','chatgpt-web-astra':'GPT-6 Astra'}[modelId]):undefined;
+  const webName=provider==='pi-chatgpt-web'?({'chatgpt-web-instant':'GPT-5.6 Sol','chatgpt-web-astra':'GPT-6'}[modelId]):undefined;
   const name=actual&&webName?`${webName} · 网页`:modelNames[`${provider}:${modelId}`]||modelId;
   return actual?.reasoning?{key,name:`${name} · ${actual.reasoning}`,reasoning:actual.reasoning}:{key,name};
 }
