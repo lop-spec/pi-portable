@@ -36,8 +36,8 @@ test('queued choice is removed only after successful application and preserves n
  assert.match(hook,/await sendAgentCommand\(sid, \{type: "set_thinking_level", level: selection.thinking\}\);\s*clearPendingThinking/);
  assert.match(hook,/if \(nextSelectionRef.current.get\(sid\) === selection\) nextSelectionRef.current.delete\(sid\)/);
 });
-test('model switching preserves session strength except free routing selects its supported maximum',()=>{
+test('model switching preserves session strength except free and web providers select their supported maximum',()=>{
  const rpc=files.get('lib/rpc-manager.ts');
  assert.match(rpc,/const sessionThinkingLevel = this.inner.agent.state\?.thinkingLevel \?\? "off";[\s\S]*?await this.inner.setModel\(model, \{ persist: persistDefault \}\);[\s\S]*?this.inner.setThinkingLevel\(switchedThinkingLevel\)/);
- assert.match(rpc,/model.provider === "pi-free"[\s\S]*?getSupportedThinkingLevels[\s\S]*?\.at\(-1\)[\s\S]*?: sessionThinkingLevel/);
+ assert.match(rpc,/model.provider === "pi-free" \|\| model.provider.endsWith\("-web"\)[\s\S]*?getSupportedThinkingLevels[\s\S]*?\.at\(-1\)[\s\S]*?: sessionThinkingLevel/);
 });

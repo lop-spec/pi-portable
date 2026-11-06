@@ -23,14 +23,15 @@ function startup(text) {
   assert.ok(from>0 && to>from);
   return ts.transpileModule('async function run(){'+text.slice(from,to)+'return inner;} run();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 }
-test('real model RPC keeps free automatic highest effort without changing other sessions or later manual choices',async()=>{
+test('real model RPC selects supported highest effort for free and every web channel without changing other sessions or manual choices',async()=>{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'pi-free-max-rpc-'));
  const cwd=path.join(temp,'work');fs.mkdirSync(cwd);
  const full={off:'off',minimal:'minimal',low:'low',medium:'medium',high:'high',xhigh:'xhigh',max:'max'};
  const capped={off:null,minimal:null,low:'low',medium:'medium',high:'high',xhigh:null,max:null};
  const make=(id,map)=>({id,name:id,reasoning:true,input:['text'],contextWindow:8192,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0},thinkingLevelMap:map});
  const config=models=>({baseUrl:'http://127.0.0.1:1',api:'openai-completions',apiKey:'nonsecret-test-fixture',models});
- fs.writeFileSync(path.join(temp,'models.json'),JSON.stringify({providers:{fixture:config([make('astra',full)]),'pi-free':config([make('auto',full),make('capped',capped)])}}));
+ const webCases=[['pi-chatgpt-web','max',full],['pi-gemini-web','high',capped],['pi-zai-web','max',full],['pi-kimi-web','xhigh',{...full,max:null}],['pi-mimo-web','high',capped],['pi-qwen-web','high',capped],['pi-deepseek-web','max',full],['pi-stepfun-web','max',full],['pi-feishu-web','high',capped],['future-provider-web','max',full]];
+ fs.writeFileSync(path.join(temp,'models.json'),JSON.stringify({providers:{fixture:config([make('astra',full)]),'pi-free':config([make('auto',full),make('capped',capped)]),...Object.fromEntries(webCases.map(([p,_level,map])=>[p,config([make('web-fixture',map)])]))}}));
  const defaults={defaultProvider:'fixture',defaultModel:'astra',defaultThinkingLevel:'medium'};
  fs.writeFileSync(path.join(temp,'settings.json'),JSON.stringify(defaults));fs.writeFileSync(path.join(temp,'auth.json'),'{}');
  const sessions=[];
@@ -46,9 +47,16 @@ test('real model RPC keeps free automatic highest effort without changing other 
   const {session:reopened}=await sdk.createAgentSessionFromServices({services,sessionManager:inner.sessionManager,tools:[]});sessions.push(reopened);assert.equal(reopened.thinkingLevel,'low','ordinary restore never forces a new maximum');
   await switchTo('pi-free','capped');assert.equal(inner.thinkingLevel,'high','highest level comes from model capability, not a hardcoded max');
   await switchTo('fixture','astra');assert.equal(inner.thinkingLevel,'high','ordinary model keeps this conversation effort');
-  assert.equal(other.model.id,'astra');assert.equal(other.thinkingLevel,'low');
+  for(const [provider,highest] of webCases){
+    inner.setThinkingLevel('low');
+    await switchTo(provider,'web-fixture');assert.equal(inner.thinkingLevel,highest,provider+' selects its capability maximum');
+    inner.setThinkingLevel('low');
+    const {session:restored}=await sdk.createAgentSessionFromServices({services,sessionManager:inner.sessionManager,tools:[]});sessions.push(restored);
+    assert.equal(restored.thinkingLevel,'low',provider+' ordinary restore preserves a later manual choice');
+    assert.equal(other.model.id,'astra');assert.equal(other.thinkingLevel,'low');
+  }
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(temp,'settings.json'),'utf8')),defaults);
-  const hook=integrated.get('hooks/useAgentSession.ts');assert.match(hook,/if \(provider === "pi-free"\)[\s\S]*?type: "get_state"[\s\S]*?setNewSessionThinkingLevel\(resolved\)/);
+  const hook=integrated.get('hooks/useAgentSession.ts');assert.match(hook,/if \(provider === "pi-free" \|\| provider.endsWith\("-web"\)\)[\s\S]*?type: "get_state"[\s\S]*?setNewSessionThinkingLevel\(resolved\)/);
  } finally {for(const session of sessions)await session.dispose();fs.rmSync(temp,{recursive:true,force:true});}
 });
 test('actual cold-session API route admits explicit replacement before restoring a retired model',async()=>{

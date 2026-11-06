@@ -8,15 +8,15 @@ export function integrateSessionSettings({set, change, prepend, template}) {
           (entry) => entry.type === "message" && entry.message.role !== "system",
         );
         await this.inner.setModel(model, { persist: persistDefault });`);
-  // Free routing keeps its automatic highest effort on an explicit model switch.
+  // Free routing and web providers keep automatic highest effort on an explicit model switch.
   // Reopening a conversation never enters this branch; manual effort edits still win later.
-  change(rpc, '        this.inner.setThinkingLevel(sessionThinkingLevel);', `        const switchedThinkingLevel = model.provider === "pi-free"
+  change(rpc, '        this.inner.setThinkingLevel(sessionThinkingLevel);', `        const switchedThinkingLevel = model.provider === "pi-free" || model.provider.endsWith("-web")
           ? getSupportedThinkingLevels(model as Parameters<typeof getSupportedThinkingLevels>[0]).at(-1) ?? sessionThinkingLevel
           : sessionThinkingLevel;
         this.inner.setThinkingLevel(switchedThinkingLevel);`);
   // Only the new-draft path may opt into saving the next conversation's default.
   change(hook, '        await sendAgentCommand(sid, { type: "set_model", provider, modelId });', `        await sendAgentCommand(sid, { type: "set_model", provider, modelId, persistDefault: true });
-        if (provider === "pi-free") {
+        if (provider === "pi-free" || provider.endsWith("-web")) {
           const state = await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" });
           if (sessionHookMountedRef.current && sessionIdRef.current === sid) {
             syncLiveModel(state);
