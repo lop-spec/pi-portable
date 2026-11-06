@@ -11,7 +11,7 @@ import {savedSessionSettings} from '../assets/piweb-overlay/portable-session-set
 const source = process.env.PIWEB_SOURCE || fileURLToPath(new URL('../upstream/',import.meta.url));
 const require = createRequire(path.join(source,'package.json'));
 const ts = require('typescript');
-const sdk = await import(pathToFileURL(process.env.PI_SESSION_SDK || require.resolve('@earendil-works/pi-coding-agent')).href);
+const sdk = await import(pathToFileURL(process.env.PI_SESSION_SDK || path.join(source,'node_modules/@earendil-works/pi-coding-agent/dist/index.js')).href);
 const original = fs.readFileSync(path.join(source,'lib/rpc-manager.ts'),'utf8');
 const patched = integrate(n=>fs.readFileSync(path.join(source,n),'utf8')).get('lib/rpc-manager.ts');
 function startup(text) {
