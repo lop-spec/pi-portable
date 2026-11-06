@@ -1,3 +1,5 @@
+import './piweb-session-settings.mjs';
+import './piweb-session-settings-sdk.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -36,5 +38,5 @@ test('queued choice is removed only after successful application and preserves n
 });
 test('model switching restores session strength, not model defaults',()=>{
  const rpc=files.get('lib/rpc-manager.ts');
- assert.match(rpc,/const sessionThinkingLevel = this.inner.agent.state\?.thinkingLevel \?\? "off";\s*await this.inner.setModel\(model, \{ persist: true \}\);[\s\S]*?this.inner.setThinkingLevel\(sessionThinkingLevel\)/);
+ assert.match(rpc,/const sessionThinkingLevel = this.inner.agent.state\?.thinkingLevel \?\? "off";[\s\S]*?await this.inner.setModel\(model, \{ persist: persistDefault \}\);[\s\S]*?this.inner.setThinkingLevel\(sessionThinkingLevel\)/);
 });

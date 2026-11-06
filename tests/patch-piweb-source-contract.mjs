@@ -154,7 +154,7 @@ test('service-tier hook forwards the same context/options for native and snapsho
 
 test('model defaults use public persist option, clamp native thinking and retain model-load errors', () => {
   const rpc = integrated.get('lib/rpc-manager.ts'), models = integrated.get('app/api/models/route.ts');
-  assert.match(rpc, /setModel\(model, \{ persist: true \}\)/);
+  assert.match(rpc, /setModel\(model, \{ persist: persistDefault \}\)/);
   assert.match(rpc, /settingsManager.flush\(\)/);
   assert.match(models, /clampThinkingLevel/);
   assert.match(models, /force, providers: \['openai-codex'\]/);

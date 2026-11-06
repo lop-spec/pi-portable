@@ -28,6 +28,7 @@ import { integrateCraftTranscript } from './patch-piweb-craft-transcript.mjs';
 import { integrateSingleWatermark } from './patch-piweb-single-watermark.mjs';
 import { integrateRemoveSound } from './patch-piweb-remove-sound.mjs';
 import { integrateTurnModel } from './patch-piweb-turn-model.mjs';
+import { integrateSessionSettings } from './patch-piweb-session-settings.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -417,6 +418,7 @@ export function integrate(getFile, { onBeforeRemoveSound } = {}) {
   onBeforeRemoveSound?.(new Map(files));
   integrateRemoveSound({ get, set, change });
   integrateTurnModel({ change, set, template });
+  integrateSessionSettings({ set, change, prepend, template });
   return files;
 }
 
