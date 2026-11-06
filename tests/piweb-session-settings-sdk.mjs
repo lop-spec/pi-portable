@@ -16,12 +16,41 @@ const original = fs.readFileSync(path.join(source,'lib/rpc-manager.ts'),'utf8');
 const originalRoute = fs.readFileSync(path.join(source,'app/api/agent/[id]/route.ts'),'utf8');
 const integrated = integrate(n=>fs.readFileSync(path.join(source,n),'utf8'));
 const patched = integrated.get('lib/rpc-manager.ts');
+const ai = await import(pathToFileURL(path.join(source,'node_modules/@earendil-works/pi-ai/dist/index.js')).href);
 function startup(text) {
   const from=text.indexOf('    const defaultProvider = services.settingsManager.getDefaultProvider();');
   const to=text.indexOf('    // If specific tool names were requested',from);
   assert.ok(from>0 && to>from);
   return ts.transpileModule('async function run(){'+text.slice(from,to)+'return inner;} run();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 }
+test('real model RPC keeps free automatic highest effort without changing other sessions or later manual choices',async()=>{
+ const temp=fs.mkdtempSync(path.join(os.tmpdir(),'pi-free-max-rpc-'));
+ const cwd=path.join(temp,'work');fs.mkdirSync(cwd);
+ const full={off:'off',minimal:'minimal',low:'low',medium:'medium',high:'high',xhigh:'xhigh',max:'max'};
+ const capped={off:null,minimal:null,low:'low',medium:'medium',high:'high',xhigh:null,max:null};
+ const make=(id,map)=>({id,name:id,reasoning:true,input:['text'],contextWindow:8192,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0},thinkingLevelMap:map});
+ const config=models=>({baseUrl:'http://127.0.0.1:1',api:'openai-completions',apiKey:'nonsecret-test-fixture',models});
+ fs.writeFileSync(path.join(temp,'models.json'),JSON.stringify({providers:{fixture:config([make('astra',full)]),'pi-free':config([make('auto',full),make('capped',capped)])}}));
+ const defaults={defaultProvider:'fixture',defaultModel:'astra',defaultThinkingLevel:'medium'};
+ fs.writeFileSync(path.join(temp,'settings.json'),JSON.stringify(defaults));fs.writeFileSync(path.join(temp,'auth.json'),'{}');
+ const sessions=[];
+ try {
+  const services=await sdk.createAgentSessionServices({cwd,agentDir:temp,resourceLoaderOptions:{noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true}});
+  async function create(level){const sm=sdk.SessionManager.inMemory(cwd);const {session}=await sdk.createAgentSessionFromServices({services,sessionManager:sm,model:services.modelRuntime.getModel('fixture','astra'),thinkingLevel:level,tools:[]});sessions.push(session);sm.appendMessage({role:'user',content:'isolated settings fixture',timestamp:Date.now()});return session;}
+  const inner=await create('medium'),other=await create('low');
+  const from=patched.indexOf('      case "set_model": {');const to=patched.indexOf('\n      case ',from+1);
+  const code=ts.transpileModule('async function run(command){switch(command.type){'+patched.slice(from,to)+'}} run.call({inner}, command);',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const switchTo=(provider,modelId)=>vm.runInNewContext(code,{inner,command:{type:'set_model',provider,modelId},getSupportedThinkingLevels:ai.getSupportedThinkingLevels,invalidateModelsCache(){},invalidateSessionListCache(){},console});
+  await switchTo('pi-free','auto');assert.equal(inner.thinkingLevel,'max');assert.equal(other.thinkingLevel,'low');
+  inner.setThinkingLevel('low');assert.equal(inner.thinkingLevel,'low','manual effort choice after switching remains allowed');
+  const {session:reopened}=await sdk.createAgentSessionFromServices({services,sessionManager:inner.sessionManager,tools:[]});sessions.push(reopened);assert.equal(reopened.thinkingLevel,'low','ordinary restore never forces a new maximum');
+  await switchTo('pi-free','capped');assert.equal(inner.thinkingLevel,'high','highest level comes from model capability, not a hardcoded max');
+  await switchTo('fixture','astra');assert.equal(inner.thinkingLevel,'high','ordinary model keeps this conversation effort');
+  assert.equal(other.model.id,'astra');assert.equal(other.thinkingLevel,'low');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(temp,'settings.json'),'utf8')),defaults);
+  const hook=integrated.get('hooks/useAgentSession.ts');assert.match(hook,/if \(provider === "pi-free"\)[\s\S]*?type: "get_state"[\s\S]*?setNewSessionThinkingLevel\(resolved\)/);
+ } finally {for(const session of sessions)await session.dispose();fs.rmSync(temp,{recursive:true,force:true});}
+});
 test('actual cold-session API route admits explicit replacement before restoring a retired model',async()=>{
  async function invoke(route,body) {
   const calls=[];

@@ -2,14 +2,32 @@
 export function integrateSessionSettings({set, change, prepend, template}) {
   const hook = 'hooks/useAgentSession.ts', rpc = 'lib/rpc-manager.ts';
   set('lib/portable-session-settings.mjs', template('portable-session-settings.mjs'));
-  prepend(rpc, 'import { savedSessionSettings } from "@/lib/portable-session-settings.mjs";\n');
+  prepend(rpc, 'import { savedSessionSettings } from "@/lib/portable-session-settings.mjs";\nimport { getSupportedThinkingLevels } from "@earendil-works/pi-ai";\n');
   // A session-local model choice must not silently become the app-wide default.
   change(rpc, 'await this.inner.setModel(model, { persist: true });', `const persistDefault = command.persistDefault === true && !this.inner.sessionManager.getBranch().some(
           (entry) => entry.type === "message" && entry.message.role !== "system",
         );
         await this.inner.setModel(model, { persist: persistDefault });`);
+  // Free routing keeps its automatic highest effort on an explicit model switch.
+  // Reopening a conversation never enters this branch; manual effort edits still win later.
+  change(rpc, '        this.inner.setThinkingLevel(sessionThinkingLevel);', `        const switchedThinkingLevel = model.provider === "pi-free"
+          ? getSupportedThinkingLevels(model as Parameters<typeof getSupportedThinkingLevels>[0]).at(-1) ?? sessionThinkingLevel
+          : sessionThinkingLevel;
+        this.inner.setThinkingLevel(switchedThinkingLevel);`);
   // Only the new-draft path may opt into saving the next conversation's default.
-  change(hook, '        await sendAgentCommand(sid, { type: "set_model", provider, modelId });', '        await sendAgentCommand(sid, { type: "set_model", provider, modelId, persistDefault: true });');
+  change(hook, '        await sendAgentCommand(sid, { type: "set_model", provider, modelId });', `        await sendAgentCommand(sid, { type: "set_model", provider, modelId, persistDefault: true });
+        if (provider === "pi-free") {
+          const state = await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" });
+          if (sessionHookMountedRef.current && sessionIdRef.current === sid) {
+            syncLiveModel(state);
+            const resolved = asConcreteThinkingLevel(state?.thinkingLevel);
+            if (resolved) {
+              thinkingLevelOverrideRef.current = resolved;
+              setNewSessionThinkingLevel(resolved);
+            }
+          }
+        }`);
+  change(hook, '[addNotice, currentModelOverride, ensureNewSession, isNew, loadSession, setNewSessionModel]', '[addNotice, currentModelOverride, ensureNewSession, isNew, loadSession, setNewSessionModel, syncLiveModel]');
   change(hook, '    writeThinkingPreference(level);', '    if (isNew) writeThinkingPreference(level);', 2);
   change(hook, ': currentModel ?? (data?.context.messages.length === 0 ? newSessionDefaultModel : null);', ': currentModel;');
   change(hook, ': currentThinkingLevel ?? (data?.context.messages.length === 0 ? newSessionDefaultThinkingLevel : null);', ': currentThinkingLevel;');
