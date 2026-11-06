@@ -18,6 +18,21 @@ export function integrateSessionSettings({set, change, prepend, template}) {
       : null);`, `    if (!sessionIdRef.current) setNewSessionDefaultModel(displayDefaultModel
       ? { provider: displayDefaultModel.provider, modelId: displayDefaultModel.id }
       : null);`);
+  // Explicit replacement is distinct from new defaults and implicit tool-wrapper rebuilds.
+  change(rpc, '  initialModel?: { provider: string; modelId: string };', '  initialModel?: { provider: string; modelId: string };\n  replacementModel?: { provider: string; modelId: string };');
+  change(rpc, '  const { initialModel, allowInitialModelFallback, thinkingLevel } = options;', '  const { initialModel, allowInitialModelFallback, thinkingLevel, replacementModel } = options;');
+  change('app/api/agent/[id]/route.ts', `    const { session } = await startRpcSession(id, filePath, undefined, {
+      ...(toolNames !== undefined ? { toolNames } : {}),
+    });`, `    if (body.type === "set_model" && (typeof body.provider !== "string" || !body.provider.trim()
+        || typeof body.modelId !== "string" || !body.modelId.trim())) {
+      throw new Error("Invalid model selection");
+    }
+    const { session } = await startRpcSession(id, filePath, undefined, {
+      ...(toolNames !== undefined ? { toolNames } : {}),
+      ...(body.type === "set_model"
+        ? { replacementModel: { provider: body.provider as string, modelId: body.modelId as string } }
+        : {}),
+    });`);
   // Saved model/thinking events count even when no user message has been sent.
   change(rpc, `    const savedModel = hasExistingMessages
       ? getLatestModelChange(branch as unknown as SessionEntry[])
@@ -25,10 +40,22 @@ export function integrateSessionSettings({set, change, prepend, template}) {
     const restoringSession = Boolean(sessionFile);
     const savedModel = restoringSession ? savedPreferences.model : null;`);
   change(rpc, '    const initial = hasExistingMessages ? null : selectInitialModelScope(scope, {', '    const initial = restoringSession || hasExistingMessages ? null : selectInitialModelScope(scope, {');
-  change(rpc, '    const startupModel = restoredModel && services.modelRuntime.hasConfiguredAuth(restoredModel.provider)', `    if (restoringSession && savedModel && (!restoredModel || !services.modelRuntime.hasConfiguredAuth(restoredModel.provider))) {
+  change(rpc, `    const startupModel = restoredModel && services.modelRuntime.hasConfiguredAuth(restoredModel.provider)
+      ? restoredModel
+      : initial?.model;`, `    let explicitReplacement = restoringSession && replacementModel
+      ? services.modelRuntime.getModel(replacementModel.provider, replacementModel.modelId)
+      : undefined;
+    if (restoringSession && replacementModel && !explicitReplacement) {
+      await services.modelRuntime.refresh({ allowNetwork: false });
+      explicitReplacement = services.modelRuntime.getModel(replacementModel.provider, replacementModel.modelId);
+      if (!explicitReplacement) throw new Error(\`Model not found: \${replacementModel.provider}/\${replacementModel.modelId}\`);
+    }
+    if (!explicitReplacement && restoringSession && savedModel && (!restoredModel || !services.modelRuntime.hasConfiguredAuth(restoredModel.provider))) {
       throw new Error(\`Saved session model is unavailable: \${savedModel.provider}/\${savedModel.modelId}. Choose a replacement for this conversation explicitly.\`);
     }
-    const startupModel = restoredModel && services.modelRuntime.hasConfiguredAuth(restoredModel.provider)`);
+    const startupModel = explicitReplacement ?? (restoredModel && services.modelRuntime.hasConfiguredAuth(restoredModel.provider)
+      ? restoredModel
+      : initial?.model);`);
   change(rpc, '      ...(initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),', `      ...(restoringSession && savedPreferences.thinkingLevel !== undefined
         ? { thinkingLevel: savedPreferences.thinkingLevel as ThinkingLevel }
         : initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),`);

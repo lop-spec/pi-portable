@@ -13,13 +13,36 @@ const require = createRequire(path.join(source,'package.json'));
 const ts = require('typescript');
 const sdk = await import(pathToFileURL(process.env.PI_SESSION_SDK || path.join(source,'node_modules/@earendil-works/pi-coding-agent/dist/index.js')).href);
 const original = fs.readFileSync(path.join(source,'lib/rpc-manager.ts'),'utf8');
-const patched = integrate(n=>fs.readFileSync(path.join(source,n),'utf8')).get('lib/rpc-manager.ts');
+const originalRoute = fs.readFileSync(path.join(source,'app/api/agent/[id]/route.ts'),'utf8');
+const integrated = integrate(n=>fs.readFileSync(path.join(source,n),'utf8'));
+const patched = integrated.get('lib/rpc-manager.ts');
 function startup(text) {
   const from=text.indexOf('    const defaultProvider = services.settingsManager.getDefaultProvider();');
   const to=text.indexOf('    // If specific tool names were requested',from);
   assert.ok(from>0 && to>from);
   return ts.transpileModule('async function run(){'+text.slice(from,to)+'return inner;} run();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 }
+test('actual cold-session API route admits explicit replacement before restoring a retired model',async()=>{
+ async function invoke(route,body) {
+  const calls=[];
+  const exports={};
+  const runtime={getRpcSession:()=>null,setRpcSessionTools:()=>{throw Error('unexpected tools change');},startRpcSession:async(id,file,cwd,options)=>{
+   calls.push({id,options});
+   if(!options.replacementModel)throw Error('Saved session model is unavailable: pi-free/kimi-k3.1-pro');
+   return {session:{send:async(command)=>{calls.push({command});return {id:command.modelId,provider:command.provider};}}};
+  }};
+  const require=name=>name==='next/server'?{NextResponse:{json:(data,opts)=>({data,status:opts?.status??200})}}:name==='@/lib/session-reader'?{resolveSessionPath:async()=>'/fake/session.jsonl'}:name==='@/lib/rpc-manager'?runtime:(()=>{throw Error(name);})();
+  vm.runInNewContext(ts.transpileModule(route,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,require});
+  const response=await exports.POST({json:async()=>body},{params:Promise.resolve({id:'fixture-old-session'})});
+  return {response,calls};
+ }
+ const command={type:'set_model',provider:'fixture',modelId:'sol'};
+ const before=await invoke(originalRoute,command);assert.equal(before.response.status,500);assert.match(before.response.data.error,/kimi-k3.1-pro/);
+ const after=await invoke(integrated.get('app/api/agent/[id]/route.ts'),command);
+ assert.equal(after.response.status,200);assert.equal(after.calls[0].options.replacementModel.modelId,'sol');assert.equal(after.calls.length,2);assert.equal(after.calls[1].command,command);
+ const prompt=await invoke(integrated.get('app/api/agent/[id]/route.ts'),{type:'prompt',message:'not sent'});assert.equal(prompt.response.status,500);assert.equal(prompt.calls[0].options.replacementModel,undefined);
+ const invalid=await invoke(integrated.get('app/api/agent/[id]/route.ts'),{type:'set_model',provider:'fixture'});assert.equal(invalid.response.status,500);assert.equal(invalid.calls.length,0);assert.match(invalid.response.data.error,/Invalid model selection/);
+});
 test('real SDK reproduces and fixes cold empty-session reset, with independent new defaults',async()=>{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'pi-session-settings-'));
  const cwd=path.join(temp,'work');fs.mkdirSync(cwd);
@@ -32,10 +55,10 @@ test('real SDK reproduces and fixes cold empty-session reset, with independent n
   const services=await sdk.createAgentSessionServices({cwd,agentDir:temp,resourceLoaderOptions:{noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true}});
   const visible=await services.modelRuntime.getAvailable();assert.equal(visible.filter(m=>m.provider==='fixture').length,3);
   const scope={visible:visible.filter(m=>m.provider==='fixture'),scopedModels:[]};
-  async function run(text,model,level,sessionFile='saved-session') {
+  async function run(text,model,level,sessionFile='saved-session',replacementModel) {
    const sessionManager=sdk.SessionManager.inMemory(cwd);
    if(model){sessionManager.appendModelChange('fixture',model);sessionManager.appendThinkingLevelChange(level);}
-   const context={services,sessionManager,scope,sessionFile,initialModel:undefined,effectiveInitialModel:undefined,thinkingLevel:undefined,toolsOption:[],subagentResources:null,savedSessionSettings,
+   const context={services,sessionManager,scope,sessionFile,replacementModel,initialModel:undefined,effectiveInitialModel:undefined,thinkingLevel:undefined,toolsOption:[],subagentResources:null,savedSessionSettings,
     createAgentSessionFromServices:sdk.createAgentSessionFromServices,
     getLatestModelChange:entries=>savedSessionSettings(entries).model,
     selectInitialModelScope:(_scope,opts)=>({model:services.modelRuntime.getModel(opts.defaultModel.provider,opts.defaultModel.modelId),thinkingLevel:opts.thinkingLevel}),
@@ -47,6 +70,10 @@ test('real SDK reproduces and fixes cold empty-session reset, with independent n
   assert.deepEqual(await run(patched,'astra','medium'),{model:'astra',thinking:'medium'});
   assert.deepEqual(await run(patched,'sol','low'),{model:'sol',thinking:'low'});
   assert.deepEqual(await run(patched,null,null,''),{model:'luna',thinking:'high'},'only new conversations adopt defaults');
+  await assert.rejects(run(patched,'retired-kimi','medium'),/Saved session model is unavailable/,'ordinary resume never silently changes the saved model');
+  assert.deepEqual(await run(patched,'retired-kimi','medium','saved-session',{provider:'fixture',modelId:'sol'}),{model:'sol',thinking:'medium'},'an explicit replacement bypasses the unavailable saved model and keeps the saved strength');
+  assert.deepEqual(await run(patched,'astra','low','saved-session',{provider:'fixture',modelId:'sol'}),{model:'sol',thinking:'low'},'a cold explicit switch also wins over an available old model');
+  await assert.rejects(run(patched,'retired-kimi','medium','saved-session',{provider:'fixture',modelId:'also-missing'}),/Model not found: fixture\/also-missing/,'an invalid replacement never falls back to defaults');
   assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile,'utf8')),defaults);
  } finally {fs.rmSync(temp,{recursive:true,force:true});}
 });
