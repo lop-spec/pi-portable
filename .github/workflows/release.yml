@@ -215,7 +215,7 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "Desktop UI dependency install failed" }
           Pop-Location
-          node --test tests/piweb-turn-model.mjs
+          node --test tests/piweb-turn-model.mjs tests/piweb-runtime-model.mjs
           if ($LASTEXITCODE -ne 0) { throw "turn model label regression" }
           Push-Location upstream
           node node_modules/typescript/bin/tsc --noEmit
