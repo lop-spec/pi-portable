@@ -27,6 +27,7 @@ import { integrateCetusCraft } from './patch-piweb-cetus-craft.mjs';
 import { integrateCraftTranscript } from './patch-piweb-craft-transcript.mjs';
 import { integrateSingleWatermark } from './patch-piweb-single-watermark.mjs';
 import { integrateRemoveSound } from './patch-piweb-remove-sound.mjs';
+import { integrateTurnModel } from './patch-piweb-turn-model.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -415,6 +416,7 @@ export function integrate(getFile, { onBeforeRemoveSound } = {}) {
   integrateStopHandlerCleanup({ get, change, template });
   onBeforeRemoveSound?.(new Map(files));
   integrateRemoveSound({ get, set, change });
+  integrateTurnModel({ change, set, template });
   return files;
 }
 
