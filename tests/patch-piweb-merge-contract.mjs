@@ -77,7 +77,7 @@ test('sidebar uses status navigation and the search index is warmed outside typi
   assert.match(injected, /if \(!document.querySelector\('\[data-pi-status-navigation\]'\)\)/);
   assert.match(injected, /pw-goal-board-btn/);
   assert.match(injected, /width="28" height="21" viewBox="0 0 32 24"/);
-  assert.match(files.get('app/redesign-sidebar.css'), /min-height:44px/);
+  assert.match(files.get('app/merge.css'), /min-height:44px/);
 });
 
 /** 与 integrate() 里一致的最小助手：锚点必须恰好出现 expected 次，否则抛错（整套叠加因此零写入）。 */

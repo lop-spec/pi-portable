@@ -11,7 +11,7 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   change(markdown, 'const chatRemarkPluginsWithFrontmatter: PluginList = [[remarkFrontmatter, ["yaml"]], [remarkGfm, remarkGfmOptions], remarkMath];', 'const chatRemarkPluginsWithFrontmatter: PluginList = [[remarkFrontmatter, ["yaml"]], [remarkGfm, remarkGfmOptions], remarkMath, portableCjkEmphasis];');
 
   // 2. 样式：新增一个最后加载的样式文件，承载本步骤的所有新增与覆盖（只用既有 token）。
-  set('app/merge.css', template('merge/app/merge.css'));
+  set('app/merge.css', template('merge/app/merge.css') + '\n' + template('merge/app/sidebar-navigation.css'));
   change('app/layout.tsx', 'import "./craft-transcript.css";', 'import "./craft-transcript.css";\nimport "./merge.css";');
 
   // 3. 会话快照（标签栏、看板、欢迎页共用）、看板分栏逻辑与三个视图组件。
@@ -57,7 +57,15 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   change(craft, "<span className=\"pw-craft-time\">{props.running.has(session.id) ? '运行中' : formatSessionTime(session.modified, new Date())}</span>", "<span className={'pw-craft-time' + (props.running.has(session.id) ? ' is-running' : '')}>{props.running.has(session.id) ? <><span className=\"pw-spinner pw-spinner--sm\" aria-hidden=\"true\" />运行中</> : formatSessionTime(session.modified, new Date())}</span>");
   change(craft, "<span className=\"pw-craft-preview\">{props.unread.has(session.id) ? '有新回复 · ' : ''}{session.firstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span>", "<span className=\"pw-craft-preview\">{props.unread.has(session.id) && <span className=\"pw-craft-new\">有新回复 · </span>}{session.firstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span>");
 
-  // 8. 全文搜索：按文件指纹缓存纯文本，侧栏空闲时预热；查询不再重复扫原始 JSONL。
+  // 8. 状态菜单直接切换归档视图；现代侧栏不再构造重复的归档按钮。
+  const tree = 'components/ProjectTree.tsx';
+  change(tree, `    const control = document.querySelector<HTMLButtonElement>('button[data-pi-session-archive-control]');
+    if (!control) { setNotice('归档组件未就绪，请刷新后重试'); return; }
+    control.click();`, `    const event = new CustomEvent('pi-web:set-archive-view', { detail: { view: wantArchived ? 'archived' : 'active' }, cancelable: true });
+    if (document.dispatchEvent(event)) setNotice('归档组件未就绪，请刷新后重试');`);
+  change(tree, '<span data-pi-archive-slot="" />', '<span data-pi-archive-slot="" data-pi-status-navigation="" />');
+
+  // 9. 全文搜索：按文件指纹缓存纯文本，侧栏空闲时预热；查询不再重复扫原始 JSONL。
   set('lib/session-search.ts', template('merge/lib/session-search.ts'));
   const searchRoute = 'app/api/sessions/search/route.ts';
   change(searchRoute, 'import { searchSessionContents } from "@/lib/session-search";', 'import { searchSessionContents, warmSessionSearch } from "@/lib/session-search";');
@@ -80,7 +88,7 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   change(searchComponent, '换个关键词试试；归档的会话需切到归档视图再搜。', '可搜标题和正文；空格分开多个关键词。');
   change(searchComponent, '只扫描了最近的部分会话，结果可能不完整。', '结果较多或部分文件未读完，可增加关键词缩小范围。');
 
-  // 9. ChatWindow：空白新会话页，输入框下方列出「继续任务」。
+  // 10. ChatWindow：空白新会话页，输入框下方列出「继续任务」。
   const chat = 'components/ChatWindow.tsx';
   prepend(chat, 'import { WelcomeResume } from "./WelcomeResume";\n');
   change(chat, '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />\n        {isEmptyNew && <WelcomeResume />}');
