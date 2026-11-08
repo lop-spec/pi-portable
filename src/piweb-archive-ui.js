@@ -2227,6 +2227,7 @@
   window.__piGoalBoardUi = true;
   const slots = window.__piUiSlots;
   if (!slots?.register) return;
+  const start = () => {
   const base = () => `${location.protocol}//${location.hostname}:30170/`;
   let overlay, frame, status, opener;
   function close() {
@@ -2275,4 +2276,6 @@
   const glyph = document.createElement('template'); glyph.innerHTML = '<svg width="28" height="21" viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="29" height="19" rx="3"></rect><path d="M10.5 6v12M20.5 6v12M5 8h2M5 12h2M14 8h3M14 12h3M24 8h3M24 12h3M24 16h3"></path><path d="m4.5 16 1.2 1.2L8 15" stroke-width="1.8"></path></svg>';
   button.append(glyph.content); button.addEventListener('click', show); host.append(button);
   slots.register({ name: 'goals', slot: 'archive', order: 1, host });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 })();
