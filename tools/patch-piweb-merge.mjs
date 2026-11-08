@@ -90,6 +90,7 @@ export function integrateMerge({ get, set, change, prepend, template }) {
 
   // 10. ChatWindow：空白新会话页，输入框下方列出「继续任务」。
   const chat = 'components/ChatWindow.tsx';
+  change(chat, '<span style={{ fontSize: 11, color: "var(--text-muted)" }}>', '<span style={{ fontSize: 12, color: "var(--text-muted)" }}>', 2);
   prepend(chat, 'import { WelcomeResume } from "./WelcomeResume";\n');
   change(chat, '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />\n        {isEmptyNew && <WelcomeResume />}');
 }
