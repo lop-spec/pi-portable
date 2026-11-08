@@ -29,6 +29,7 @@ import { integrateSingleWatermark } from './patch-piweb-single-watermark.mjs';
 import { integrateRemoveSound } from './patch-piweb-remove-sound.mjs';
 import { integrateTurnModel } from './patch-piweb-turn-model.mjs';
 import { integrateSessionSettings } from './patch-piweb-session-settings.mjs';
+import { integrateMerge } from './patch-piweb-merge.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -37,7 +38,7 @@ const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const normalize = value => value.replaceAll('\r\n', '\n');
 const template = name => normalize(fs.readFileSync(path.join(templates, name), 'utf8'));
 
-export function integrate(getFile, { onBeforeRemoveSound } = {}) {
+export function integrate(getFile, { onBeforeRemoveSound, withoutMerge = false } = {}) {
   const files = new Map();
   const get = name => files.has(name) ? files.get(name) : normalize(getFile(name));
   const set = (name, value) => files.set(name, value);
@@ -419,6 +420,8 @@ export function integrate(getFile, { onBeforeRemoveSound } = {}) {
   integrateRemoveSound({ get, set, change });
   integrateTurnModel({ change, set, template });
   integrateSessionSettings({ set, change, prepend, template });
+  // withoutMerge 只给合同测试用：拿到合并步骤之前的状态，验证锚点与漂移时的拒绝。
+  if (!withoutMerge) integrateMerge({ get, set, change, prepend, template });
   return files;
 }
 

@@ -7,6 +7,7 @@ import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {resolveTimelineModel} from '../assets/piweb-overlay/turn-model-label.mjs';
 import {projectCraftTurn} from '../assets/piweb-overlay/craft-transcript/model.mjs';
+import {timelineBreakdown} from '../assets/piweb-overlay/merge/lib/portable-timeline-summary.mjs';
 const a={kind:'assistant',key:'a',message:{role:'assistant',provider:'actual',model:'model-a',timestamp:1000,content:[{type:'toolCall',toolCallId:'tool',toolName:'read',input:{path:'index.ts',_displayName:'读取文件',_intent:'核对实现'}}]}};
 const b={...a.message,model:'model-b',content:[]};
 const props={entries:[a],toolResults:new Map(),live:true,activeModel:{provider:'confirmed',modelId:'runtime'},modelNames:{'actual:model-a':'Model A','actual:model-b':'Model B'}};
@@ -31,7 +32,7 @@ test('integrated Craft component renders model above steps, with exact ID toolti
  const req=createRequire(path.join(source,'package.json')),ts=req('typescript'),React=req('react'),{renderToStaticMarkup}=req('react-dom/server');
  const code=fs.readFileSync(path.join(source,'components/PortableProcessTimeline.tsx'),'utf8');
  const module={exports:{}};
- const localRequire=id=>id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
+ const localRequire=id=>id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
  const compiled=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
  vm.runInNewContext('(function(require,module,exports){'+compiled+'\n})',{console},{filename:'PortableProcessTimeline.tsx'})(localRequire,module,module.exports);
  const render=p=>renderToStaticMarkup(React.createElement(module.exports.PortableProcessTimeline,p));

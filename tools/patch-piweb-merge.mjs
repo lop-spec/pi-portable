@@ -1,0 +1,64 @@
+// 2026-11 界面合并（lop 11-08「把 GitHub 上最好看的 harness 的优点合并进 piweb，哪里要改就改、要大改就大改」）。
+// 取自：cc-haha 的多任务标签栏、过程摘要与奶油暖色，agent-orchestrator 的状态看板，Kun 的「继续任务」欢迎页，
+// 并修掉线上的中文加粗失效与设置页对齐。全部放在整套叠加的最后一步：用锚点改最终文本、新文件走 assets/piweb-overlay/merge/；
+// 任一锚点不唯一就整体拒绝（零写入），与其他叠加步骤一致。设计与取舍见 docs/piweb-ui-merge-20261108.md。
+export function integrateMerge({ get, set, change, prepend, template }) {
+  // 1. 中文加粗：成对的 **…** 紧贴中文标点/汉字时 CommonMark 不认，补救同一文本节点内的成对星号。
+  set('lib/portable-cjk-emphasis.mjs', template('merge/lib/portable-cjk-emphasis.mjs'));
+  const markdown = 'lib/markdown.ts';
+  prepend(markdown, 'import { portableCjkEmphasis } from "./portable-cjk-emphasis.mjs";\n');
+  change(markdown, 'const chatRemarkPlugins: PluginList = [[remarkGfm, remarkGfmOptions], remarkMath];', 'const chatRemarkPlugins: PluginList = [[remarkGfm, remarkGfmOptions], remarkMath, portableCjkEmphasis];');
+  change(markdown, 'const chatRemarkPluginsWithFrontmatter: PluginList = [[remarkFrontmatter, ["yaml"]], [remarkGfm, remarkGfmOptions], remarkMath];', 'const chatRemarkPluginsWithFrontmatter: PluginList = [[remarkFrontmatter, ["yaml"]], [remarkGfm, remarkGfmOptions], remarkMath, portableCjkEmphasis];');
+
+  // 2. 样式：新增一个最后加载的样式文件，承载本步骤的所有新增与覆盖（只用既有 token）。
+  set('app/merge.css', template('merge/app/merge.css'));
+  change('app/layout.tsx', 'import "./craft-transcript.css";', 'import "./craft-transcript.css";\nimport "./merge.css";');
+
+  // 3. 会话快照（标签栏、看板、欢迎页共用）、看板分栏逻辑与三个视图组件。
+  set('lib/portable-session-board.mjs', template('merge/lib/portable-session-board.mjs'));
+  set('lib/portable-session-store.ts', template('merge/lib/portable-session-store.ts'));
+  set('components/SessionTabs.tsx', template('merge/components/SessionTabs.tsx'));
+  set('components/SessionBoard.tsx', template('merge/components/SessionBoard.tsx'));
+  set('components/WelcomeResume.tsx', template('merge/components/WelcomeResume.tsx'));
+
+  // 4. AppShell：发布会话快照、响应「打开会话 / 新建会话」事件，顶栏下挂标签栏，对话区上盖看板。
+  const shell = 'components/AppShell.tsx';
+  prepend(shell, 'import { SessionTabs } from "./SessionTabs";\nimport { SessionBoard } from "./SessionBoard";\nimport { NEW_SESSION_EVENT, OPEN_SESSION_EVENT, publishPortableSessions, useWindowEvent } from "@/lib/portable-session-store";\n');
+  change(shell, '  const showPlaceholder = initialSessionRestored && !showChat;', `  const showPlaceholder = initialSessionRestored && !showChat;
+  const portableDraftOpen = selectedSession === null && effectiveNewSessionCwd !== null;
+  useEffect(() => {
+    publishPortableSessions({ sessions: sessionsWithSelection, running: runningSessionIds, selectedId: selectedSession?.id ?? null, draftOpen: portableDraftOpen });
+  }, [portableDraftOpen, runningSessionIds, selectedSession?.id, sessionsWithSelection]);
+  useWindowEvent<CustomEvent<{ id: string }>>(OPEN_SESSION_EVENT, useCallback((event) => { void handleOpenSession(event.detail.id); }, [handleOpenSession]));
+  useWindowEvent(NEW_SESSION_EVENT, useCallback(() => { void handleNewSession(\`tab-\${Date.now()}\`, activeCwd ?? ""); }, [activeCwd, handleNewSession]));`);
+  change(shell, '        {isMobile && renderProjectTrustWarning(true)}', '        {isMobile && renderProjectTrustWarning(true)}\n        {!isMobile && <SessionTabs />}');
+  change(shell, '          {showChat ? (\n            <ChatWindow\n              key={sessionKey}', '          <SessionBoard />\n          {showChat ? (\n            <ChatWindow\n              key={sessionKey}');
+
+  // 5. 过程折叠行：不展开就能看出这一轮读了/改了/跑了什么，以及用时（取自 cc-haha）。
+  set('lib/portable-timeline-summary.mjs', template('merge/lib/portable-timeline-summary.mjs'));
+  const timeline = 'components/PortableProcessTimeline.tsx';
+  prepend(timeline, 'import { timelineBreakdown } from "@/lib/portable-timeline-summary.mjs";\n');
+  change(timeline, "  const active=activities.find(a=>a.id===selected);", "  const breakdown=summary?'':timelineBreakdown(activities,props.startedAt,end?.at);\n  const active=activities.find(a=>a.id===selected);");
+  change(timeline, "<strong>{activities.length} 个步骤{summary?'':'已完成'}</strong>{summary&&<><span> · </span>{summary}</>}", "<strong>{activities.length} 个步骤{summary||breakdown?'':'已完成'}</strong>{summary?<><span> · </span>{summary}</>:breakdown?<><span> · </span>{breakdown}</>:null}");
+
+  // 6. 主题「纸白」（取自 cc-haha 的奶油暖色）：加进主题列表、图标、三种语言词条，设置页每个主题带色块预览。
+  change('lib/theme.ts', '  { id: "dark", label: "settings.themeDark" },', '  { id: "dark", label: "settings.themeDark" },\n  { id: "paper", label: "settings.themePaper" },');
+  change('components/ThemeIcon.tsx', '  if (preference === "mist") {', `  if (preference === "paper") {
+    return <svg {...common}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></svg>;
+  }
+  if (preference === "mist") {`);
+  change('lib/i18n/messages/zh-CN.ts', '    "settings.themeDark": "深色",', '    "settings.themeDark": "深色",\n    "settings.themePaper": "纸白",');
+  change('lib/i18n/messages/en.ts', '    "settings.themeDark": "Dark",', '    "settings.themeDark": "Dark",\n    "settings.themePaper": "Paper",');
+  change('lib/i18n/messages/zh-TW.ts', '    "settings.themeDark": "深色",', '    "settings.themeDark": "深色",\n    "settings.themePaper": "紙白",');
+  change('components/SettingsPanel.tsx', '                key={option.id}\n                className="settings-theme-option"', '                key={option.id}\n                className="settings-theme-option"\n                data-theme-choice={option.id}');
+
+  // 7. 「状态」列表：运行中的会话显示转圈和强调色，有新回复的提示改用强调色，一眼分得出（取自 agent-orchestrator 的状态行）。
+  const craft = 'components/CraftSessions.tsx';
+  change(craft, "<span className=\"pw-craft-time\">{props.running.has(session.id) ? '运行中' : formatSessionTime(session.modified, new Date())}</span>", "<span className={'pw-craft-time' + (props.running.has(session.id) ? ' is-running' : '')}>{props.running.has(session.id) ? <><span className=\"pw-spinner pw-spinner--sm\" aria-hidden=\"true\" />运行中</> : formatSessionTime(session.modified, new Date())}</span>");
+  change(craft, "<span className=\"pw-craft-preview\">{props.unread.has(session.id) ? '有新回复 · ' : ''}{session.firstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span>", "<span className=\"pw-craft-preview\">{props.unread.has(session.id) && <span className=\"pw-craft-new\">有新回复 · </span>}{session.firstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span>");
+
+  // 8. ChatWindow：空白新会话页，输入框下方列出「继续任务」。
+  const chat = 'components/ChatWindow.tsx';
+  prepend(chat, 'import { WelcomeResume } from "./WelcomeResume";\n');
+  change(chat, '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />\n        {isEmptyNew && <WelcomeResume />}');
+}

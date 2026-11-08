@@ -123,6 +123,7 @@ jobs:
           node --test tests/patch-piweb-show-thinking-contract.mjs
           node --test tests/patch-piweb-conversation-nodes-contract.mjs
           node --test tests/pi-trust-and-proxy-contract.mjs
+          node --test tests/piweb-merge.mjs
 
       - name: Stage portable node runtime
         if: ${{ !inputs.app_only }}
@@ -195,7 +196,7 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "upstream dependency install failed" }
           Pop-Location
-          node --test tests/piweb-thinking-session.mjs tests/patch-piweb-source-contract.mjs tests/piweb-projects.mjs tests/piweb-context-actions.mjs tests/piweb-model-menu.mjs tests/patch-piweb-redesign-contract.mjs tests/piweb-tool-excerpts.mjs tests/piweb-project-tree.mjs tests/piweb-project-capacity.mjs tests/piweb-project-monthly.mjs tests/piweb-desktop-transcript.mjs
+          node --test tests/piweb-thinking-session.mjs tests/patch-piweb-source-contract.mjs tests/piweb-projects.mjs tests/piweb-context-actions.mjs tests/piweb-model-menu.mjs tests/patch-piweb-redesign-contract.mjs tests/piweb-tool-excerpts.mjs tests/piweb-project-tree.mjs tests/piweb-project-capacity.mjs tests/piweb-project-monthly.mjs tests/piweb-desktop-transcript.mjs tests/patch-piweb-merge-contract.mjs
           if ($LASTEXITCODE -ne 0) { throw "source integration contracts failed" }
           node --experimental-strip-types --test tests/piweb-immediate-stop.mjs tests/piweb-stop-guard.test.mjs
           if ($LASTEXITCODE -ne 0) { throw "stop safety regression" }
