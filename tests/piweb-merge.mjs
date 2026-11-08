@@ -104,15 +104,21 @@ test('buildBoard honours the include filter and routes unread to the attention c
   assert.equal(board.find(c => c.id === 'todo').total, 0);
 });
 
-test('resume candidates: running first, then attention, then the most recent; done and cancelled never', () => {
+test('resume candidates: running, then new replies, then the most recent; stale needs-review, done, backlog and cancelled never crowd them out', () => {
   const sessions = [
     session('recent', '2026-11-08T12:00:00Z'), session('old', '2026-11-01T12:00:00Z'), session('review', '2026-11-05T12:00:00Z'),
     session('live', '2026-11-02T12:00:00Z'), session('finished', '2026-11-08T13:00:00Z'), session('dropped', '2026-11-08T14:00:00Z'),
+    session('parked', '2026-11-08T15:00:00Z'), session('fresh', '2026-11-03T12:00:00Z'),
   ];
-  const statusOf = resolver({ review: { status: 'needs-review', assigned: true }, finished: { status: 'done', assigned: true }, dropped: { status: 'cancelled', assigned: true } });
-  const picked = resumeCandidates({ sessions, statusOf, isRunning: s => s.id === 'live', isUnread: () => false, limit: 3 });
-  assert.deepEqual(picked.map(item => item.session.id), ['live', 'review', 'recent']);
+  const statusOf = resolver({
+    review: { status: 'needs-review', assigned: true }, finished: { status: 'done', assigned: true },
+    dropped: { status: 'cancelled', assigned: true }, parked: { status: 'backlog', assigned: true },
+  });
+  const picked = resumeCandidates({ sessions, statusOf, isRunning: s => s.id === 'live', isUnread: s => s.id === 'fresh', limit: 3 });
+  assert.deepEqual(picked.map(item => item.session.id), ['live', 'fresh', 'recent']);
   assert.deepEqual(picked.map(item => item.column), ['running', 'attention', 'todo']);
+  const more = resumeCandidates({ sessions, statusOf, isRunning: () => false, isUnread: () => false, limit: 10 });
+  assert.deepEqual(more.map(item => item.session.id), ['recent', 'review', 'fresh', 'live', 'old'], 'needs-review is just another recent session here');
 });
 
 // ---------------------------------------------------------------------------------------------

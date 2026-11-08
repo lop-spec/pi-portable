@@ -14,6 +14,7 @@
 
 ## 取舍
 - 看板栏位按「现在谁需要关注」分：未手动指定状态的会话有新回复就进「待你处理」；手动拖过的以状态为准，不被未读拽回。
+- 「继续任务」三张卡按 运行中 → 有新回复 → 最近改动 排；手动标成「待审查」的不自动靠前（上线后在真实数据里发现它们常停在几天前，会把今天的工作挤掉），已完成 / 已取消 / 积压的不推荐。
 - 三个视图共用 `lib/portable-session-store.ts` 的快照，AppShell 只发布数据；打开 / 新建会话走 `window` 事件，不给 memo 的 ChatWindow 加会变的 props。
 - 看板盖在对话区上，下面的对话保持挂载（流式输出与滚动位置不丢），打开期间对话区 `inert`，Esc 关闭。
 - 没有动 ChatInput / useAgentSession 等大文件的逻辑；新增能力只用既有 token 与 `.pw-*` 原语，动效只用 transform / opacity，支持 `prefers-reduced-motion`。

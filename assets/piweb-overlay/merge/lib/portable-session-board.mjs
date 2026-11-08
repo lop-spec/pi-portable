@@ -61,22 +61,23 @@ export function buildBoard({ sessions, statusOf, isRunning, isUnread, include = 
 }
 
 /**
- * 欢迎页「继续任务」：运行中 → 待你处理 → 最近改动，最多 limit 条。
+ * 欢迎页「继续任务」：运行中 → 有新回复 → 最近改动，最多 limit 条；已完成、已取消、积压的不推荐。
+ * 手动标成「待审查」的会话不再自动排在前面：它们动辄停在几天前，会把今天的工作挤出这三张卡（看板里有专门的「待你处理」栏）。
  * @template {{ id: string, modified: string, created?: string }} T
  * @param {{ sessions: readonly T[], statusOf: (s: T) => { status: string, assigned: boolean }, isRunning: (s: T) => boolean, isUnread: (s: T) => boolean,
  *   include?: (s: T) => boolean, limit?: number }} input
  * @returns {{ session: T, column: string }[]}
  */
 export function resumeCandidates({ sessions, statusOf, isRunning, isUnread, include = () => true, limit = 3 }) {
-  const rank = { running: 0, attention: 1 };
   return sessions
     .filter(include)
     .map(session => {
       const { status, assigned } = statusOf(session);
-      const column = boardColumnOf({ running: isRunning(session), unread: isUnread(session), status, assigned });
-      return { session, column };
+      const running = isRunning(session), unread = isUnread(session);
+      return { session, column: boardColumnOf({ running, unread, status, assigned }), rank: running ? 0 : unread ? 1 : 2 };
     })
-    .filter(item => item.column !== 'cancelled' && item.column !== 'done')
-    .sort((a, b) => (rank[a.column] ?? 2) - (rank[b.column] ?? 2) || time(b.session.modified || b.session.created) - time(a.session.modified || a.session.created) || a.session.id.localeCompare(b.session.id))
-    .slice(0, limit);
+    .filter(item => item.column !== 'cancelled' && item.column !== 'done' && item.column !== 'backlog')
+    .sort((a, b) => a.rank - b.rank || time(b.session.modified || b.session.created) - time(a.session.modified || a.session.created) || a.session.id.localeCompare(b.session.id))
+    .slice(0, limit)
+    .map(({ session, column }) => ({ session, column }));
 }
