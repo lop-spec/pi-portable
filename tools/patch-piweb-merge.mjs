@@ -57,7 +57,30 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   change(craft, "<span className=\"pw-craft-time\">{props.running.has(session.id) ? '运行中' : formatSessionTime(session.modified, new Date())}</span>", "<span className={'pw-craft-time' + (props.running.has(session.id) ? ' is-running' : '')}>{props.running.has(session.id) ? <><span className=\"pw-spinner pw-spinner--sm\" aria-hidden=\"true\" />运行中</> : formatSessionTime(session.modified, new Date())}</span>");
   change(craft, "<span className=\"pw-craft-preview\">{props.unread.has(session.id) ? '有新回复 · ' : ''}{session.firstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span>", "<span className=\"pw-craft-preview\">{props.unread.has(session.id) && <span className=\"pw-craft-new\">有新回复 · </span>}{session.firstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span>");
 
-  // 8. ChatWindow：空白新会话页，输入框下方列出「继续任务」。
+  // 8. 全文搜索：按文件指纹缓存纯文本，侧栏空闲时预热；查询不再重复扫原始 JSONL。
+  set('lib/session-search.ts', template('merge/lib/session-search.ts'));
+  const searchRoute = 'app/api/sessions/search/route.ts';
+  change(searchRoute, 'import { searchSessionContents } from "@/lib/session-search";', 'import { searchSessionContents, warmSessionSearch } from "@/lib/session-search";');
+  change(searchRoute, '    const sessions = query && !request.signal.aborted ? await listAllSessions({ allowStale: true }) : [];', `    const warming = new URL(request.url).searchParams.get("warm") === "1";
+    const sessions = (query || warming) && !request.signal.aborted ? await listAllSessions({ allowStale: true }) : [];
+    if (warming) { await warmSessionSearch(sessions); return NextResponse.json({ ready: true }, { headers }); }`);
+  const searchComponent = 'components/SessionSearch.tsx';
+  change(searchComponent, 'export function SessionSearch(', 'let searchWarmStarted = false;\n\nexport function SessionSearch(');
+  change(searchComponent, '  const search = query.trim();', `  useEffect(() => {
+    if (searchWarmStarted) return;
+    const timer = setTimeout(() => {
+      if (searchWarmStarted) return;
+      searchWarmStarted = true;
+      void fetch('/api/sessions/search?warm=1').catch(() => { searchWarmStarted = false; });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
+  const search = query.trim();`);
+  change(searchComponent, '    }, 300);', '    }, 150);');
+  change(searchComponent, '换个关键词试试；归档的会话需切到归档视图再搜。', '可搜标题和正文；空格分开多个关键词。');
+  change(searchComponent, '只扫描了最近的部分会话，结果可能不完整。', '结果较多或部分文件未读完，可增加关键词缩小范围。');
+
+  // 9. ChatWindow：空白新会话页，输入框下方列出「继续任务」。
   const chat = 'components/ChatWindow.tsx';
   prepend(chat, 'import { WelcomeResume } from "./WelcomeResume";\n');
   change(chat, '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />\n        {isEmptyNew && <WelcomeResume />}');

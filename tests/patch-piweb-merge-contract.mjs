@@ -63,6 +63,23 @@ test('merge.css keeps colour literals inside the theme block and the swatches, a
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
+test('sidebar uses status navigation and the search index is warmed outside typing', { skip: !available }, () => {
+  const files = integrate(read);
+  const tree = files.get('components/ProjectTree.tsx');
+  assert.match(tree, /data-pi-status-navigation/);
+  assert.match(tree, /pi-web:set-archive-view/);
+  assert.doesNotMatch(tree, /control\.click\(\)|button\[data-pi-session-archive-control\]/);
+  assert.match(files.get('app/api/sessions/search/route.ts'), /await warmSessionSearch\(sessions\)/);
+  assert.match(files.get('components/SessionSearch.tsx'), /search\?warm=1/);
+  assert.match(files.get('lib/session-search.ts'), /const CACHE_BYTES = 96 \* 1024 \* 1024/);
+  const injected = fs.readFileSync(path.join(repo, 'src/piweb-archive-ui.js'), 'utf8');
+  assert.match(injected, /pi-web:set-archive-view/);
+  assert.match(injected, /if \(!document.querySelector\('\[data-pi-status-navigation\]'\)\)/);
+  assert.match(injected, /pw-goal-board-btn/);
+  assert.match(injected, /width="28" height="21" viewBox="0 0 32 24"/);
+  assert.match(files.get('app/redesign-sidebar.css'), /min-height:44px/);
+});
+
 /** 与 integrate() 里一致的最小助手：锚点必须恰好出现 expected 次，否则抛错（整套叠加因此零写入）。 */
 function harness(initial) {
   const files = new Map(initial);

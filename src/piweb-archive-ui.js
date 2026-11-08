@@ -775,6 +775,23 @@
     }, delays[attempt]);
   }
 
+  // Status navigation owns this view switch; the legacy button is only for older frontends.
+  function setArchiveView(view) {
+    if (view !== "active" && view !== "archived") return;
+    if (view === state.view) return;
+    for (const pending of [...state.optimisticActions]) restoreOptimisticAction(pending);
+    const baselineSerial = state.listRequestSerial;
+    state.view = view;
+    try { sessionStorage.setItem(VIEW_KEY, state.view); } catch {}
+    decorate();
+    requestListRefresh(baselineSerial, state.view);
+  }
+  document.addEventListener("pi-web:set-archive-view", event => {
+    if (!["active", "archived"].includes(event.detail?.view)) return;
+    event.preventDefault();
+    setArchiveView(event.detail.view);
+  });
+
   // List-head control: 「归档 858」 in the active view; 「858 个对话 · 返回」 in the archived view.
   // One button keeps keyboard focus across the toggle; React renders the label on its left.
   let host = null, control = null, meta = null;
@@ -1142,7 +1159,7 @@
     // The sidebar publishes the selected project's archived count once its list is loaded and announces the change
     // with this event; re-render the head then (an event, not an observer on documentElement).
     document.addEventListener("pi-web:archive-project-count", scheduleDecorate);
-    window.__piUiSlots.register({ name: "archive", slot: "archive", order: 0, host: archiveHost(), onMount: scheduleDecorate });
+    if (!document.querySelector('[data-pi-status-navigation]')) window.__piUiSlots.register({ name: "archive", slot: "archive", order: 0, host: archiveHost(), onMount: scheduleDecorate });
     // New rows, roving tabindex and selection changes arrive through the sidebar-scoped watcher.
     window.__piUiSlots.onSidebarChange(() => { syncOptimisticLayout(); decorateRows(); });
     scheduleDecorate();
@@ -2200,4 +2217,62 @@
     window.__piUiSlots.register({ name: "tier", slot: "composer", order: 2, host });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true }); else start();
+})();
+
+// Long-goal board: a wide progress-board glyph in the sidebar slot; the board
+// itself keeps its existing local service, permissions and iframe isolation.
+(() => {
+  "use strict";
+  if (window.__piGoalBoardUi) return;
+  window.__piGoalBoardUi = true;
+  const slots = window.__piUiSlots;
+  if (!slots?.register) return;
+  const base = () => `${location.protocol}//${location.hostname}:30170/`;
+  let overlay, frame, status, opener;
+  function close() {
+    if (!overlay) return;
+    overlay.hidden = true; document.documentElement.style.overflow = "";
+    opener?.focus?.({ preventScroll: true });
+  }
+  async function load() {
+    status.hidden = false; status.textContent = "正在连接长目标看板…"; frame.hidden = true;
+    try {
+      const response = await fetch(base() + 'api/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const rgb = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g) || [255, 255, 255];
+      const dark = .299 * rgb[0] + .587 * rgb[1] + .114 * rgb[2] < 140;
+      frame.src = base() + '?embed=1&theme=' + (dark ? 'dark' : 'light'); frame.hidden = false; status.hidden = true;
+    } catch (error) {
+      status.replaceChildren();
+      const text = document.createElement('p'); text.textContent = '长目标看板暂时不可达；本机服务由 Goal-Web 隐藏运行，远程入口需确认 30170 端口可达。';
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'pw-btn pw-btn--sm'; retry.textContent = '重试'; retry.addEventListener('click', load);
+      status.append(text, retry); console.warn('[pi-web goal board] unavailable:', String(error?.message || error));
+    }
+  }
+  function show(event) {
+    opener = event.currentTarget;
+    if (!overlay) {
+      overlay = document.createElement('div'); overlay.id = 'pi-goal-board'; overlay.hidden = true; overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-label', '长目标看板');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483000;display:flex;flex-direction:column;background:var(--bg);color:var(--text)';
+      const bar = document.createElement('div'); bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--bg-elevated)';
+      const title = document.createElement('strong'); title.textContent = '长目标看板';
+      const mode = document.createElement('span'); mode.style.cssText = 'flex:1;font-size:12px;color:var(--text-dim)';
+      const link = document.createElement('a'); link.textContent = '新标签页打开'; link.href = base(); link.target = '_blank'; link.rel = 'noopener'; link.className = 'pw-btn pw-btn--ghost pw-btn--sm';
+      const exit = document.createElement('button'); exit.type = 'button'; exit.textContent = '关闭 (Esc)'; exit.className = 'pw-btn pw-btn--sm'; exit.addEventListener('click', close);
+      bar.append(title, mode, link, exit);
+      status = document.createElement('div'); status.style.cssText = 'padding:32px;font-size:14px';
+      frame = document.createElement('iframe'); frame.title = '长目标看板'; frame.hidden = true; frame.style.cssText = 'flex:1;border:0;width:100%;background:transparent';
+      overlay.append(bar, status, frame); document.body.append(overlay);
+      document.addEventListener('keydown', event => { if (event.key === 'Escape' && !overlay.hidden) { event.preventDefault(); close(); } }, true);
+      window.addEventListener('message', event => { if (event.source !== frame.contentWindow) return; if (event.data?.type === 'goal-board-close') close(); else if (event.data?.type === 'goal-board-mode') mode.textContent = event.data.writable ? '可操作 · 决策、新增和删除长目标、改巡检模型' : '只读镜像 · 要操作请到 LOP-HOME'; });
+    }
+    if (!overlay.hidden) { close(); return; }
+    overlay.hidden = false; document.documentElement.style.overflow = 'hidden';
+    if (!frame.src || frame.hidden) void load();
+  }
+  const host = document.createElement('span'); host.className = 'pw-archive-ctl'; host.dataset.piSlotItem = 'goals'; host.dataset.piSlotOrder = '1';
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'pw-icon-btn pw-goal-board-btn'; button.setAttribute('aria-label', '长目标看板'); button.title = '打开长目标看板：进展、分支、卡点和决策';
+  const glyph = document.createElement('template'); glyph.innerHTML = '<svg width="28" height="21" viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="29" height="19" rx="3"></rect><path d="M10.5 6v12M20.5 6v12M5 8h2M5 12h2M14 8h3M14 12h3M24 8h3M24 12h3M24 16h3"></path><path d="m4.5 16 1.2 1.2L8 15" stroke-width="1.8"></path></svg>';
+  button.append(glyph.content); button.addEventListener('click', show); host.append(button);
+  slots.register({ name: 'goals', slot: 'archive', order: 1, host });
 })();

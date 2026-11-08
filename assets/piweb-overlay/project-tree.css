@@ -1,6 +1,15 @@
 /* One scroll surface, permanent project headings, quiet nested conversation rows. */
 .pw-tree { display:flex; flex:1; flex-direction:column; min-height:0; overflow:hidden; }
-.pw-tree-head { display:flex; flex:none; align-items:center; gap:6px; min-height:34px; padding:0 12px 0 16px; color:var(--text-muted); font-size:var(--fs-small); }
+.pw-tree-head { display:flex; flex:none; align-items:center; gap:6px; min-height:44px; padding:4px 10px; color:var(--text-muted); font-size:var(--fs-small); }
+.pw-tree-head .pw-craft-modes { flex-shrink:0; }
+.pw-tree-head .pw-craft-modes button { min-height:30px; }
+.pw-tree-head [data-pi-archive-slot] { display:inline-flex; align-items:center; flex:none; gap:6px; }
+.pw-tree-head [data-pi-status-navigation] > [data-pi-slot-item="archive"] { display:none; }
+.pw-tree-head [data-pi-slot-item="goals"] { margin:0; }
+.pw-tree-head .pw-goal-board-btn { display:inline-flex; align-items:center; justify-content:center; flex:none; width:44px; height:32px; padding:0; border:1px solid var(--border); border-radius:6px; background:var(--accent-soft); color:var(--accent); }
+.pw-tree-head .pw-goal-board-btn:hover { background:var(--bg-selected); border-color:var(--accent); }
+.pw-tree-head .pw-goal-board-btn > svg { width:28px; height:21px; }
+@media(pointer:coarse) { .pw-tree-head { min-height:48px; } .pw-tree-head .pw-goal-board-btn { height:36px; } }
 .pw-tree-head > span:first-child { flex:1; }
 .pw-tree-scroll { flex:1; min-height:0; overflow:auto; padding:0 7px 12px; }
 .pw-tree-scroll[hidden] { display:none; }
