@@ -659,6 +659,55 @@
     }).catch(() => {});
   }
 
+  // Explicit test IDs and first-message markers only; never infer from titles/keywords.
+  let testPolicyPromise = null;
+  let testPolicyAt = 0;
+  const hiddenTestIds = new Set();
+  async function refreshTestPolicy() {
+    if (!testPolicyPromise || Date.now() - testPolicyAt > 5000) {
+      testPolicyAt = Date.now();
+      testPolicyPromise = nativeFetch('/api/session-reply-times', { cache: 'no-store' }).then(async response => {
+        if (!response.ok) throw new Error('Test registry unavailable');
+        const data = await response.json();
+        hiddenTestIds.clear();
+        for (const id of data.testSessionIds || []) hiddenTestIds.add(id);
+      }).catch(error => { testPolicyPromise = null; console.error('[pi-web test visibility]', error); });
+    }
+    await testPolicyPromise;
+  }
+  async function hideTestSessions(response, pathname) {
+    const body = await response.clone().json();
+    if (pathname === '/api/session-reply-times' && Array.isArray(body.testSessionIds)) {
+      for (const id of body.testSessionIds) hiddenTestIds.add(id);
+    } else await refreshTestPolicy();
+    if (Array.isArray(body.sessions)) {
+      for (const s of body.sessions) if (s.testTask === true || String(s.firstMessage || '').trimStart().startsWith('【测试任务】')) hiddenTestIds.add(s.id);
+      let size;
+      do { size = hiddenTestIds.size; for (const s of body.sessions) if (s.relation?.kind === 'subagent' && hiddenTestIds.has(s.relation.parentSessionId)) hiddenTestIds.add(s.id); } while (size !== hiddenTestIds.size);
+      body.sessions = body.sessions.filter(s => !hiddenTestIds.has(s.id));
+      if (Array.isArray(body.runningSessionIds)) body.runningSessionIds = body.runningSessionIds.filter(id => !hiddenTestIds.has(id));
+      if (body.archive) {
+        if (body.archive.view === 'archived') { body.archive.archivedSessionCount = body.sessions.length; body.archive.archivedCount = new Set(body.sessions.map(s => s.archiveGroupId || s.id)).size; }
+        else body.archive.activeCount = body.sessions.length;
+      }
+    } else if (pathname === '/api/session-status' && body.sessions) {
+      body.sessions = Object.fromEntries(Object.entries(body.sessions).filter(([id]) => !hiddenTestIds.has(id)));
+    }
+    const headers = new Headers(response.headers);
+    for (const key of ['content-length', 'content-encoding', 'etag']) headers.delete(key);
+    if (body.archive?.view === 'archived') headers.set('x-pi-archived-count', String(body.archive.archivedCount));
+    return new Response(JSON.stringify(body), { status: response.status, statusText: response.statusText, headers });
+  }
+
+  // Older deployed builds contain a static month-archive description. The scheduled
+  // job uses the seven-day policy; correct that exact legacy text until the next UI release.
+  function correctLegacyAutoArchiveDescription() {
+    const text = document.querySelector('[data-auto-archive-setting] .settings-general-description');
+    if (text?.textContent === '每天凌晨5点按月归档：归档上月及更早未更新的会话，跳过运行中会话；可在侧栏“归档”中恢复。') {
+      text.textContent = '每天凌晨 5 点（本机时间），归档超过 7 天未更新的会话；跳过运行中会话，可在侧栏“归档”中恢复。';
+    }
+  }
+
   window.fetch = async function piSessionArchiveFetch(input, init) {
     const url = requestUrl(input);
     const requestMethod = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
@@ -708,6 +757,9 @@
       }
       throw error;
     }
+    if (url?.origin === window.location.origin && url.pathname === '/api/settings/auto-archive') {
+      setTimeout(correctLegacyAutoArchiveDescription, 0);
+    }
     if (isWorktreeListRequest) {
       if (!response.ok) {
         console.error(`[pi-web worktrees] list request returned HTTP ${response.status}`);
@@ -731,6 +783,9 @@
       else url.searchParams.delete("archiveView");
       nextInput = rewrittenInput(nextInput, url);
       response = await nativeFetch(nextInput, nextInit);
+    }
+    if (response.ok && url?.origin === window.location.origin && (requestedListView || url.pathname === '/api/session-status' || url.pathname === '/api/session-reply-times')) {
+      response = await hideTestSessions(response, url.pathname);
     }
     if (requestedListView && response.ok) acceptArchivedCount(response);
     if (action && !response.ok) {
@@ -2278,4 +2333,178 @@
   slots.register({ name: 'goals', slot: 'archive', order: 1, host });
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+})();
+
+// File-preview links must not replace the single Pi Web app window. This runs
+// before React, works with the existing preview/API, and needs no server restart.
+(() => {
+  "use strict";
+  const browserFiles = /\.(?:pdf|png|jpe?g|gif|webp|svg|bmp|ico|avif|mp3|wav|ogg|oga|opus|m4a|aac|flac|weba|mp4|m4v|webm|mov|ogv)$/i;
+  const imageFiles = /\.(?:png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+  const executableFiles = /\.(?:exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msi|msp|scr|lnk|url|reg|cpl|appref-ms)$/i;
+
+  function showError(dialog, message) {
+    dialog.querySelector('[data-pi-preview-link-error]')?.remove();
+    const alert = document.createElement('div');
+    alert.dataset.piPreviewLinkError = 'true';
+    alert.setAttribute('role', 'alert');
+    alert.style.cssText = 'padding:8px 12px;color:var(--danger,var(--text));background:var(--bg-elevated,var(--bg));';
+    alert.textContent = message;
+    dialog.appendChild(alert);
+    setTimeout(() => alert.remove(), 8000);
+  }
+
+  function fileUrl(filePath) {
+    const p = filePath.replace(/\\/g, '/');
+    const encode = value => value.split('/').map((part, index) => index === 0 && /^[a-z]:$/i.test(part) ? part : encodeURIComponent(part)).join('/');
+    if (p.startsWith('//')) {
+      const slash = p.indexOf('/', 2);
+      if (slash < 0) throw new Error('文件路径无效');
+      return `file://${p.slice(2, slash)}/${encode(p.slice(slash + 1))}`;
+    }
+    if (/^[a-z]:\//i.test(p)) return `file:///${encode(p)}`;
+    if (p.startsWith('/')) return `file:///${encode(p.slice(1))}`;
+    throw new Error('文件路径不是绝对路径');
+  }
+
+  function encodeFilePath(path) {
+    const normalized = path.replace(/\\/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+    if (normalized.startsWith('//') && parts.length) parts[0] = `//${parts[0]}`;
+    return parts.map(encodeURIComponent).join('/');
+  }
+
+  function resolveLink(href, previewPath) {
+    let raw = href.trim();
+    if (!raw || raw.startsWith('#')) return { kind: 'anchor' };
+    if (/^(?:https?:)?\/\//i.test(raw)) return { kind: 'web', url: new URL(raw, location.href).href };
+    if (/^\/(?:api|_next)\//i.test(raw)) return { kind: 'web', url: new URL(raw, location.href).href };
+    if (/^[a-z]:[\\/]/i.test(raw)) raw = `file:///${raw.replace(/\\/g, '/')}`;
+    else if (raw.startsWith('\\\\')) raw = `file:${raw.replace(/\\/g, '/')}`;
+    else if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^file:/i.test(raw)) return { kind: 'blocked' };
+    const url = new URL(raw, fileUrl(previewPath));
+    if (url.protocol !== 'file:') return { kind: 'blocked' };
+    let path = decodeURIComponent(url.pathname);
+    if (url.hostname) path = `//${url.hostname}${path}`;
+    else if (/^\/[a-z]:\//i.test(path)) path = path.slice(1);
+    if (!path || path.includes('\0')) return { kind: 'blocked' };
+    return { kind: 'file', path, hash: url.hash };
+  }
+
+  function previewContext(dialog) {
+    const path = dialog.querySelector('.pw-file-preview-title small[title]')?.getAttribute('title');
+    const download = dialog.querySelector('.pw-file-preview-actions a[download]');
+    const sessionId = download ? new URL(download.href, location.href).searchParams.get('sessionId') : null;
+    if (!path) throw new Error('无法读取预览文件路径');
+    return { path, sessionId };
+  }
+
+  async function openLink(dialog, href) {
+    try {
+      const { path, sessionId } = previewContext(dialog);
+      const link = resolveLink(href, path);
+      if (link.kind === 'anchor') return;
+      if (link.kind === 'blocked') throw new Error('不支持此链接类型');
+      if (link.kind === 'web') { window.open(link.url, '_blank', 'noopener,noreferrer'); return; }
+      if (executableFiles.test(link.path)) throw new Error('为安全起见，不自动运行可执行文件');
+      let inBrowser = browserFiles.test(link.path);
+      const encodedPath = encodeFilePath(link.path);
+      if (inBrowser && imageFiles.test(link.path)) {
+        // The existing image API rejects files above 10 MiB. Keep that security
+        // limit and fall back to the system viewer instead of opening a 413 page.
+        const params = new URLSearchParams({ type: 'meta' });
+        if (sessionId) params.set('sessionId', sessionId);
+        try {
+          const response = await fetch(`/api/files/${encodedPath}?${params}`, { signal: AbortSignal.timeout(1500) });
+          const meta = response.ok ? await response.json() : null;
+          inBrowser = Number.isFinite(meta?.size) && meta.size <= 10 * 1024 * 1024;
+        } catch { inBrowser = false; }
+      }
+      if (inBrowser) {
+        const params = new URLSearchParams({ type: 'read' });
+        if (sessionId) params.set('sessionId', sessionId);
+        const url = new URL(`/api/files/${encodedPath}?${params}`, location.origin);
+        url.hash = link.hash;
+        window.open(url.href, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      const response = await fetch('/api/open-local-file', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: link.path, action: 'file', sessionId }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+    } catch (error) { showError(dialog, `无法打开链接：${error.message || error}`); }
+  }
+
+  function handleClick(event) {
+    if (event.defaultPrevented || (event.button !== 0 && event.button !== 1)) return;
+    const element = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const link = element?.closest('.pw-file-preview-body .markdown-file-preview a[href]');
+    const dialog = link?.closest('dialog.pw-file-preview[open]');
+    if (!dialog) return;
+    const href = link.getAttribute('href');
+    if (!href || href.startsWith('#')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void openLink(dialog, href);
+  }
+  document.addEventListener('click', handleClick, true);
+  document.addEventListener('auxclick', handleClick, true);
+
+  // DOCX previews use a same-origin, script-disabled iframe. Capture clicks
+  // inside it without granting scripts or changing the generated document.
+  const observedDocuments = new WeakSet();
+  document.addEventListener('load', event => {
+    const frame = event.target;
+    if (!(frame instanceof HTMLIFrameElement) || !frame.closest('dialog.pw-file-preview[open] .pw-file-preview-body')) return;
+    try {
+      const url = new URL(frame.src, location.href);
+      if (url.origin !== location.origin || !url.pathname.startsWith('/api/files/') || url.searchParams.get('type') !== 'preview') return;
+      const inner = frame.contentDocument;
+      if (!inner || observedDocuments.has(inner)) return;
+      observedDocuments.add(inner);
+      const follow = event => {
+        if (event.defaultPrevented || (event.button !== 0 && event.button !== 1)) return;
+        const link = event.target?.closest?.('a[href]');
+        const href = link?.getAttribute('href');
+        if (!href || href.startsWith('#')) return;
+        const dialog = frame.closest('dialog.pw-file-preview[open]');
+        if (!dialog) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void openLink(dialog, href);
+      };
+      inner.addEventListener('click', follow, true);
+      inner.addEventListener('auxclick', follow, true);
+    } catch { /* opaque, cross-origin and PDF frames stay untouched */ }
+  }, true);
+
+  // The older sandbox bridge sends a.href rather than the literal attribute.
+  // Recover it from an inert template, without accessing the opaque iframe DOM.
+  function originalHtmlHref(frame, absolute) {
+    const template = document.createElement('template');
+    template.innerHTML = frame.getAttribute('srcdoc') || '';
+    let base = location.href;
+    const baseHref = template.content.querySelector('base[href]')?.getAttribute('href');
+    try { if (baseHref) base = new URL(baseHref, base).href; } catch { return null; }
+    const matches = new Set();
+    for (const anchor of template.content.querySelectorAll('a[href]')) {
+      const raw = anchor.getAttribute('href');
+      try { if (new URL(raw, base).href === absolute) matches.add(raw); } catch { /* invalid href */ }
+    }
+    return matches.size === 1 ? [...matches][0] : null;
+  }
+
+  window.addEventListener('message', event => {
+    if (event.data?.__piPreview !== 'link' || typeof event.data.url !== 'string') return;
+    const dialog = document.querySelector('dialog.pw-file-preview[open]');
+    const frame = dialog && [...dialog.querySelectorAll('.pw-file-preview-body iframe')].find(item => item.contentWindow === event.source);
+    if (!frame) return;
+    event.stopImmediatePropagation();
+    // Sandboxed HTML may post messages on its own; never launch without a user gesture.
+    if (!navigator.userActivation?.isActive) return;
+    const href = originalHtmlHref(frame, event.data.url);
+    if (!href) { showError(dialog, '无法识别此 HTML 链接，请使用“外部打开”。'); return; }
+    void openLink(dialog, href);
+  }, true);
 })();

@@ -80,6 +80,22 @@ test('sidebar uses status navigation and the search index is warmed outside typi
   assert.match(files.get('app/merge.css'), /min-height:44px/);
 });
 
+test('peer runtime enhancements coexist with the latest navigation and search overlay', { skip: !available }, () => {
+  const files = integrate(read);
+  assert.match(files.get('components/ProjectTree.tsx'), /const \[filter, setFilter\] = useState\('todo'\)/);
+  assert.match(files.get('components/SettingsPanel.tsx'), /归档超过 7 天未更新的会话/);
+  assert.doesNotMatch(files.get('components/SettingsPanel.tsx'), /按月归档/);
+  const route = files.get('app/api/sessions/search/route.ts');
+  assert.match(route, /const sessions = visibleSessionItems\(allSessions/);
+  assert.match(route, /await warmSessionSearch\(sessions\)/);
+  assert.match(route, /Invalid test session registry/);
+  assert.match(files.get('lib/recent-tasks.mjs'), /function visibleSessionItems/);
+  const injected = fs.readFileSync(path.join(repo, 'src/piweb-archive-ui.js'), 'utf8');
+  assert.match(injected, /File-preview links must not replace/);
+  assert.match(injected, /async function hideTestSessions/);
+  assert.equal(count(injected, 'window.__piGoalBoardUi = true;'), 1);
+});
+
 /** 与 integrate() 里一致的最小助手：锚点必须恰好出现 expected 次，否则抛错（整套叠加因此零写入）。 */
 function harness(initial) {
   const files = new Map(initial);

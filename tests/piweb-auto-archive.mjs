@@ -10,10 +10,13 @@ test.after(() => fs.rmSync(temp, { recursive: true, force: true }));
 const at = hour => new Date(2026, 9, 25, hour, 0, 0);
 let calls = 0;
 const fetchImpl = async (url, init) => {
+  if (url.endsWith('/api/sessions?force=1')) return { ok: true, json: async () => ({ sessions: [{ id: 'old', modified: '2026-01-01T00:00:00Z' }], archive: { view: 'active' } }) };
+  if (url.endsWith('/api/sessions?force=1&archiveView=archived')) return { ok: true, json: async () => ({ sessions: [], archive: { view: 'archived' } }) };
+  if (url.endsWith('/api/agent/running')) return { ok: true, json: async () => ({ runningSessionIds: [] }) };
+  assert.equal(url, 'http://127.0.0.1:30141/api/sessions/old/archive');
+  assert.equal(init.method, 'POST');
   calls++;
-  assert.equal(url, 'http://127.0.0.1:30141/__pi_archive_older');
-  assert.deepEqual(JSON.parse(init.body), { days: 7, keep: [] });
-  return { ok: true, json: async () => ({ ok: true, groupCount: 3, sessionCount: 4, failed: 0 }) };
+  return { ok: true, json: async () => ({ ok: true, archived: true, created: true, sessionIds: ['old'] }) };
 };
 test('default on; persisted switches; invalid/corrupt config fails closed', () => {
   assert.deepEqual(readAutoArchive(temp), { enabled: true, days: 7, hour: 5 });
@@ -28,7 +31,7 @@ test('local 05:00 boundary, once per day, persistent across invocations', async 
   assert.equal(archiveDay(at(4)), '2026-10-24');
   assert.equal(archiveDay(at(5)), '2026-10-25');
   const args = { agentDir: temp, now: at(5), fetchImpl };
-  assert.equal((await runAutoArchive(args)).groupCount, 3);
+  assert.equal((await runAutoArchive(args)).groupCount, 1);
   assert.equal((await runAutoArchive(args)).skipped, 'already-ran');
   assert.equal(calls, 1);
   saveAutoArchive(temp, false);
@@ -40,10 +43,10 @@ test('local 05:00 boundary, once per day, persistent across invocations', async 
 });
 test('HTTP/partial failure does not mark the day done; retry is safe', async () => {
   const now = new Date(2026, 9, 27, 5);
-  await assert.rejects(runAutoArchive({ agentDir: temp, now, fetchImpl: async () => ({ ok: false, json: async () => ({ error: 'offline' }) }) }));
-  await assert.rejects(runAutoArchive({ agentDir: temp, now, fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true, failed: 1 }) }) }));
+  await assert.rejects(runAutoArchive({ agentDir: temp, now, fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ error: 'offline' }) }) }));
+  await assert.rejects(runAutoArchive({ agentDir: temp, now, fetchImpl: async (url, init) => url.endsWith('/old/archive') ? ({ ok: false, status: 500, json: async () => ({ error: 'archive failed' }) }) : fetchImpl(url, init) }));
   assert.equal(JSON.parse(fs.readFileSync(path.join(temp, 'web-auto-archive-last-run.json'))).day, '2026-10-26');
-  assert.equal((await runAutoArchive({ agentDir: temp, now, fetchImpl })).groupCount, 3);
+  assert.equal((await runAutoArchive({ agentDir: temp, now, fetchImpl })).groupCount, 1);
 });
 test('UI owns switch in Settings, not model menu; task uses verified silent host', () => {
   const base = new URL('../assets/piweb-overlay/redesign/files/components/', import.meta.url);

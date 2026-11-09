@@ -5,7 +5,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { isManagedSessionPath } from '../assets/piweb-overlay/portable-project-store.mjs';
-import { indexedSessionPath, routingLayout, sessionMonth } from '../assets/piweb-overlay/project-routing.mjs';
+import { indexedSessionPath } from '../assets/piweb-overlay/project-routing.mjs';
+import { planArchive } from '../assets/piweb-overlay/redesign/files/lib/portable-auto-archive.mjs';
+import { excludedTestIds, readTestIds } from "./extensions/pi-project-router/test-session-policy.mjs";
 import path from "node:path";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
@@ -26,7 +28,6 @@ export const PIWEB_ACCOUNT_LOGIN_PATH = "/__pi_account_login";
 export const PIWEB_ACCOUNT_AUTO_RESET_PATH = "/__pi_account_auto_reset";
 export const PIWEB_ARCHIVE_OLDER_PATH = "/__pi_archive_older";
 const ARCHIVE_OLDER_MAX_DAYS = 3650;
-const DAY_MS = 86_400_000;
 const PIWEB_ARCHIVE_UI_FILE = fileURLToPath(new URL("./piweb-archive-ui.js", import.meta.url));
 const PIWEB_PAGE_CHUNK_REF_RE = /static\/chunks\/app\/(page-[a-z0-9]+\.js)/gu;
 // Loopback JSON/HTML below this size is sent as is (compressing costs more than it saves);
@@ -339,6 +340,8 @@ export class PiWebUiProxy {
     this.sessionCatalogueAt = 0;
     this.runningIds = new Set();
     this.sessionListCacheFile = path.resolve(options.sessionListCacheFile || path.join(dataRoot, "piweb-session-list-cache.json"));
+    this.agentDir = path.dirname(this.sessionRoot);
+    this.testSessionPolicyCache = null;
     this.bootstrapSessionList = null;
     this.bootstrapSessionListChecked = false;
     this.bootstrapSessionListServed = false;
@@ -1039,20 +1042,45 @@ export class PiWebUiProxy {
     await this.sessionListPersistRunning;
   }
 
-  // Parsed list + archive partition for one upstream body. Identical bytes with an unchanged
-  // archive index reuse the previous result (no parse, no partition, no stringify).
+  testSessionPolicy() {
+    const file = path.join(this.agentDir, "recent-test-sessions.json");
+    let stamp = "missing";
+    try {
+      const stat = fs.statSync(file);
+      stamp = `${stat.mtimeMs}:${stat.size}`;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (this.testSessionPolicyCache?.stamp === stamp) return this.testSessionPolicyCache;
+    const policy = { stamp, ids: readTestIds(this.agentDir) };
+    this.testSessionPolicyCache = policy;
+    return policy;
+  }
+
+  // Parsed list + archive partition for one upstream body. Identical bytes with unchanged
+  // archive/test-policy state reuse the previous result (no parse, partition or stringify).
   sessionListEntry(kind, raw, parsed = null) {
     const archive = this.archiveStore.cached();
+    const testPolicy = this.testSessionPolicy();
     const previous = this.sessionListMemo[kind];
     if (previous && raw && previous.raw?.equals(raw)) {
-      if (previous.archive === archive) { previous.reused += 1; return previous; }
-      parsed = previous.body;
+      if (previous.archive === archive && previous.testPolicyStamp === testPolicy.stamp) { previous.reused += 1; return previous; }
+      parsed = previous.sourceBody;
     }
-    const body = parsed ?? JSON.parse(raw.toString("utf8"));
-    if (!Array.isArray(body?.sessions)) return null;
+    const sourceBody = parsed ?? JSON.parse(raw.toString("utf8"));
+    if (!Array.isArray(sourceBody?.sessions)) return null;
+    const excluded = excludedTestIds(sourceBody.sessions, testPolicy.ids);
+    const sessions = sourceBody.sessions.filter((session) => !excluded.has(session.id));
+    const runningSessionIds = Array.isArray(sourceBody.runningSessionIds)
+      ? sourceBody.runningSessionIds.filter((id) => !excluded.has(id))
+      : sourceBody.runningSessionIds;
+    const changed = sessions.length !== sourceBody.sessions.length
+      || (Array.isArray(sourceBody.runningSessionIds) && runningSessionIds.length !== sourceBody.runningSessionIds.length);
+    const body = changed ? { ...sourceBody, sessions, runningSessionIds } : sourceBody;
+    const persistRaw = raw ? (changed ? Buffer.from(JSON.stringify(body)) : raw) : null;
     const partition = this.archiveStore.partition(body.sessions);
     const entry = {
-      raw, body, archive, partition, reused: 0, views: new Map(),
+      raw, persistRaw, sourceBody, body, archive, testPolicyStamp: testPolicy.stamp, partition, reused: 0, views: new Map(),
       archivedCount: new Set(partition.archived.map((session) => String(session.archiveGroupId || session.id))).size,
     };
     this.sessionListMemo[kind] = entry;
@@ -1150,9 +1178,10 @@ export class PiWebUiProxy {
       const raw = Buffer.from(await upstream.arrayBuffer());
       const body = JSON.parse(raw.toString("utf8"));
       if (!upstream.ok || !Array.isArray(body?.sessions)) throw new Error(`sessions HTTP ${upstream.status}`);
-      this.acceptFreshSessionList(body, raw);
-      // Seed the memo: the page's next plain list request with the same bytes is served without re-parsing.
-      this.sessionListEntry("full", raw, body);
+      const entry = this.sessionListEntry("full", raw, body);
+      if (!entry) throw new Error("sessions response has no catalogue");
+      this.acceptFreshSessionList(entry.body, entry.persistRaw || raw);
+      // Seeded above: the page's next plain list request with the same bytes reuses this entry.
       this.log("session-list-bootstrap-refreshed", { elapsedMs: Math.max(0, this.now() - startedAt), count: body.sessions.length });
     }).catch((error) => {
       this.log("session-list-bootstrap-refresh-failed", { reason: normalizeError(error?.message || error) });
@@ -1194,7 +1223,7 @@ export class PiWebUiProxy {
     if (!entry) { this.writeBuffered(response, upstreamResult); return; }
     // summary=1 rows are placeholders (detailsPending): they must not become the archive
     // catalogue or overwrite the persisted startup snapshot.
-    if (!summary) this.acceptFreshSessionList(entry.body, upstreamResult.body);
+    if (!summary) this.acceptFreshSessionList(entry.body, entry.persistRaw || upstreamResult.body);
     else this.sessionReads?.setCatalogue(entry.body.sessions); // placeholder rows still carry the session file path
     await this.sendSessionList(request, response, upstreamResult.status, upstreamResult.headers, entry, parsedUrl, entry.reused ? "fresh-reused" : "fresh");
   }
@@ -1339,25 +1368,7 @@ export class PiWebUiProxy {
    * or one with an unreadable date is left alone; each skip is counted so nothing is silent.
    */
   archiveOlderPlan(catalogue, activeSessions, { days, running, keep }) {
-    const monthly = routingLayout(path.dirname(this.sessionRoot)).data.monthly === true;
-    const cutoff = monthly ? Date.parse(sessionMonth(this.now()) + '-01T00:00:00+08:00') : this.now() - days * DAY_MS;
-    const known = new Set(catalogue.map((session) => String(session?.id || "")));
-    const families = [];
-    const skipped = { running: 0, kept: 0, unknownAge: 0 };
-    for (const root of activeSessions) {
-      const parentId = String(root?.relation?.parentSessionId || "");
-      if (root?.relation?.kind === "subagent" && parentId && known.has(parentId)) continue; // archived with its parent
-      const rootId = String(root?.id || "");
-      if (!rootId) continue;
-      const members = this.sessionFamily(catalogue, rootId);
-      const newest = Math.max(...members.map((member) => Date.parse(member?.modified)));
-      if (!Number.isFinite(newest)) { skipped.unknownAge += 1; continue; }
-      if (newest >= cutoff) continue;
-      if (members.some((member) => running.has(String(member.id)))) { skipped.running += 1; continue; }
-      if (members.some((member) => keep.has(String(member.id)))) { skipped.kept += 1; continue; }
-      families.push({ rootId, members });
-    }
-    return { families, skipped };
+    return planArchive(catalogue, activeSessions, { days, running, keep, now: this.now() });
   }
 
   async handleArchiveOlder(request, response) {

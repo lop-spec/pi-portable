@@ -59,6 +59,8 @@ export function integrateMerge({ get, set, change, prepend, template }) {
 
   // 8. 状态菜单直接切换归档视图；现代侧栏不再构造重复的归档按钮。
   const tree = 'components/ProjectTree.tsx';
+  change(tree, "const [filter, setFilter] = useState('all');", "const [filter, setFilter] = useState('todo');");
+  change('components/SettingsPanel.tsx', '每天凌晨5点按月归档：归档上月及更早未更新的会话，跳过运行中会话；可在侧栏“归档”中恢复。', '每天凌晨 5 点（本机时间），归档超过 7 天未更新的会话；跳过运行中会话，可在侧栏“归档”中恢复。');
   change(tree, `    const control = document.querySelector<HTMLButtonElement>('button[data-pi-session-archive-control]');
     if (!control) { setNotice('归档组件未就绪，请刷新后重试'); return; }
     control.click();`, `    const event = new CustomEvent('pi-web:set-archive-view', { detail: { view: wantArchived ? 'archived' : 'active' }, cancelable: true });
@@ -68,9 +70,23 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   // 9. 全文搜索：按文件指纹缓存纯文本，侧栏空闲时预热；查询不再重复扫原始 JSONL。
   set('lib/session-search.ts', template('merge/lib/session-search.ts'));
   const searchRoute = 'app/api/sessions/search/route.ts';
+  prepend(searchRoute, 'import { readFile } from "node:fs/promises";\nimport path from "node:path";\nimport { getAgentDir } from "@earendil-works/pi-coding-agent";\nimport { visibleSessionItems } from "@/lib/recent-tasks.mjs";\n');
   change(searchRoute, 'import { searchSessionContents } from "@/lib/session-search";', 'import { searchSessionContents, warmSessionSearch } from "@/lib/session-search";');
+  change(searchRoute, 'export async function GET(request: Request) {', `async function readTestIds() {
+  try {
+    const data = JSON.parse(await readFile(path.join(getAgentDir(), "recent-test-sessions.json"), "utf8"));
+    if (data.version !== 1 || !Array.isArray(data.ids) || data.ids.some((id: unknown) => typeof id !== "string" || !/^[a-z0-9][a-z0-9._-]*$/i.test(id))) throw new Error("Invalid test session registry");
+    return new Set<string>(data.ids);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set<string>();
+    throw error;
+  }
+}
+
+export async function GET(request: Request) {`);
   change(searchRoute, '    const sessions = query && !request.signal.aborted ? await listAllSessions({ allowStale: true }) : [];', `    const warming = new URL(request.url).searchParams.get("warm") === "1";
-    const sessions = (query || warming) && !request.signal.aborted ? await listAllSessions({ allowStale: true }) : [];
+    const allSessions = (query || warming) && !request.signal.aborted ? await listAllSessions({ allowStale: true }) : [];
+    const sessions = visibleSessionItems(allSessions, allSessions.length ? await readTestIds() : new Set<string>());
     if (warming) { await warmSessionSearch(sessions); return NextResponse.json({ ready: true }, { headers }); }`);
   const searchComponent = 'components/SessionSearch.tsx';
   change(searchComponent, 'export function SessionSearch(', 'let searchWarmStarted = false;\n\nexport function SessionSearch(');

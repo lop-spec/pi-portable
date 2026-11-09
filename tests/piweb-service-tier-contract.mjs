@@ -100,7 +100,7 @@ test('quota and tier live in the composer slot, preserve native default and reje
 // P25: the TIER guard must not add serial round trips in front of every submission.
 function tierHarness({ saved = 'native', applied = {}, model = { provider: 'openai-codex', id: 'gpt-6-sol' }, rtt = 15 } = {}) {
   const all = fs.readFileSync(new URL('../src/piweb-archive-ui.js', import.meta.url), 'utf8');
-  const source = all.slice(all.indexOf('// Speed / service TIER'));
+  const source = all.slice(all.indexOf('// Speed / service TIER'), all.indexOf('// Long-goal board:'));
   const calls = [];
   const storage = new Map([['pi-service-tier-applied', JSON.stringify(applied)]]);
   if (saved !== null) storage.set('pi-service-tier', saved);

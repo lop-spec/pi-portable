@@ -7,6 +7,20 @@ export const RECENT_TASK_VISIBLE = 5;
 export function isTestTask(session, testIds = new Set()) {
   return session.testTask === true || testIds.has(session.id) || (typeof session.firstMessage === 'string' && session.firstMessage.trimStart().startsWith('【测试任务】'));
 }
+export function excludedTestSessionIds(sessions, testIds = new Set()) {
+  const excluded = new Set(testIds);
+  for (const session of sessions) if (isTestTask(session, testIds)) excluded.add(session.id);
+  let size;
+  do {
+    size = excluded.size;
+    for (const session of sessions) if (session.relation?.kind === 'subagent' && excluded.has(session.relation.parentSessionId)) excluded.add(session.id);
+  } while (size !== excluded.size);
+  return excluded;
+}
+export function visibleSessionItems(sessions, testIds = new Set()) {
+  const excluded = excludedTestSessionIds(sessions, testIds);
+  return sessions.filter(session => !excluded.has(session.id));
+}
 /**
  * @template {{root: {id: string, modified: string, created: string}, subagents: {id: string}[]}} T
  * @param {T[]} families

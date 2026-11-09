@@ -9,7 +9,7 @@
     "public/licenses/craft-agents/LICENSE": "9a75ace1224f0f880ddfdd8442d14d5a0d865152c61a2fd363d8e2c351f94d2c",
     "public/licenses/craft-agents/NOTICE": "e586a84846b00b11c47d54fbb59318d27c013d4baf9217e95c5fd37895293978",
     "lib/session-reply-time.mjs": "0a65906bc49eee4e38056d2cb9f97d49f0df968a01c8bc145a9df46f7fee3182",
-    "lib/recent-tasks.mjs": "b1bed470dc31a6d5d81879adb968bee781d13cc5fc6c79c477c6cbbb7efd9a68",
+    "lib/recent-tasks.mjs": "22a0ad13becf773ac750c10c3680c700e9ec7f1af4f991062b700a5b964a5423",
     "app/api/session-reply-times/route.ts": "11cfad8d50e3c4a1a9b81fc6ab7372c088d4723d961f9a7e46e9a540c6500ca2",
     "lib/project-routing.mjs": "128c4c4b880169a443ac193dbf1a5bba222c466113c9a5b273e2dc3886b5823c",
     "lib/project-capacity.mjs": "99095a4bbdbb0680cca4a98aa27f80c5ae10734b28a72114ba5450da26020da8",

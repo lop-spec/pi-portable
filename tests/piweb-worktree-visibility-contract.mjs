@@ -14,6 +14,7 @@ function createHarness(payload, options = {}) {
   const location = new URL("http://127.0.0.1:30141/");
   const window = {
     location,
+    addEventListener() {},
     fetch: async (input, init) => {
       nativeCalls.push({ input: String(input), init });
       if (options.networkError) throw options.networkError;
