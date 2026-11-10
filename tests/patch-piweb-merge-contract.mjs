@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { integrate } from '../tools/patch-piweb-source.mjs';
 import { integrateMerge } from '../tools/patch-piweb-merge.mjs';
+import { integrateFeishuCopy } from '../tools/patch-piweb-feishu-copy.mjs';
 
 // 界面合并步骤（tools/patch-piweb-merge.mjs）的合同：接在固定版本的上游源码上，所有锚点各出现一次，
 // 输出里有标签栏 / 看板 / 继续任务 / 纸白主题 / 摘要 / 中文加粗的接入点，样式只用 token；锚点漂移时整体拒绝。
@@ -117,6 +118,7 @@ test('the merge step is a pure function of the state before it, and refuses when
   const full = integrate(read);
   const applied = harness(before);
   integrateMerge(applied);
+  integrateFeishuCopy(applied);
   assert.equal(applied.files.size, full.size, 'same set of files as the full integration');
   for (const [name, content] of full) assert.equal(applied.files.get(name), content, `${name} is identical`);
   const withEdit = (name, from, to) => {
