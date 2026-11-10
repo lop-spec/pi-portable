@@ -32,7 +32,7 @@ test('integrated Craft component renders model above steps, with exact ID toolti
  const req=createRequire(path.join(source,'package.json')),ts=req('typescript'),React=req('react'),{renderToStaticMarkup}=req('react-dom/server');
  const code=fs.readFileSync(path.join(source,'components/PortableProcessTimeline.tsx'),'utf8');
  const module={exports:{}};
- const localRequire=id=>id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
+ const localRequire=id=>id==='@/lib/clipboard'?{copyText:async()=>{throw new Error('Static rendering must not copy');}}:id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
  const compiled=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
  vm.runInNewContext('(function(require,module,exports){'+compiled+'\n})',{console},{filename:'PortableProcessTimeline.tsx'})(localRequire,module,module.exports);
  const render=p=>renderToStaticMarkup(React.createElement(module.exports.PortableProcessTimeline,p));
