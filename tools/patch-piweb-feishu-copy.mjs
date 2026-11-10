@@ -41,7 +41,7 @@ export function integrateFeishuCopy({ get, set, change, prepend, template }) {
   prepend(preview, 'import { copyText, fileCopyFormat } from "@/lib/clipboard";\n');
   change(preview, 'navigator.clipboard.writeText(await response.text())', 'copyText(await response.text(), fileCopyFormat(path))');
   change(preview, 'title="复制文件原文"', 'title="复制为飞书富文本（同时保留原文）"');
-  // Explicit direct deps; all were already in react-markdown's transitive dependency tree.
+  // Explicit direct deps from the existing unified/remark/HAST ecosystem; CI installs before renderer tests.
   const pkg = JSON.parse(get('package.json'));
   Object.assign(pkg.devDependencies, { unified: '^11.0.5', 'remark-parse': '^11.0.0', 'remark-rehype': '^11.1.2', 'hast-util-to-html': '^9.0.5' });
   pkg.piPortable.feishuClipboard = 1;

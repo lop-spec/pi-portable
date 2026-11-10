@@ -205,6 +205,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "stop safety regression" }
           node tools/patch-piweb-source.mjs --source upstream
           if ($LASTEXITCODE -ne 0) { throw "source integration failed" }
+          Push-Location upstream
+          npm install --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "Integrated UI dependency install failed" }
+          Pop-Location
           node --experimental-strip-types --test upstream/lib/session-search.test.mjs
           if ($LASTEXITCODE -ne 0) { throw "full text search semantics regression" }
           node --experimental-strip-types --test tests/piweb-remove-sound.mjs upstream/lib/browser-notifications.test.mjs upstream/public/sw.test.mjs
@@ -217,10 +221,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "history loading regression" }
           node --test tests/piweb-image-output.mjs
           if ($LASTEXITCODE -ne 0) { throw "image output contracts failed" }
-          Push-Location upstream
-          npm install --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw "Desktop UI dependency install failed" }
-          Pop-Location
           node --test tests/piweb-turn-model.mjs tests/piweb-runtime-model.mjs
           if ($LASTEXITCODE -ne 0) { throw "turn model label regression" }
           node --experimental-strip-types --test tests/piweb-feishu-copy.mjs
