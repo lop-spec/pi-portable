@@ -9,7 +9,9 @@ export const dynamic = "force-dynamic";
 const FIRST_MESSAGE_MAX_CHARS = 320;
 
 export async function GET(request: Request) {
-  const query = (new URL(request.url).searchParams.get("q") ?? "").trim();
+  const params = new URL(request.url).searchParams;
+  const query = (params.get("q") ?? "").trim();
+  const order = params.get("order") === "asc" ? "asc" : "desc";
   const headers = { "Cache-Control": "no-store" };
   if (query.length > 200) {
     return NextResponse.json({ error: "Search query exceeds 200 characters" }, { status: 400, headers });
@@ -23,7 +25,7 @@ export async function GET(request: Request) {
     // seconds is not searched yet; the stale read schedules the rebuild, so the
     // next search sees it.
     const sessions = query && !request.signal.aborted ? await listAllSessions({ allowStale: true }) : [];
-    const response = await searchSessionContents(sessions, query, request.signal);
+    const response = await searchSessionContents(sessions, query, request.signal, order);
     // Result rows carry the whole session object for selection; only the
     // first message is unbounded (up to ~100KB), so trim it like the list does.
     return jsonResponse(request, {

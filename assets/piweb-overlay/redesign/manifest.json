@@ -23,7 +23,7 @@
     },
     "app/api/sessions/search/route.ts": {
       "baseSha": "b8547247029fa9d1954fb48d11f5c6b114771bbac2aeb1ba93f25393cae45822",
-      "sha": "0924e32386e964f146c24cff2980d2bdb771245dc59f6983e68a69c5f25e7f93"
+      "sha": "8469bb07a50982f547a324af42109cd912cbdf3ce45255324a8a250c2a9bf2ec"
     },
     "app/global-error.test.mjs": {
       "baseSha": null,
@@ -51,7 +51,7 @@
     },
     "app/redesign-sidebar.css": {
       "baseSha": null,
-      "sha": "2e419769929ed750f90bc5f042ce83b64d68eb36999262b5f952ba08dcca3bf6"
+      "sha": "77e9edd451425091db89ce092c3d2a7326b51b04ed29b0a969228ff0f3123bc1"
     },
     "app/redesign-tokens.css": {
       "baseSha": null,
@@ -251,7 +251,7 @@
     },
     "components/SessionSearch.tsx": {
       "baseSha": "8ea4a7c47848e80d81b1f3138b1fb897fae6eaf3fac6aa8819a7f9aec2d4fba5",
-      "sha": "b0d6d03cb78a90cfb185889aa63e9c9b4bbaaace23ee02147d341451381fc92c"
+      "sha": "24fbea0fd9fd16783db102590bc48048e7d6f6b334fcc614c31313016ad8cb5b"
     },
     "components/SessionSidebar.test.mjs": {
       "baseSha": "06d3203723686ad8541a19165b73279e8a44865850ec25faaf5b07e0b6153355",
@@ -399,15 +399,15 @@
     },
     "lib/i18n/messages/en.ts": {
       "baseSha": "8d19c7687bad0d619d574648587fd097e734137f2eaf1efe43fe362e53e628a0",
-      "sha": "3341e1e4f84c5431a951a2ca600f97e1f3e51739bbb5eb716a9002f0969a7d54"
+      "sha": "24ece058ea25a842bdb1f084da58d9140a99f6cec9abb4ef462210508c2a5630"
     },
     "lib/i18n/messages/zh-CN.ts": {
       "baseSha": "b3114f06506a1aeb81096d9d6135200762e5f497ed3536914472c1f98b3c4411",
-      "sha": "2db787e5fbe01662606a695d5c977081203a9dd0e9ba5ffdb2540bc2e3994ce5"
+      "sha": "e11657b6539e763bd30e7e249d698374e57a7a14fe503d3c83f6a7ad08cb63f5"
     },
     "lib/i18n/messages/zh-TW.ts": {
       "baseSha": "6545bfa8390e1ec21c2996e929be1efc7342db5dcce606b37ae8f5347a0855da",
-      "sha": "39914941717ea7d17dfeb95bb3a62859f317c5536c0bfa0577ae288c481d1451"
+      "sha": "0f5553809dee06f4a48d1ba43c76ae9984565d0dad7fb4ac0c44e927709d5cd8"
     },
     "lib/i18n/registry.test.mjs": {
       "baseSha": "4fe5e01fe7669309228199ecb31ce16af5fa72cb036750f2d1f0a86c1c20175d",

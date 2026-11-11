@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, renameSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,12 +13,12 @@ function fixture(t, text = 'first needle') {
   return { id: dir, path, cwd: dir, firstMessage: 'first', created: '2026-01-01', modified: '2026-01-01', messageCount: 1 };
 }
 
-test('renamed titles are searchable and outrank newer incidental body matches', async t => {
+test('renamed titles remain searchable without overriding newest-first order', async t => {
   const old = { ...fixture(t, 'unrelated body'), name: '搜索加速', modified: '2025-01-01' };
   const recent = { ...fixture(t, '顺便提一下搜索加速'), modified: '2026-01-01' };
   const result = await searchSessionContents([recent, old], '搜索加速');
-  assert.deepEqual(result.results.map(item => item.session.id), [old.id, recent.id]);
-  assert.equal(result.results[0].match, '搜索加速');
+  assert.deepEqual(result.results.map(item => item.session.id), [recent.id, old.id]);
+  assert.equal(result.results[1].match, '搜索加速');
 });
 
 test('space-separated words require AND, including words in different messages', async t => {
@@ -30,23 +30,26 @@ test('space-separated words require AND, including words in different messages',
   assert.equal(result.truncated, false);
 });
 
-test('an exact phrase outranks scattered words and keeps its historical anchor', async t => {
+test('exact phrases keep their historical anchor without overriding time order', async t => {
   const scattered = fixture(t, 'piweb unrelated search');
   const phrase = { ...fixture(t, 'piweb search'), modified: '2025-01-01' };
   const result = await searchSessionContents([scattered, phrase], 'piweb search');
-  assert.deepEqual(result.results.map(item => item.session.id), [phrase.id, scattered.id]);
-  assert.equal(result.results[0].entryId, 'u1');
-  assert.equal(result.results[0].match, 'piweb search');
+  assert.deepEqual(result.results.map(item => item.session.id), [scattered.id, phrase.id]);
+  assert.equal(result.results[1].entryId, 'u1');
+  assert.equal(result.results[1].match, 'piweb search');
 });
 
-test('ranking scans beyond thirty body hits to find the best old title', async t => {
+test('time order is applied before the thirty-result cap, including older title matches', async t => {
   const common = fixture(t, 'needle');
   const recent = Array.from({length: 35}, (_, i) => ({...common, id:'recent-'+i}));
   const exact = { ...fixture(t, 'unrelated'), name: 'needle', modified: '2020-01-01' };
   const result = await searchSessionContents([...recent, exact], 'needle');
-  assert.equal(result.results[0].session.id, exact.id);
-  assert.equal(result.results.length, 30);
+  assert.deepEqual(result.results.map(item => item.session.id), recent.slice(0, 30).map(item => item.id));
   assert.equal(result.truncated, true);
+  const ascending = await searchSessionContents([...recent, exact], 'needle', undefined, 'asc');
+  assert.equal(ascending.results[0].session.id, exact.id);
+  assert.equal(ascending.results.length, 30);
+  assert.equal(ascending.truncated, true);
 });
 
 test('prewarming caches text once; different and repeated queries do not reread transcripts', async t => {
@@ -114,4 +117,56 @@ test('prewarmed text keeps multi-block Unicode offsets and excludes tools and im
   assert.equal(result.results[0].entryId, 'a1');
   assert.equal(result.results[0].blockIndex, 1);
   assert.equal((await searchSessionContents([s], 'secret')).results.length, 0);
+});
+
+test('both directions select the chronological first thirty, not the same thirty reversed', async t => {
+  const s = fixture(t);
+  const sessions = Array.from({ length: 42 }, (_, index) => ({
+    ...s, id: String(index), modified: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+  }));
+  const originalIds = sessions.map(item => item.id);
+  const newest = await searchSessionContents(sessions, 'needle');
+  const reads = sessionSearchStats.fileReads;
+  const oldest = await searchSessionContents(sessions, 'needle', undefined, 'asc');
+  assert.deepEqual(newest.results.map(item => item.session.id), originalIds.slice().reverse().slice(0, 30));
+  assert.deepEqual(oldest.results.map(item => item.session.id), originalIds.slice(0, 30));
+  assert.equal(newest.truncated, true);
+  assert.equal(oldest.truncated, true);
+  assert.equal(sessionSearchStats.fileReads, reads, 'changing order reuses text cache');
+  assert.deepEqual(sessions.map(item => item.id), originalIds, 'catalogue is not mutated');
+});
+
+test('time sorting compares instants across timezones and keeps unknown times last', async t => {
+  const s = fixture(t);
+  const sessions = [
+    { ...s, id: 'unknown', modified: 'invalid' },
+    { ...s, id: 'older', modified: '2026-01-01T09:00:00+08:00' },
+    { ...s, id: 'newer', modified: '2026-01-01T02:00:00Z' },
+    { ...s, id: 'same-time', modified: '2026-01-01T01:00:00Z' },
+  ];
+  assert.deepEqual((await searchSessionContents(sessions, 'needle')).results.map(item => item.session.id), ['newer', 'older', 'same-time', 'unknown']);
+  assert.deepEqual((await searchSessionContents(sessions, 'needle', undefined, 'asc')).results.map(item => item.session.id), ['older', 'same-time', 'newer', 'unknown']);
+});
+
+test('sorting keeps empty, cancelled and complete searches honest', async t => {
+  const s = fixture(t);
+  assert.deepEqual(await searchSessionContents([s], '', undefined, 'asc'), { results: [], truncated: false });
+  assert.deepEqual(await searchSessionContents([s], 'needle', AbortSignal.abort(), 'asc'), { results: [], truncated: true });
+  assert.equal((await searchSessionContents([s], 'needle', undefined, 'asc')).truncated, false);
+});
+
+test('the UI requests time order and rejects stale responses; the API forwards a safe default', () => {
+  const read = path => readFileSync(new URL('../assets/piweb-overlay/redesign/files/' + path, import.meta.url), 'utf8');
+  const ui = read('components/SessionSearch.tsx');
+  assert.match(ui, /useState<"desc" \| "asc">\("desc"\)/);
+  assert.match(ui, /state\.query === search && state\.order === order/);
+  assert.match(ui, /new URLSearchParams\(\{ q: search, order \}\)/);
+  assert.match(ui, /controller\.abort\(\)/);
+  assert.match(ui, /\[open, search, order\]/);
+  assert.match(ui, /className="pw-search-sort"/);
+  assert.match(ui, /previous === "desc" \? "asc" : "desc"/);
+  assert.match(ui, /aria-label=\{t\(order === "desc"/);
+  const route = read('app/api/sessions/search/route.ts');
+  assert.match(route, /params\.get\("order"\) === "asc" \? "asc" : "desc"/);
+  assert.match(route, /searchSessionContents\(sessions, query, request\.signal, order\)/);
 });

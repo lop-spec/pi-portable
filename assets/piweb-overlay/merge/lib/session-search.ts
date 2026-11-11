@@ -157,9 +157,15 @@ async function indexFor(path: string): Promise<TextIndex> {
   try { return await task; } finally { pending.delete(pendingKey); }
 }
 
-const candidatesFor = (sessions: readonly SessionInfo[]) => sessions
+export type SessionSearchOrder = "desc" | "asc";
+const candidatesFor = (sessions: readonly SessionInfo[], order: SessionSearchOrder = "desc") => sessions
   .filter(session => !session.transient && session.path)
-  .sort((a, b) => b.modified.localeCompare(a.modified));
+  .sort((a, b) => {
+    const left = Date.parse(a.modified), right = Date.parse(b.modified);
+    if (!Number.isFinite(left)) return Number.isFinite(right) ? 1 : 0;
+    if (!Number.isFinite(right)) return -1;
+    return order === "asc" ? left - right : right - left;
+  });
 
 // Runs once after the sidebar mounts, outside the interactive search path.
 // No disk sidecars or additional transcript copies; cache dies with the server.
@@ -232,7 +238,7 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | 
   });
 }
 
-export async function searchSessionContents(sessions: readonly SessionInfo[], query: string, requestSignal?: AbortSignal): Promise<SessionSearchResponse> {
+export async function searchSessionContents(sessions: readonly SessionInfo[], query: string, requestSignal?: AbortSignal, order: SessionSearchOrder = "desc"): Promise<SessionSearchResponse> {
   const response: SessionSearchResponse = { results: [], truncated: false };
   const needle = query.trim();
   if (!needle) return response;
@@ -241,7 +247,7 @@ export async function searchSessionContents(sessions: readonly SessionInfo[], qu
   const plan: QueryPlan = { phrase: literal(needle), terms: [...new Set(needle.split(/\s+/).filter(Boolean))].map(literal) };
   const deadline = Date.now() + TIME_BUDGET_MS;
   const signal = AbortSignal.any([AbortSignal.timeout(TIME_BUDGET_MS), ...(requestSignal ? [requestSignal] : [])]);
-  const candidates = candidatesFor(sessions);
+  const candidates = candidatesFor(sessions, order);
   type Outcome = { hit?: RankedHit; incomplete: boolean };
   const outcomes: (Outcome | undefined)[] = new Array(candidates.length);
   let next = 0;
@@ -260,7 +266,9 @@ export async function searchSessionContents(sessions: readonly SessionInfo[], qu
     if (!outcome || outcome.incomplete) response.truncated = true;
     if (outcome?.hit) ranked.push({ session, hit: outcome.hit, position });
   }
-  ranked.sort((a, b) => b.hit.score - a.hit.score || a.position - b.position);
+  // Candidate order is chronological. Match quality chooses snippets, never
+  // overrides the requested time order; apply the cap only after ordering.
+  ranked.sort((a, b) => a.position - b.position);
   response.results = ranked.slice(0, MAX_RESULTS).map(({ session, hit }) => ({ session, ...hit.result }));
   if (ranked.length > MAX_RESULTS) response.truncated = true;
   return response;

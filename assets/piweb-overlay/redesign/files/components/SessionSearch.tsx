@@ -16,29 +16,31 @@ export function SessionSearch({ open, query, selectedSessionId, onSelectSession,
   labelForSession: (session: SessionInfo) => string;
 }) {
   const { t } = useI18n();
-  const [state, setState] = useState<{ query: string; response?: SessionSearchResponse; failed?: boolean }>({ query: "" });
+  const [order, setOrder] = useState<"desc" | "asc">("desc");
+  const [state, setState] = useState<{ query: string; order?: "desc" | "asc"; response?: SessionSearchResponse; failed?: boolean }>({ query: "" });
   const search = query.trim();
-  const response = state.query === search ? state.response : undefined;
-  const failed = state.query === search && state.failed;
+  const current = state.query === search && state.order === order;
+  const response = current ? state.response : undefined;
+  const failed = current && state.failed;
 
-  // Re-runs only when the query changes. It deliberately does not depend on the
+  // Re-runs only when the query or requested time order changes. It deliberately does not depend on the
   // session-list version: ordinary agent activity bumps that version every few
   // seconds, which used to refetch (and re-order) results while they were being
   // read.
   useEffect(() => {
     if (!open || !search) return;
     const controller = new AbortController();
-    setState({ query: search });
+    setState({ query: search, order });
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/sessions/search?${new URLSearchParams({ q: search })}`, { signal: controller.signal });
+        const res = await fetch(`/api/sessions/search?${new URLSearchParams({ q: search, order })}`, { signal: controller.signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json() as SessionSearchResponse;
-        if (!controller.signal.aborted) setState({ query: search, response: data });
+        if (!controller.signal.aborted) setState({ query: search, order, response: data });
       } catch (error) {
         if (!controller.signal.aborted) {
           console.error("[pi-web session-search] request failed:", error);
-          setState({ query: search, failed: true });
+          setState({ query: search, order, failed: true });
         }
       }
     }, 300);
@@ -46,7 +48,7 @@ export function SessionSearch({ open, query, selectedSessionId, onSelectSession,
       clearTimeout(timer);
       controller.abort();
     };
-  }, [open, search]);
+  }, [open, search, order]);
 
   if (!open || !search) return null;
   const now = new Date();
@@ -65,6 +67,23 @@ export function SessionSearch({ open, query, selectedSessionId, onSelectSession,
         else items[Math.min(next, items.length - 1)]?.focus();
       }}
     >
+      <div className="pw-search-toolbar">
+        <p className="pw-search-status" role="status">
+          {response
+            ? t("sidebar.sessionSearchCount", { count: response.results.length })
+            : failed ? t("sidebar.sessionSearchFailed") : t("sidebar.sessionSearching")}
+        </p>
+        <button
+          type="button"
+          className="pw-search-sort"
+          onClick={() => setOrder((previous) => previous === "desc" ? "asc" : "desc")}
+          title={t(order === "desc" ? "sidebar.sessionSearchSortToOldest" : "sidebar.sessionSearchSortToNewest")}
+          aria-label={t(order === "desc" ? "sidebar.sessionSearchSortToOldest" : "sidebar.sessionSearchSortToNewest")}
+        >
+          <span aria-hidden="true">{order === "desc" ? "↓" : "↑"}</span>
+          {t(order === "desc" ? "sidebar.sessionSearchNewest" : "sidebar.sessionSearchOldest")}
+        </button>
+      </div>
       {failed ? (
         <p className="pw-search-status is-error" role="alert">{t("sidebar.sessionSearchFailed")}</p>
       ) : !response ? (
@@ -78,9 +97,7 @@ export function SessionSearch({ open, query, selectedSessionId, onSelectSession,
           <p>{t("sidebar.sessionSearchEmpty")}</p>
           <p className="pw-search-hint">换个关键词试试；归档的会话需切到归档视图再搜。</p>
         </div>
-      ) : (
-        <p className="pw-search-status" role="status">{t("sidebar.sessionSearchCount", { count: response.results.length })}</p>
-      )}
+      ) : null}
       {response?.results.map(({ session, entryId, blockIndex, before, match, after }) => {
         const title = deriveSessionTitle(session.name, session.firstMessage, session.id);
         const snippet = `${before}${match}${after}`.trim();
