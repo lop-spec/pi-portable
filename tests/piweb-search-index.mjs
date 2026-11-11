@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, renameSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, renameSync, readFileSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -83,9 +83,13 @@ test('appending refreshes only the changed file and exposes the new entry', asyn
   assert.equal(sessionSearchStats.fileReads - reads, 1);
 });
 
-test('same-size rewrite cannot return a stale cached match', async t => {
+test('same-size rewrite with a changed file timestamp refreshes the cache', async t => {
   const s = fixture(t, 'first needle'); await warmSessionSearch([s]);
+  const changedTime = new Date(statSync(s.path).mtimeMs + 1000);
   writeFileSync(s.path, entry('other marker'));
+  // NTFS can timestamp two quick writes at the same clock tick. This fixture
+  // explicitly changes the fingerprint instead of depending on runner timing.
+  utimesSync(s.path, changedTime, changedTime);
   assert.equal((await searchSessionContents([s], 'needle')).results.length, 0);
   assert.equal((await searchSessionContents([s], 'marker')).results.length, 1);
 });
