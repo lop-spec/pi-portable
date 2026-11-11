@@ -31,6 +31,7 @@ import { integrateTurnModel } from './patch-piweb-turn-model.mjs';
 import { integrateSessionSettings } from './patch-piweb-session-settings.mjs';
 import { integrateMerge } from './patch-piweb-merge.mjs';
 import { integrateFeishuCopy } from './patch-piweb-feishu-copy.mjs';
+import { integrateImmediateSteer } from './patch-piweb-immediate-steer.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -426,6 +427,7 @@ export function integrate(getFile, { onBeforeRemoveSound, withoutMerge = false }
     integrateMerge({ get, set, change, prepend, template });
     integrateFeishuCopy({ get, set, change, prepend, template });
   }
+  integrateImmediateSteer({ change });
   return files;
 }
 
