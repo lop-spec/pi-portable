@@ -125,9 +125,10 @@ public final class WorkspaceServer {
             require(win.getType() != AccessibilityWindowInfo.TYPE_APPLICATION || !packageName.equals(pkg(win.getRoot())),
                     "APP_VISIBLE_ON_ANOTHER_DISPLAY: leave the app before allocating it");
     }
-    void retireApp(Workspace w) throws Exception {
-        if (!ownsVisibleApp(w)) return;
-        java.lang.Process stop = new ProcessBuilder("/system/bin/am", "force-stop", "--user", "current", w.pkg)
+    void retireCachedApp(String packageName) throws Exception {
+        // am kill only retires eligible background processes. Unlike force-stop,
+        // it does not mark the package stopped or cancel its alarms/jobs/services.
+        java.lang.Process stop = new ProcessBuilder("/system/bin/am", "kill", "--user", "current", packageName)
                 .redirectErrorStream(true).start();
         if (!stop.waitFor(6, TimeUnit.SECONDS)) { stop.destroy(); throw new IllegalStateException("APP_RETIRE_TIMEOUT"); }
         String result = new String(stop.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -191,8 +192,9 @@ public final class WorkspaceServer {
             synchronized (this) {
                 if (closed) return;
                 RuntimeException failure = null;
-                try { retireApp(this); }
-                catch (Exception e) { failure = new IllegalStateException("APP_RETIRE_FAILED: " + cause(e), e); }
+                boolean owned = false;
+                try { owned = ownsVisibleApp(this); }
+                catch (Exception e) { failure = new IllegalStateException("APP_OWNERSHIP_CHECK_FAILED: " + cause(e), e); }
                 finally {
                     synchronized (frameLock) {
                         closed = true;
@@ -202,6 +204,8 @@ public final class WorkspaceServer {
                     }
                     nodes.clear(); log("closed workspace=" + name + " display=" + displayId);
                 }
+                if (owned) try { retireCachedApp(pkg); }
+                catch (Exception e) { failure = new IllegalStateException("APP_CACHE_RETIRE_FAILED: " + cause(e), e); }
                 if (failure != null) throw failure;
             }
         }
@@ -238,11 +242,11 @@ public final class WorkspaceServer {
             require(intent.getComponent() != null, "APP_COMPONENT_UNRESOLVED");
             // A shell context has no Activity Instrumentation. Use Android's supported am entry
             // rather than depending on another private ActivityThread initialization field.
-            // A fresh process cannot carry cached metrics from a previous display.
-            // No app data/login state is removed. The main-display busy gate stays mandatory.
+            // Native pixels/density also match process-wide default-display metrics.
+            // Do not force-stop: doing so cancels alarms/jobs for arbitrary apps.
             require(main.equals(mainPackage()), "MAIN_DISPLAY_CHANGED_BEFORE_LAUNCH");
             requireAppIdle(pkg);
-            java.lang.Process launch = new ProcessBuilder("/system/bin/am", "start", "-S", "--display", String.valueOf(w.displayId),
+            java.lang.Process launch = new ProcessBuilder("/system/bin/am", "start", "--display", String.valueOf(w.displayId),
                     "-f", "0x18000000", "-n", intent.getComponent().flattenToString()).redirectErrorStream(true).start();
             if (!launch.waitFor(6, TimeUnit.SECONDS)) { launch.destroy(); throw new IllegalStateException("APP_LAUNCH_TIMEOUT"); }
             ByteArrayOutputStream output = new ByteArrayOutputStream();

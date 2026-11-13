@@ -42,7 +42,7 @@ test('legacy fixed-resolution brokers are rejected without disabling cleanup or 
   const client = fs.readFileSync(new URL('../tools/phone-workspaces.mjs', import.meta.url), 'utf8');
   assert.ok(client.includes("!['close', 'stop', 'list'].includes(request.op)"));
 });
-test('all apps use exact native pixels and density, with cold display transitions and no global overrides', () => {
+test('all apps use exact native pixels and density, with safe cache cleanup and no global overrides', () => {
   const java = fs.readFileSync(new URL('../src/phone/WorkspaceServer.java', import.meta.url), 'utf8');
   assert.ok(java.includes('DISPLAY_POLICY = "' + DISPLAY_POLICY + '"'));
   assert.ok(java.includes('width = nativeDisplay.widthPixels; height = nativeDisplay.heightPixels; dpi = nativeDisplay.densityDpi;'));
@@ -52,8 +52,10 @@ test('all apps use exact native pixels and density, with cold display transition
   assert.ok(java.includes('getMethod("isKeyguardLocked")'));
   assert.ok(java.includes('require(Boolean.FALSE.equals(locked)'));
   for (const getter of ['"getBaseDisplaySize"', '"getBaseDisplayDensity"', 'Surface.ROTATION_90', 'Surface.ROTATION_270', 'requireAppIdle(pkg)']) assert.ok(java.includes(getter), getter);
-  for (const signature of ['NATIVE_DISPLAY_CHANGED', 'WORKSPACE_GEOMETRY_CHANGED', 'nativeGeometry(this)', 'nativeGeometry(w)', '"start", "-S", "--display"', 'if (!ownsVisibleApp(w)) return;', 'if (all.keyAt(i) != w.displayId) return false;', 'try { retireApp(this); }', 'VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL']) assert.ok(java.includes(signature), signature);
-  assert.ok(java.indexOf('MAIN_DISPLAY_CHANGED_BEFORE_LAUNCH') < java.indexOf('"start", "-S", "--display"'));
+  for (const signature of ['NATIVE_DISPLAY_CHANGED', 'WORKSPACE_GEOMETRY_CHANGED', 'nativeGeometry(this)', 'nativeGeometry(w)', '"start", "--display"', 'owned = ownsVisibleApp(this)', 'if (all.keyAt(i) != w.displayId) return false;', 'if (owned) try { retireCachedApp(pkg); }', '"/system/bin/am", "kill", "--user"', 'VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL']) assert.ok(java.includes(signature), signature);
+  assert.ok(java.indexOf('MAIN_DISPLAY_CHANGED_BEFORE_LAUNCH') < java.indexOf('"start", "--display"'));
+  assert.ok(java.indexOf('display.release(); reader.close();') < java.indexOf('if (owned) try { retireCachedApp(pkg); }'));
+  assert.ok(!java.includes('"force-stop"') && !java.includes('"-S"'));
   for (const forbidden of ['setForcedDisplayDensity', 'setForcedDisplaySize', '"wm", "size"', '"wm", "density"', '"pm", "clear"']) assert.ok(!java.includes(forbidden), forbidden);
 });
 test('ten independent host workspaces can overlap without losing per-workspace serialization', async () => {
