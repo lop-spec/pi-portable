@@ -48,6 +48,9 @@ test('all apps use exact native pixels and density, with cold display transition
   assert.ok(java.includes('width = nativeDisplay.widthPixels; height = nativeDisplay.heightPixels; dpi = nativeDisplay.densityDpi;'));
   assert.ok(!java.includes('width = 720') && !java.includes('dpi = 240'));
   assert.ok(!java.includes('.getRealMetrics('));
+  assert.ok(!java.includes('import android.app.KeyguardManager'));
+  assert.ok(java.includes('getMethod("isKeyguardLocked")'));
+  assert.ok(java.includes('require(Boolean.FALSE.equals(locked)'));
   for (const getter of ['"getBaseDisplaySize"', '"getBaseDisplayDensity"', 'Surface.ROTATION_90', 'Surface.ROTATION_270', 'requireAppIdle(pkg)']) assert.ok(java.includes(getter), getter);
   for (const signature of ['NATIVE_DISPLAY_CHANGED', 'WORKSPACE_GEOMETRY_CHANGED', 'nativeGeometry(this)', 'nativeGeometry(w)', '"start", "-S", "--display"', 'if (!ownsVisibleApp(w)) return;', 'if (all.keyAt(i) != w.displayId) return false;', 'try { retireApp(this); }', 'VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL']) assert.ok(java.includes(signature), signature);
   assert.ok(java.indexOf('MAIN_DISPLAY_CHANGED_BEFORE_LAUNCH') < java.indexOf('"start", "-S", "--display"'));

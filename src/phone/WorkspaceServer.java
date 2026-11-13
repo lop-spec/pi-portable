@@ -2,7 +2,6 @@ package com.lop.phone;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.ActivityOptions;
-import android.app.KeyguardManager;
 import android.app.UiAutomation;
 import android.content.Context;
 import android.content.Intent;
@@ -216,9 +215,12 @@ public final class WorkspaceServer {
             if (win.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) return pkg(win.getRoot());
         return "";
     }
-    void unlocked() {
-        KeyguardManager keyguard = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
-        require(keyguard != null && !keyguard.isKeyguardLocked(), "PHONE_LOCKED: workspace paused; unlock through phone entry");
+    void unlocked() throws Exception {
+        // KeyguardManager initializes WindowManagerGlobal and requires app-only
+        // ApplicationSharedMemory on newer Android. Query the same service directly;
+        // unavailable/non-boolean results fail closed, never bypass the lock gate.
+        Object locked = windowManager.getClass().getMethod("isKeyguardLocked").invoke(windowManager);
+        require(Boolean.FALSE.equals(locked), "PHONE_LOCKED: workspace paused; unlock through phone entry");
     }
     synchronized Workspace open(JSONObject request) throws Exception {
         unlocked(); String name = request.getString("workspace"), pkg = request.getString("package");
