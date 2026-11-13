@@ -17,6 +17,7 @@ import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.os.*;
 import android.util.Base64;
+import android.util.DisplayMetrics;
 import android.util.SparseArray;
 import android.view.*;
 import android.view.accessibility.*;
@@ -34,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class WorkspaceServer {
     static final int MAX_WORKSPACES = 10;
     static final String SOCKET = "pi_phone_workspaces_v1";
+    static final String DISPLAY_POLICY = "native-v1";
     final ShellContext context;
     final UiAutomation ui;
     final DisplayManager displays;
@@ -79,9 +81,50 @@ public final class WorkspaceServer {
         setDisplay = InputEvent.class.getMethod("setDisplayId", int.class);
         log("ready version=" + version + " maxWorkspaces=" + MAX_WORKSPACES + " clipboard=disabled ime=hidden");
     }
+    DisplayMetrics nativeMetrics() {
+        Display main = displays.getDisplay(Display.DEFAULT_DISPLAY);
+        require(main != null, "NATIVE_DISPLAY_UNAVAILABLE");
+        DisplayMetrics metrics = new DisplayMetrics(); main.getRealMetrics(metrics);
+        require(metrics.widthPixels > 0 && metrics.heightPixels > 0 && metrics.densityDpi > 0,
+                "NATIVE_DISPLAY_METRICS_UNAVAILABLE");
+        return metrics;
+    }
+    void nativeGeometry(Workspace w) {
+        DisplayMetrics main = nativeMetrics(), actual = new DisplayMetrics();
+        Display target = displays.getDisplay(w.displayId);
+        require(target != null, "DISPLAY_LOST"); target.getRealMetrics(actual);
+        require(w.width == main.widthPixels && w.height == main.heightPixels && w.dpi == main.densityDpi,
+                "NATIVE_DISPLAY_CHANGED: close and reopen workspace; no resize or old-coordinate input");
+        require(w.width == actual.widthPixels && w.height == actual.heightPixels && w.dpi == actual.densityDpi,
+                "WORKSPACE_GEOMETRY_CHANGED: close and reopen workspace");
+    }
+    // Never stop an app which the user has taken back onto another display.
+    boolean ownsVisibleApp(Workspace w) {
+        boolean owned = false; SparseArray<List<AccessibilityWindowInfo>> all = windows();
+        for (int i = 0; i < all.size(); i++) for (AccessibilityWindowInfo win : all.valueAt(i)) {
+            if (win.getType() != AccessibilityWindowInfo.TYPE_APPLICATION || !w.pkg.equals(pkg(win.getRoot()))) continue;
+            if (all.keyAt(i) != w.displayId) return false;
+            owned = true;
+        }
+        return owned;
+    }
+    void requireAppIdle(String packageName) {
+        SparseArray<List<AccessibilityWindowInfo>> all = windows();
+        for (int i = 0; i < all.size(); i++) for (AccessibilityWindowInfo win : all.valueAt(i))
+            require(win.getType() != AccessibilityWindowInfo.TYPE_APPLICATION || !packageName.equals(pkg(win.getRoot())),
+                    "APP_VISIBLE_ON_ANOTHER_DISPLAY: leave the app before allocating it");
+    }
+    void retireApp(Workspace w) throws Exception {
+        if (!ownsVisibleApp(w)) return;
+        java.lang.Process stop = new ProcessBuilder("/system/bin/am", "force-stop", "--user", "current", w.pkg)
+                .redirectErrorStream(true).start();
+        if (!stop.waitFor(6, TimeUnit.SECONDS)) { stop.destroy(); throw new IllegalStateException("APP_RETIRE_TIMEOUT"); }
+        String result = new String(stop.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        require(stop.exitValue() == 0 && !result.contains("Error:") && !result.contains("Exception"), "APP_RETIRE_REJECTED: " + result.trim());
+    }
     final class Workspace {
         final String name, pkg;
-        final int width = 720, height = 1280, dpi = 240;
+        final int width, height, dpi;
         final ImageReader reader;
         final VirtualDisplay display;
         final int displayId;
@@ -95,6 +138,10 @@ public final class WorkspaceServer {
         Map<String, AccessibilityNodeInfo> nodes = new HashMap<>();
         Workspace(String name, String pkg) throws Exception {
             this.name = name; this.pkg = pkg;
+            // Match pixels AND density, not just dp: many apps cache default-display
+            // metrics in process-wide/static/WebView state and mix them with Activity resources.
+            DisplayMetrics nativeDisplay = nativeMetrics();
+            width = nativeDisplay.widthPixels; height = nativeDisplay.heightPixels; dpi = nativeDisplay.densityDpi;
             int flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
                     | flag("VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH") | flag("VIRTUAL_DISPLAY_FLAG_TRUSTED")
                     | flag("VIRTUAL_DISPLAY_FLAG_OWN_FOCUS") | flag("VIRTUAL_DISPLAY_FLAG_STEAL_TOP_FOCUS_DISABLED")
@@ -121,24 +168,32 @@ public final class WorkspaceServer {
                 wm.getClass().getMethod("setDisplayImePolicy", int.class, int.class).invoke(wm, displayId, 2);
                 int actual = (int) wm.getClass().getMethod("getDisplayImePolicy", int.class).invoke(wm, displayId);
                 require(actual == 2, "IME_ISOLATION_UNAVAILABLE");
+                nativeGeometry(this);
             } catch (Exception e) {
                 if (created != null) created.release(); reader.close(); throw e;
             }
         }
         JSONObject identity() throws JSONException {
             return new JSONObject().put("workspace", name).put("package", pkg).put("displayId", displayId)
-                    .put("width", width).put("height", height).put("frame", frameNumber.get()).put("frameTime", frameTime);
+                    .put("width", width).put("height", height).put("dpi", dpi).put("displayPolicy", DISPLAY_POLICY)
+                    .put("frame", frameNumber.get()).put("frameTime", frameTime);
         }
         void close() {
             synchronized (this) {
                 if (closed) return;
-                synchronized (frameLock) {
-                    closed = true;
-                    if (image != null) { image.close(); image = null; }
-                    reader.setOnImageAvailableListener(null, null);
-                    display.release(); reader.close();
+                RuntimeException failure = null;
+                try { retireApp(this); }
+                catch (Exception e) { failure = new IllegalStateException("APP_RETIRE_FAILED: " + cause(e), e); }
+                finally {
+                    synchronized (frameLock) {
+                        closed = true;
+                        if (image != null) { image.close(); image = null; }
+                        reader.setOnImageAvailableListener(null, null);
+                        display.release(); reader.close();
+                    }
+                    nodes.clear(); log("closed workspace=" + name + " display=" + displayId);
                 }
-                nodes.clear(); log("closed workspace=" + name + " display=" + displayId);
+                if (failure != null) throw failure;
             }
         }
     }
@@ -171,7 +226,11 @@ public final class WorkspaceServer {
             require(intent.getComponent() != null, "APP_COMPONENT_UNRESOLVED");
             // A shell context has no Activity Instrumentation. Use Android's supported am entry
             // rather than depending on another private ActivityThread initialization field.
-            java.lang.Process launch = new ProcessBuilder("/system/bin/am", "start", "--display", String.valueOf(w.displayId),
+            // A fresh process cannot carry cached metrics from a previous display.
+            // No app data/login state is removed. The main-display busy gate stays mandatory.
+            require(main.equals(mainPackage()), "MAIN_DISPLAY_CHANGED_BEFORE_LAUNCH");
+            requireAppIdle(pkg);
+            java.lang.Process launch = new ProcessBuilder("/system/bin/am", "start", "-S", "--display", String.valueOf(w.displayId),
                     "-f", "0x18000000", "-n", intent.getComponent().flattenToString()).redirectErrorStream(true).start();
             if (!launch.waitFor(6, TimeUnit.SECONDS)) { launch.destroy(); throw new IllegalStateException("APP_LAUNCH_TIMEOUT"); }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -201,7 +260,7 @@ public final class WorkspaceServer {
     synchronized JSONObject list() throws JSONException {
         JSONArray out = new JSONArray(); for (Workspace w : workspaces.values()) out.put(w.identity());
         return new JSONObject().put("version", version).put("instance", instance).put("maxWorkspaces", MAX_WORKSPACES)
-                .put("workspaces", out).put("mainPackage", mainPackage());
+                .put("displayPolicy", DISPLAY_POLICY).put("workspaces", out).put("mainPackage", mainPackage());
     }
     synchronized JSONObject close(String name) throws JSONException {
         Workspace w = workspaces.remove(name); if (w != null) w.close();
@@ -209,6 +268,7 @@ public final class WorkspaceServer {
     }
     void assertTarget(Workspace w) {
         unlocked(); require(!w.closed && displays.getDisplay(w.displayId) != null, "DISPLAY_LOST");
+        nativeGeometry(w);
         boolean found = false;
         SparseArray<List<AccessibilityWindowInfo>> all = windows();
         for (int i = 0; i < all.size(); i++) {
@@ -376,7 +436,7 @@ public final class WorkspaceServer {
     JSONObject dispatch(JSONObject r) throws Exception {
         String op = r.getString("op");
         if (op.equals("ping")) return new JSONObject().put("version", version).put("instance", instance)
-                .put("pid", android.os.Process.myPid()).put("maxWorkspaces", MAX_WORKSPACES);
+                .put("pid", android.os.Process.myPid()).put("maxWorkspaces", MAX_WORKSPACES).put("displayPolicy", DISPLAY_POLICY);
         require(instance.equals(r.optString("instance")), "BROKER_IDENTITY_CHANGED: explicit reconnect required");
         if (op.equals("list")) return list();
         if (op.equals("main-ui")) return mainUi();
@@ -384,7 +444,12 @@ public final class WorkspaceServer {
         if (op.equals("observe")) return observe(r.getJSONArray("workspaces"));
         if (op.equals("close")) return close(r.getString("workspace"));
         if (op.equals("stop")) {
-            synchronized (this) { for (Workspace w : workspaces.values()) w.close(); workspaces.clear(); }
+            synchronized (this) {
+                RuntimeException failure = null;
+                for (Workspace w : workspaces.values()) try { w.close(); } catch (RuntimeException e) { failure = e; }
+                workspaces.clear();
+                if (failure != null) throw failure;
+            }
             running = false; return new JSONObject().put("stopped", true);
         }
         Workspace w = get(r.getString("workspace"));

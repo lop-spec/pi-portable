@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { once } from 'node:events';
 import { exclusive } from '../tools/phone.mjs';
-import { MAX_WORKSPACES, requireWorkspaceCapacity, parseWorkspaceCommand, validateReply, workspaceLease, rpc, reconcileWorkspaceState, readWorkspaceState } from '../tools/phone-workspaces.mjs';
+import { MAX_WORKSPACES, DISPLAY_POLICY, requireWorkspaceCapacity, parseWorkspaceCommand, validateReply, workspaceLease, rpc, reconcileWorkspaceState, readWorkspaceState } from '../tools/phone-workspaces.mjs';
 
 test('workspace names and packages cannot become shell syntax', () => {
   assert.deepEqual(parseWorkspaceCommand(['open', 'a', 'com.miui.calculator']), { op: 'open', workspace: 'a', package: 'com.miui.calculator' });
@@ -31,8 +31,25 @@ test('ten-slot client cannot report success while reusing a legacy two-slot brok
   assert.equal(MAX_WORKSPACES, 10);
   assert.throws(() => requireWorkspaceCapacity({ maxWorkspaces: 2 }), /BROKER_CAPACITY_MISMATCH/);
   assert.throws(() => requireWorkspaceCapacity({}), /legacy\/unknown/);
-  const ping = { maxWorkspaces: 10, version: 'matching' };
+  const ping = { maxWorkspaces: 10, displayPolicy: DISPLAY_POLICY, version: 'matching' };
   assert.equal(requireWorkspaceCapacity(ping), ping);
+});
+test('legacy fixed-resolution brokers are rejected without disabling cleanup or silently upgrading', () => {
+  assert.equal(DISPLAY_POLICY, 'native-v1');
+  for (const displayPolicy of [undefined, 'fixed-720', 'native-v0']) {
+    assert.throws(() => requireWorkspaceCapacity({ maxWorkspaces: 10, displayPolicy }), /BROKER_DISPLAY_POLICY_MISMATCH/);
+  }
+  const client = fs.readFileSync(new URL('../tools/phone-workspaces.mjs', import.meta.url), 'utf8');
+  assert.ok(client.includes("!['close', 'stop', 'list'].includes(request.op)"));
+});
+test('all apps use exact native pixels and density, with cold display transitions and no global overrides', () => {
+  const java = fs.readFileSync(new URL('../src/phone/WorkspaceServer.java', import.meta.url), 'utf8');
+  assert.ok(java.includes('DISPLAY_POLICY = "' + DISPLAY_POLICY + '"'));
+  assert.ok(java.includes('width = nativeDisplay.widthPixels; height = nativeDisplay.heightPixels; dpi = nativeDisplay.densityDpi;'));
+  assert.ok(!java.includes('width = 720') && !java.includes('dpi = 240'));
+  for (const signature of ['NATIVE_DISPLAY_CHANGED', 'WORKSPACE_GEOMETRY_CHANGED', 'nativeGeometry(this)', 'nativeGeometry(w)', '"start", "-S", "--display"', 'if (!ownsVisibleApp(w)) return;', 'if (all.keyAt(i) != w.displayId) return false;', 'try { retireApp(this); }', 'VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL']) assert.ok(java.includes(signature), signature);
+  assert.ok(java.indexOf('MAIN_DISPLAY_CHANGED_BEFORE_LAUNCH') < java.indexOf('"start", "-S", "--display"'));
+  for (const forbidden of ['setForcedDisplayDensity', 'setForcedDisplaySize', '"wm", "size"', '"wm", "density"', '"pm", "clear"']) assert.ok(!java.includes(forbidden), forbidden);
 });
 test('ten independent host workspaces can overlap without losing per-workspace serialization', async () => {
   let active = 0, peak = 0, release;

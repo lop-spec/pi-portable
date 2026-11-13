@@ -17,6 +17,7 @@ const remoteJar = '/data/local/tmp/pi-phone-workspaces.jar';
 const remoteLog = '/data/local/tmp/pi-phone-workspaces.log';
 const queues = new Map();
 export const MAX_WORKSPACES = 10; // Cross-language agreement is enforced by the CI contract test.
+export const DISPLAY_POLICY = 'native-v1';
 
 export async function workspaceLease(key, work) {
   const previous = queues.get(key) || Promise.resolve();
@@ -55,6 +56,7 @@ export function parseWorkspaceCommand(args) {
 }
 export function requireWorkspaceCapacity(ping) {
   require(ping?.maxWorkspaces === MAX_WORKSPACES, `BROKER_CAPACITY_MISMATCH: client requires ${MAX_WORKSPACES}, broker reports ${ping?.maxWorkspaces ?? 'legacy/unknown'}; install the matching CI artifact and explicitly stop/start. No active workspace was replaced.`);
+  require(ping?.displayPolicy === DISPLAY_POLICY, `BROKER_DISPLAY_POLICY_MISMATCH: requires ${DISPLAY_POLICY}; explicitly close/stop the old broker and install/start the matching CI artifact. No app was launched or active workspace replaced.`);
   return ping;
 }
 export function validateReply(reply, id) {
@@ -242,7 +244,7 @@ async function start(ctx) {
 export async function workspaceCommand(ctx, args, ready) {
   const request = parseWorkspaceCommand(args);
   if (request.op === 'help') {
-    console.log('phone workspace start | list | stop\nphone workspace open NAME PACKAGE | close NAME\nphone workspace observe NAME [NAME ... up to 10] | snapshot NAME | screenshot NAME NEW.png\nphone workspace click NAME REF SNAPSHOT\nphone workspace text NAME REF TEXT SNAPSHOT\nphone workspace tap NAME X Y SNAPSHOT\nphone workspace swipe NAME X Y END_X END_Y DURATION_MS SNAPSHOT\nphone workspace back NAME SNAPSHOT | enter NAME SNAPSHOT\nUp to 10 isolated app leases, created only by open and released by close/stop. Every action consumes a <=10s snapshot. No main-display, clipboard or keyboard fallback.');
+    console.log('phone workspace start | list | stop\nphone workspace open NAME PACKAGE | close NAME\nphone workspace observe NAME [NAME ... up to 10] | snapshot NAME | screenshot NAME NEW.png\nphone workspace click NAME REF SNAPSHOT\nphone workspace text NAME REF TEXT SNAPSHOT\nphone workspace tap NAME X Y SNAPSHOT\nphone workspace swipe NAME X Y END_X END_Y DURATION_MS SNAPSHOT\nphone workspace back NAME SNAPSHOT | enter NAME SNAPSHOT\nUp to 10 isolated app leases, with native phone pixels/density; open cold-starts the app, close/stop retires its process only while it is exclusively visible on the owned display (no app data cleared). If the phone geometry changes, close/reopen instead of resizing or reusing old coordinates. Every action consumes a <=10s snapshot. No main-display, clipboard or keyboard fallback.');
     return;
   }
   if (request.op === 'start') { console.log(JSON.stringify(await prepare(() => ready(() => start(ctx))))); return; }
@@ -252,6 +254,11 @@ export async function workspaceCommand(ctx, args, ready) {
   if (!state && request.op === 'stop') { console.log(JSON.stringify({ stopped: true, alreadyStopped: true })); return; }
   require(state, 'Workspaces not started or expired; run phone workspace start. No workspace action was replayed on the main display.');
   // stop is cleanup-only: it cannot input, read content, unlock, or move tasks to main.
+  // Keep legacy cleanup/diagnostics available, but never operate a legacy geometry broker.
+  if (!['close', 'stop', 'list'].includes(request.op)) {
+    const ping = requireWorkspaceCapacity(await rpc(state.port, { op: 'ping' }));
+    require(ping.instance === state.instance && ping.version === state.version, 'Workspace broker identity changed; no operation sent');
+  }
   const output = request.output; delete request.output;
   if (output) require(!fs.existsSync(path.resolve(output)), 'Screenshot output already exists; choose a new filename');
   const result = await workspaceLease(`${ctx.device.serial}:${request.workspace || request.op}`, () => rpc(state.port, { ...request, instance: state.instance }));
