@@ -27,12 +27,14 @@ Up to **10 UI slots** are available. `start` creates no displays; each `open` al
 
 Actions within a workspace remain serialized; independent workspaces can read and perform node actions concurrently. Ten read workers, a bounded 20-read queue and 12 request workers support the larger limit without unbounded fanout. A batch has one 15-second deadline, not 15 seconds per App. Complete low-level gestures still serialize only around the shared injector. These are admission limits, not a guarantee that every ten-App workload is fast.
 
-After upgrading, `start` verifies the broker actually reports capacity 10. An old two-slot broker is not silently reused or replaced: finish its tasks, run `stop`, install the matching CI artifact, then `start`. `list.maxWorkspaces` reports the running broker's real limit.
+Every workspace uses the phone's current **native pixel dimensions and logical density**, not a fixed 720×1280/240dpi canvas. Its identity includes `width`, `height`, `dpi` and `displayPolicy: native-v1`. Matching both pixels and density prevents mixing default-display metrics with different Activity resources; there are no per-App size exceptions or global `wm size/density` changes. If phone or workspace geometry changes, content/actions pause until close/reopen; old coordinates are never silently scaled.
+
+After upgrading, `start` and content/actions require capacity 10 and `native-v1`. Legacy brokers are not silently reused or replaced: finish their tasks, run `stop`, install the matching CI artifact, then `start`. `list` and cleanup remain available for migration.
 
 ## Isolation and safety
 
 - One UiAutomation connection per device. Existing main-screen `phone ui` and the supported lockscreen verifier share its read-only main-display tree while the broker is active. DPAPI credential handling remains in the original phone entry.
-- Every content/input command still wakes and verifies unlock; `stop` is cleanup-only and does not read UI or input credentials.
+- Every content/input command still wakes and verifies unlock; `stop` is cleanup-only, reads only window ownership metadata, and does not input credentials. The broker queries WindowManager's lock state directly; unavailable/non-boolean responses fail closed, including on Android 17 shell processes.
 - One package lease per device/user. Opening an already-visible main-screen app is refused. If a leased App appears on another display or a foreign app window enters its workspace, further operations stop.
 - Required trusted, own-focus, no-top-focus-stealing and destroy-on-removal flags are hard gates. Unsupported ROMs fail with a reason; no main-screen fallback.
 - IME is hidden for virtual displays. Text uses node `ACTION_SET_TEXT` only. No clipboard, global keyboard, Home, camera or microphone automation is exposed. Unsupported text targets require a different user-authorized route.
@@ -40,7 +42,7 @@ After upgrading, `start` verifies the broker actually reports capacity 10. An ol
 - Physical-screen use of a *different* App is supported; manually opening the App under automation may move its task. Payment/protected pages and fully opaque node trees are not guaranteed. Screenshots can observe opaque trees; coordinate actions still require a valid UI fingerprint in this first version.
 - A virtual display is not an Android VM: apps retain their ordinary user/account data, permissions and shared OS resources. No promises of complete resource isolation or arbitrary concurrency.
 - The server listens only on an abstract local socket and verifies peer UID is shell/root. No Android TCP listener or unauthenticated app-accessible controller port. Host access uses an owned loopback ADB forward. No connection or credential data is committed/synchronized.
-- Cleanup releases only owned virtual displays and the broker's accessibility connection. It never force-stops unrelated apps or clears global Android logs. Close/stop when the task finishes; the initial version does not auto-destroy an idle workspace.
+- Cleanup releases owned displays first. Only when the App was exclusively visible on that display does it ask Android to recycle eligible cached processes (`am kill`); foreground services are protected by Android. Neither launch nor cleanup uses `force-stop`/`-S`, which could cancel reminders or jobs. Apps taken back onto another display are not targeted. No app data, login state or global Android logs are cleared. Close/stop when finished; idle workspaces are not automatically destroyed.
 
 ## Delivery and verification
 
@@ -54,7 +56,9 @@ node --test tests/phone.test.mjs tests/phone-workspaces.test.mjs
 
 Device acceptance: step through 2→4→6→10 distinct nonzero displays, verify correct package trees, independent node actions and reads, rejected same-package/eleventh-slot/stale-snapshot operations, unchanged physical-screen package/focus, working main-screen XML readback, and stop releasing every owned display. These must be measured on the target device; compile success is not device acceptance.
 
-## Verified ten-slot smoke test (2026-09-13)
+## Historical fixed-resolution ten-slot smoke test (2026-09-13)
+
+This run used 720×1280/240dpi. Its memory figures do not describe the native-resolution policy; current geometry/lifecycle acceptance belongs with the delivered artifact receipt.
 
 Device: 2602BRT18C / Android 16 (API 36). Installed broker commit `93e24ccc0021571e6b10d8bbb448dfb26bbf4894`, [successful cloud run](https://github.com/lop-spec/pi-portable/actions/runs/34743707984). JAR: 16119 bytes; SHA256 `c6756592d07cbd7ced4372bef545fad9af2211c97b3c9ab401d5c61ded82dc0c`. The 37 host tests passed in CI and on both managed Windows hosts; source, manifest and JAR were synchronized with backup/hash readback, excluding credentials and live mappings.
 
