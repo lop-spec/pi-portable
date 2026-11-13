@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
+import android.graphics.Point;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -17,7 +18,6 @@ import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.os.*;
 import android.util.Base64;
-import android.util.DisplayMetrics;
 import android.util.SparseArray;
 import android.view.*;
 import android.view.accessibility.*;
@@ -39,6 +39,7 @@ public final class WorkspaceServer {
     final ShellContext context;
     final UiAutomation ui;
     final DisplayManager displays;
+    final Object windowManager;
     final Object input;
     final Method inject, setDisplay;
     final HandlerThread frames = new HandlerThread("phone-workspace-frames");
@@ -67,6 +68,8 @@ public final class WorkspaceServer {
         frames.start();
         Constructor<DisplayManager> dm = DisplayManager.class.getDeclaredConstructor(Context.class); dm.setAccessible(true);
         displays = dm.newInstance(context);
+        Object binder = Class.forName("android.os.ServiceManager").getMethod("getService", String.class).invoke(null, "window");
+        windowManager = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", IBinder.class).invoke(null, binder);
         HandlerThread automationThread = new HandlerThread("phone-workspace-ui"); automationThread.start();
         Class<?> connection = Class.forName("android.app.IUiAutomationConnection");
         Object impl = Class.forName("android.app.UiAutomationConnection").getDeclaredConstructor().newInstance();
@@ -81,18 +84,27 @@ public final class WorkspaceServer {
         setDisplay = InputEvent.class.getMethod("setDisplayId", int.class);
         log("ready version=" + version + " maxWorkspaces=" + MAX_WORKSPACES + " clipboard=disabled ime=hidden");
     }
-    DisplayMetrics nativeMetrics() {
-        Display main = displays.getDisplay(Display.DEFAULT_DISPLAY);
-        require(main != null, "NATIVE_DISPLAY_UNAVAILABLE");
-        DisplayMetrics metrics = new DisplayMetrics(); main.getRealMetrics(metrics);
+    static final class DisplayGeometry {
+        final int widthPixels, heightPixels, densityDpi;
+        DisplayGeometry(int width, int height, int dpi) { widthPixels = width; heightPixels = height; densityDpi = dpi; }
+    }
+    DisplayGeometry displayGeometry(int id) throws Exception {
+        Display display = displays.getDisplay(id); require(display != null, "DISPLAY_LOST");
+        // The same read-only Binder getters used by `wm size/density`. Do not use
+        // getRealMetrics: newer Android shells lack its ApplicationSharedMemory setup.
+        Point size = new Point();
+        windowManager.getClass().getMethod("getBaseDisplaySize", int.class, Point.class).invoke(windowManager, id, size);
+        int dpi = (int) windowManager.getClass().getMethod("getBaseDisplayDensity", int.class).invoke(windowManager, id);
+        int rotation = display.getRotation();
+        boolean sideways = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270;
+        DisplayGeometry metrics = new DisplayGeometry(sideways ? size.y : size.x, sideways ? size.x : size.y, dpi);
         require(metrics.widthPixels > 0 && metrics.heightPixels > 0 && metrics.densityDpi > 0,
                 "NATIVE_DISPLAY_METRICS_UNAVAILABLE");
         return metrics;
     }
-    void nativeGeometry(Workspace w) {
-        DisplayMetrics main = nativeMetrics(), actual = new DisplayMetrics();
-        Display target = displays.getDisplay(w.displayId);
-        require(target != null, "DISPLAY_LOST"); target.getRealMetrics(actual);
+    DisplayGeometry nativeMetrics() throws Exception { return displayGeometry(Display.DEFAULT_DISPLAY); }
+    void nativeGeometry(Workspace w) throws Exception {
+        DisplayGeometry main = nativeMetrics(), actual = displayGeometry(w.displayId);
         require(w.width == main.widthPixels && w.height == main.heightPixels && w.dpi == main.densityDpi,
                 "NATIVE_DISPLAY_CHANGED: close and reopen workspace; no resize or old-coordinate input");
         require(w.width == actual.widthPixels && w.height == actual.heightPixels && w.dpi == actual.densityDpi,
@@ -140,7 +152,7 @@ public final class WorkspaceServer {
             this.name = name; this.pkg = pkg;
             // Match pixels AND density, not just dp: many apps cache default-display
             // metrics in process-wide/static/WebView state and mix them with Activity resources.
-            DisplayMetrics nativeDisplay = nativeMetrics();
+            DisplayGeometry nativeDisplay = nativeMetrics();
             width = nativeDisplay.widthPixels; height = nativeDisplay.heightPixels; dpi = nativeDisplay.densityDpi;
             int flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
                     | flag("VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH") | flag("VIRTUAL_DISPLAY_FLAG_TRUSTED")
@@ -163,10 +175,8 @@ public final class WorkspaceServer {
                 require(created != null && created.getDisplay() != null, "VIRTUAL_DISPLAY_CREATION_FAILED");
                 display = created; displayId = display.getDisplay().getDisplayId();
                 require(displayId > 0, "DEFAULT_DISPLAY_FORBIDDEN");
-                Object binder = Class.forName("android.os.ServiceManager").getMethod("getService", String.class).invoke(null, "window");
-                Object wm = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", IBinder.class).invoke(null, binder);
-                wm.getClass().getMethod("setDisplayImePolicy", int.class, int.class).invoke(wm, displayId, 2);
-                int actual = (int) wm.getClass().getMethod("getDisplayImePolicy", int.class).invoke(wm, displayId);
+                windowManager.getClass().getMethod("setDisplayImePolicy", int.class, int.class).invoke(windowManager, displayId, 2);
+                int actual = (int) windowManager.getClass().getMethod("getDisplayImePolicy", int.class).invoke(windowManager, displayId);
                 require(actual == 2, "IME_ISOLATION_UNAVAILABLE");
                 nativeGeometry(this);
             } catch (Exception e) {
@@ -266,7 +276,7 @@ public final class WorkspaceServer {
         Workspace w = workspaces.remove(name); if (w != null) w.close();
         return new JSONObject().put("closed", name).put("alreadyClosed", w == null);
     }
-    void assertTarget(Workspace w) {
+    void assertTarget(Workspace w) throws Exception {
         unlocked(); require(!w.closed && displays.getDisplay(w.displayId) != null, "DISPLAY_LOST");
         nativeGeometry(w);
         boolean found = false;
@@ -475,7 +485,7 @@ public final class WorkspaceServer {
                 JSONObject request = new JSONObject(readLine(s.getInputStream())); id = request.getString("id");
                 response.put("id", id).put("ok", true).put("result", dispatch(request));
             } catch (Throwable e) {
-                String reason = cause(e); log("request=" + id + " rejected=" + reason);
+                String reason = cause(e); log("request=" + id + " rejected=" + reason); e.printStackTrace();
                 response = new JSONObject().put("id", id).put("ok", false).put("error", reason);
             }
             s.getOutputStream().write((response.toString() + "\n").getBytes(StandardCharsets.UTF_8));
