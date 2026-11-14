@@ -1,7 +1,6 @@
 // Craft Agents metadata contract, adapted to Pi's native tool registry.
 // Metadata stays in assistant history; only the execution copy is stripped.
-export const intentSchema = { type: 'string', description: 'REQUIRED: Describe what you are trying to accomplish with this tool call (1-2 sentences)' };
-export const displayNameSchema = { type: 'string', description: 'REQUIRED: Human-friendly name for this action (2-4 words, e.g., "List Folders", "Search Documents", "Create Task")' };
+export const displayNameSchema = { type: 'string', description: '用8～16字中文说这步做什么，小学生也能懂；如“查画面在哪里被放大”。不另写重复旁白。' };
 const installed = Symbol.for('pi-web.craft-tool-intent');
 export function withoutMetadata(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
@@ -12,8 +11,9 @@ export function withMetadata(tool) {
   if (tool[installed]) return tool;
   const schema = tool.parameters;
   if (!schema || schema.type !== 'object') return tool;
+  const { _displayName, _intent, ...properties } = schema.properties ?? {};
   return { ...tool, [installed]: true,
-    parameters: { ...schema, properties: { _displayName: displayNameSchema, _intent: intentSchema, ...schema.properties }, required: [...new Set(['_displayName', '_intent', ...(schema.required || [])])] },
+    parameters: { ...schema, properties: { _displayName: displayNameSchema, ...properties }, required: [...new Set(['_displayName', ...(schema.required || []).filter(key => key !== '_intent')])] },
     execute(id, args, ...rest) { return tool.execute.call(tool, id, withoutMetadata(args), ...rest); },
   };
 }

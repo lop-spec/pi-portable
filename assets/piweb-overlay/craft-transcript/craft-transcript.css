@@ -17,9 +17,7 @@
 .craft-log-body{margin:2px 0 2px 7px;padding-left:14px;border-left:1px solid var(--border,#ddd);max-height:420px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .craft-row-wrap{display:flex;min-width:0}.craft-activity-row{margin-left:-6px;flex:1;width:calc(100% + 6px)}
 .craft-icon-slot{width:16px;height:16px;display:flex;align-items:center;justify-content:center;flex:none;color:var(--text-dim,var(--text-muted))}
-.craft-tool-name{max-width:42%;flex-shrink:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.craft-object{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--text-dim,var(--text-muted))}
-.craft-object code{margin-left:8px;font:12px/20px var(--font-mono,monospace);background:none;padding:0}
+.craft-tool-name{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .craft-result{margin-left:auto;padding-left:4px;display:inline-flex;align-items:center;gap:6px;flex:none;font-size:12px;white-space:nowrap}
 .craft-result.completed{color:var(--success,#1a7f4b)}.craft-result.error,.craft-activity-row.error .craft-tool-name{color:var(--danger,#c4373b)}.craft-result.running{color:var(--accent,#567bc1)}
 .craft-result.running svg,.craft-working svg{animation:craft-spin 1s linear infinite}@keyframes craft-spin{to{transform:rotate(360deg)}}
@@ -32,5 +30,5 @@
 .craft-details button{background:none;border:0;color:inherit;cursor:pointer;border-radius:4px;padding:4px;display:inline-flex;align-items:center;gap:5px;font-size:12px}.craft-details button:hover{background:var(--bg-subtle,#8881)}
 .craft-detail-content{padding:0 16px 16px;overflow:auto;min-height:0;user-select:text;font-size:13px}.craft-detail-content pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/20px var(--font-mono,monospace);margin:0;background:var(--bg-subtle,#8881);padding:10px;border-radius:4px}.craft-detail-heading{display:flex;align-items:center;justify-content:space-between}
 .craft-details .craft-file-link{color:var(--accent,#4674b8);overflow-wrap:anywhere;text-align:left}.craft-row-wrap[data-search-target=true]{background:rgba(234,179,8,.12)}
-@media(max-width:600px){.craft-summary,.craft-activity-row{min-height:36px}.craft-log-body{max-height:540px}.craft-tool-name{max-width:45%}.craft-details{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:90vh}.craft-details>section{max-height:90vh}.craft-details header,.craft-detail-content{padding-left:12px;padding-right:12px}}
+@media(max-width:600px){.craft-summary,.craft-activity-row{min-height:36px}.craft-log-body{max-height:540px}.craft-details{width:calc(100vw - 16px);max-width:calc(100vw - 16px);max-height:90vh}.craft-details>section{max-height:90vh}.craft-details header,.craft-detail-content{padding-left:12px;padding-right:12px}}
 @media(prefers-reduced-motion:reduce){.craft-transcript *{transition:none!important;animation:none!important}}
