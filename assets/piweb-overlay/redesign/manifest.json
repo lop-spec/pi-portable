@@ -471,7 +471,7 @@
     },
     "lib/session-list-scanner.ts": {
       "baseSha": "ca1ee7359e97e620daeb426a7ac46191b893e251f1eeff64ec38dfc6566613b1",
-      "sha": "8b8c38404ef7403d9d43c7722a1a4cfa8958b74f28dff86f5ebcced6d0632e58"
+      "sha": "8832e46457dd3aa7e692c0ab42e65432ed5993bff077d992e2b09ff67503488d"
     },
     "lib/session-reader.chat-view.test.mjs": {
       "baseSha": null,

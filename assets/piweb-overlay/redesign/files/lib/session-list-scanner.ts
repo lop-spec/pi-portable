@@ -19,6 +19,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { open, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface ScannedSessionInfo {
@@ -257,13 +259,25 @@ const TOOL_RESULT_LINE_RE = /^\{"type":"message","id":"[^"\\]*","parentId":(?:"[
 const LINE_HEAD_BYTES = 256;
 const LINE_SEPARATOR = Buffer.from("\u2028");
 const PARAGRAPH_SEPARATOR = Buffer.from("\u2029");
-const READLINE_BREAK_RE = /\r|\u2028|\u2029/;
+// Node 22 and 24 differ here. Probe native readline once, in memory, rather
+// than guessing from version strings or disagreeing with the SDK on CI.
+const READLINE_SPLITS_UNICODE = (() => {
+	const input = new PassThrough();
+	const reader = createInterface({ input, crlfDelay: Infinity });
+	let lines = 0;
+	reader.on("line", () => { lines++; });
+	input.write("a\u2028b\u2029c\n");
+	reader.close();
+	input.destroy();
+	return lines === 3;
+})();
+const READLINE_BREAK_RE = READLINE_SPLITS_UNICODE ? /\r|\u2028|\u2029/ : /\r/;
 
-/** Bytes that readline treats as a line end besides "\n" (checked per chunk, then per line). */
+/** Bytes that this runtime's readline treats as a line end besides "\n". */
 function hasReadlineBreak(bytes: Buffer): boolean {
 	return bytes.indexOf(0x0d) !== -1
-		|| bytes.indexOf(LINE_SEPARATOR) !== -1
-		|| bytes.indexOf(PARAGRAPH_SEPARATOR) !== -1;
+		|| (READLINE_SPLITS_UNICODE && (bytes.indexOf(LINE_SEPARATOR) !== -1
+			|| bytes.indexOf(PARAGRAPH_SEPARATOR) !== -1));
 }
 
 /** Apply one parsed entry; false when the file turns out not to be a session. */
@@ -334,9 +348,8 @@ function applyLine(acc: ScanAccumulator, bytes: Buffer, start: number, end: numb
 	if (end > start && bytes[end - 1] === 0x0d) end--;
 	if (end <= start) return true;
 	if (special && hasReadlineBreak(bytes.subarray(start, end))) {
-		// The SDK listing reads with readline, which also ends lines at a lone
-		// "\r", U+2028 and U+2029; JSON.stringify leaves the latter two raw inside
-		// strings. Split the same way so counts match SessionManager.listAll().
+		// Follow the SDK's native readline boundaries. Unicode separators remain
+		// valid JSON string content on runtimes that do not split them.
 		for (const fragment of bytes.toString("utf8", start, end).split(READLINE_BREAK_RE)) {
 			const entry = parseLine(fragment);
 			if (entry && !applyEntry(acc, entry)) return false;
