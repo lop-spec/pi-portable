@@ -7,7 +7,7 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
 const { SessionManager } = await jiti.import("@earendil-works/pi-coding-agent");
-const { listSessionsIncremental, resetSessionScanIndexForTests, flushSessionScanIndexPersist, traceSessionScanReadsForTests } = await jiti.import("./session-list-scanner.ts");
+const { listSessionsIncremental, getScannedRuntimeOutcome, resetSessionScanIndexForTests, flushSessionScanIndexPersist, traceSessionScanReadsForTests } = await jiti.import("./session-list-scanner.ts");
 const { listAllSessions, invalidateSessionListCache } = await jiti.import("./session-reader.ts");
 const timestamp = "2026-01-01T00:00:00.000Z";
 const line = (entry) => JSON.stringify(entry) + "\n";
@@ -94,6 +94,30 @@ test("matches SDK metadata and tie ordering across cache hits, mutations, and re
   await flushSessionScanIndexPersist();
   const persisted = JSON.parse(fs.readFileSync(indexPath, "utf8"));
   assert.deepEqual(Object.keys(persisted.entries).sort(), [a, d].sort());
+});
+
+test("runtime outcome follows assistant, user, question, stop and persisted scan state", async (t) => {
+  const { write } = fixture(t);
+  const path = write("state", [message("s1", "user", "request")]);
+  const status = async () => { await listSessionsIncremental(); return getScannedRuntimeOutcome(path); };
+  assert.equal(await status(), 'awaiting');
+  fs.appendFileSync(path, line({ ...message("s2", "assistant", [{ type: 'text', text: 'answer' }]), message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }], stopReason: 'stop' } }));
+  assert.equal(await status(), 'completed');
+  fs.appendFileSync(path, line(message("s3", "user", "another request")));
+  assert.equal(await status(), 'awaiting');
+  fs.appendFileSync(path, line({ ...message("s4", "assistant", []), message: { role: 'assistant', content: [{ type: 'toolCall', toolName: 'AskUserQuestion', toolCallId: 'ask1', input: {} }], stopReason: 'toolUse' } }));
+  assert.equal(await status(), 'asking');
+  fs.appendFileSync(path, line({ ...message("native", "assistant", []), message: { role: 'assistant', content: [{ type: 'toolCall', name: 'AskUserQuestion', id: 'ask-native', arguments: {} }], stopReason: 'toolUse' } }));
+  assert.equal(await status(), 'asking', 'native Pi name/id/arguments fields');
+  fs.appendFileSync(path, line(message("s5", "toolResult", "confirmed")));
+  assert.equal(await status(), 'awaiting');
+  fs.appendFileSync(path, line({ ...message("s6", "assistant", []), message: { role: 'assistant', content: [], stopReason: 'aborted' } }));
+  assert.equal(await status(), 'stopped');
+  fs.appendFileSync(path, line({ ...message("s7", "assistant", []), message: { role: 'assistant', content: [], stopReason: 'error' } }));
+  assert.equal(await status(), 'failed');
+  await flushSessionScanIndexPersist();
+  resetSessionScanIndexForTests();
+  assert.equal(await status(), 'failed', 'status survives cache reload');
 });
 
 test("discards malformed persisted entries and rebuilds the list from valid session files", async (t) => {

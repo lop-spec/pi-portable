@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +32,10 @@ test('all conversation representations use the shared menu and session identity'
   const menu = files.get('components/PortableFileContextMenu.tsx');
   assert.match(menu, />Open file</);
   assert.match(menu, />Open path</);
+  assert.match(menu, />Copy file</);
+  assert.match(menu, />Copy path</);
+  assert.match(menu, /copyText\(state\.path, "plain"\)/);
+  assert.match(menu, /run\("copy_file"\)/);
   assert.match(menu, /sessionId/);
   assert.match(menu, /onPreviewFile\?\.\(state\.path\)/);
   assert.match(menu, /role="alert"/);
@@ -54,6 +59,13 @@ test('opening is same-origin, authorized, shell-free and reports errors', () => 
   assert.doesNotMatch(route, /shell:\s*true|cmd\.exe|execSync\(/);
 });
 
+test('Copy file puts an authorized file drop on the native Windows clipboard', () => {
+  const route = files.get('app/api/open-local-file/route.ts');
+  for (const re of [/body\.action !== "copy_file"/, /body\.action === "copy_file"/, /process\.platform !== "win32"/, /SetFileDropList\(\$items\)/, /Preferred DropEffect/, /\[byte\[\]\]@\(1,0,0,0\)/, /Clipboard\]::SetDataObject/, /"-Sta"/, /PIWEB_LOCAL_OPEN_TARGET: target/, /windowsHide: true/]) assert.match(route, re);
+  assert.ok(route.indexOf('if (allowedByRoot && !isExistingFilePathAllowed') < route.indexOf('await copyFileToClipboard(filePath)'), 'copy is gated by the existing path and session authorization');
+  assert.doesNotMatch(route, /shell:\s*true|cmd\.exe|execSync\(/);
+});
+
 test('Open path activates the exact Explorer window without altering normal file opens', () => {
   const route = files.get('app/api/open-local-file/route.ts');
   assert.match(route, /foregroundFolder \? windowsFolderFocusScript/);
@@ -66,15 +78,30 @@ test('Open path activates the exact Explorer window without altering normal file
   assert.doesNotMatch(focus, /SendKeys|SystemParametersInfo|SetForegroundWindow\([^$]/);
 });
 
-test('Windows absolute links survive sanitization, external links remain external', {skip: !fs.existsSync(path.join(source, 'node_modules', 'react'))}, async () => {
-  const require = createRequire(path.join(source, 'package.json'));
+test('Windows absolute links survive sanitization, external links remain external', {skip: !fs.existsSync(path.join(source, 'node_modules', 'react'))}, async (t) => {
+  // The source checkout is a clean official baseline. Materialize the complete
+  // integrated output in a disposable checkout so runtime imports use the real patch.
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'piweb-file-render-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const staged = path.join(temp, 'checkout');
+  fs.cpSync(source, staged, { recursive: true, filter: (entry) => {
+    const rel = path.relative(source, entry);
+    return !['.git', 'node_modules', '.next'].some((name) => rel === name || rel.startsWith(name + path.sep));
+  }});
+  fs.symlinkSync(fs.realpathSync(path.join(source, 'node_modules')), path.join(staged, 'node_modules'), 'junction');
+  for (const [name, content] of files) {
+    const target = path.join(staged, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  }
+  const require = createRequire(path.join(staged, 'package.json'));
   const { createJiti } = require('jiti');
   const React = require('react');
   const { renderToStaticMarkup } = require('react-dom/server');
-  const jiti = createJiti(path.join(source, 'components/MarkdownBody.test.mjs'), { jsx: { runtime: 'automatic' }, tsconfigPaths: true });
-  // Run against the actual integrated checkout, not just the overlay templates.
-  const { MarkdownBody } = await jiti.import(path.join(source, 'components/MarkdownBody.tsx'));
-  const { localFilePathFromImageApi, localFilePathFromInlineCode } = await jiti.import(path.join(source, 'components/PortableFileContextMenu.tsx'));
+  const jiti = createJiti(path.join(staged, 'components/MarkdownBody.test.mjs'), { jsx: { runtime: 'automatic' }, tsconfigPaths: true });
+  const { MarkdownBody } = await jiti.import(path.join(staged, 'components/MarkdownBody.tsx'));
+  const { localFilePathFromImageApi, localFilePathFromInlineCode } = await jiti.import(path.join(staged, 'components/PortableFileContextMenu.tsx'));
+
   assert.equal(localFilePathFromInlineCode('C:/Users/me/project/a b.txt', 'C:/Users/me/project'), 'C:/Users/me/project/a b.txt');
   assert.equal(localFilePathFromInlineCode('not a path', 'C:/Users/me/project'), null);
   assert.equal(localFilePathFromImageApi('/api/files/C%3A/Users/me/%E5%9B%BE%E7%89%87.png?type=read'), 'C:/Users/me/图片.png');

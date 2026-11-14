@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { portableCjkEmphasis, splitCjkStrong } from '../assets/piweb-overlay/merge/lib/portable-cjk-emphasis.mjs';
-import { BOARD_COLUMNS, COLUMN_STATUS, boardColumnOf, buildBoard, canDropInto, resumeCandidates } from '../assets/piweb-overlay/merge/lib/portable-session-board.mjs';
+import { resumeCandidates } from '../assets/piweb-overlay/merge/lib/portable-session-resume.mjs';
 import { formatElapsed, timelineBreakdown, toolGroup } from '../assets/piweb-overlay/merge/lib/portable-timeline-summary.mjs';
 
 // ---------------------------------------------------------------------------------------------
@@ -55,53 +55,17 @@ test('a text node whose source differs (escapes or entities) is never rewritten'
 });
 
 // ---------------------------------------------------------------------------------------------
-// 状态看板：分栏、排序、限量、拖放。
+// 新会话页「继续任务」：运行、未读、最近修改排序。
 // ---------------------------------------------------------------------------------------------
 const session = (id, modified, extra = {}) => ({ id, modified, created: modified, ...extra });
 const resolver = (table = {}) => s => table[s.id] ?? { status: 'todo', assigned: false };
 
-test('column rules: running beats everything, unread only moves sessions without an assigned status', () => {
-  assert.equal(boardColumnOf({ running: true, unread: true, status: 'done', assigned: true }), 'running');
-  assert.equal(boardColumnOf({ running: false, unread: true, status: 'todo', assigned: false }), 'attention');
-  assert.equal(boardColumnOf({ running: false, unread: true, status: 'todo', assigned: true }), 'todo', 'an explicit drag to todo must stick');
-  assert.equal(boardColumnOf({ running: false, unread: true, status: 'done', assigned: true }), 'done');
-  assert.equal(boardColumnOf({ running: false, unread: false, status: 'needs-review', assigned: true }), 'attention');
-  assert.equal(boardColumnOf({ running: false, unread: false, status: 'backlog', assigned: true }), 'backlog');
-  assert.equal(boardColumnOf({ running: false, unread: true, status: 'cancelled', assigned: true }), 'cancelled');
-});
-
-test('only workflow columns accept drops and each maps to a real status', () => {
-  assert.equal(canDropInto('running'), false);
-  for (const id of ['attention', 'todo', 'backlog', 'done', 'cancelled']) assert.equal(canDropInto(id), true, id);
-  assert.deepEqual(Object.keys(COLUMN_STATUS).sort(), ['attention', 'backlog', 'cancelled', 'done', 'todo']);
-  assert.equal(COLUMN_STATUS.attention, 'needs-review');
-  assert.deepEqual(BOARD_COLUMNS.map(c => c.id), ['running', 'attention', 'todo', 'backlog', 'done', 'cancelled']);
-});
-
-test('buildBoard sorts newest first, hides cancelled by default and limits long columns until expanded', () => {
-  const sessions = Array.from({ length: 14 }, (_, i) => session(`t${i}`, `2026-11-0${1 + (i % 8)}T10:${String(i).padStart(2, '0')}:00Z`));
-  sessions.push(session('r1', '2026-11-08T08:00:00Z'), session('c1', '2026-11-08T09:00:00Z'), session('d1', '2026-11-08T07:00:00Z'));
-  const statusOf = resolver({ c1: { status: 'cancelled', assigned: true }, d1: { status: 'done', assigned: true } });
-  const input = { sessions, statusOf, isRunning: s => s.id === 'r1', isUnread: () => false };
-  const board = buildBoard(input);
-  assert.deepEqual(board.map(c => c.id), ['running', 'attention', 'todo', 'backlog', 'done'], 'cancelled column is hidden');
-  const todo = board.find(c => c.id === 'todo');
-  assert.equal(todo.total, 14);
-  assert.equal(todo.items.length, 10);
-  assert.equal(todo.hidden, 4);
-  for (let i = 1; i < todo.items.length; i += 1) assert.ok(Date.parse(todo.items[i - 1].modified) >= Date.parse(todo.items[i].modified), 'newest first');
-  assert.equal(board.find(c => c.id === 'running').items[0].id, 'r1');
-  const expanded = buildBoard({ ...input, expanded: new Set(['todo']), showCancelled: true });
-  assert.equal(expanded.find(c => c.id === 'todo').items.length, 14);
-  assert.equal(expanded.find(c => c.id === 'todo').hidden, 0);
-  assert.equal(expanded.find(c => c.id === 'cancelled').items[0].id, 'c1');
-});
-
-test('buildBoard honours the include filter and routes unread to the attention column', () => {
-  const sessions = [session('a', '2026-11-01T00:00:00Z', { project: 'x' }), session('b', '2026-11-02T00:00:00Z', { project: 'y' })];
-  const board = buildBoard({ sessions, statusOf: resolver(), isRunning: () => false, isUnread: s => s.id === 'b', include: s => s.project === 'y' });
-  assert.deepEqual(board.find(c => c.id === 'attention').items.map(s => s.id), ['b']);
-  assert.equal(board.find(c => c.id === 'todo').total, 0);
+test('resume candidates respect explicit statuses and include filters', () => {
+  const sessions = [session('one', '2026-11-01T00:00:00Z', { project: 'x' }), session('two', '2026-11-02T00:00:00Z', { project: 'y' })];
+  const picked = resumeCandidates({ sessions, statusOf: resolver(), isRunning: () => false, isUnread: s => s.id === 'two', include: s => s.project === 'y' });
+  assert.deepEqual(picked.map(item => [item.session.id, item.column]), [['two', 'attention']]);
+  const assigned = resumeCandidates({ sessions, statusOf: resolver({ two: { status: 'todo', assigned: true } }), isRunning: () => false, isUnread: s => s.id === 'two' });
+  assert.equal(assigned[0].column, 'todo', 'explicit status wins over unread');
 });
 
 test('resume candidates: running, then new replies, then the most recent; stale needs-review, done, backlog and cancelled never crowd them out', () => {

@@ -25,6 +25,26 @@ async function openWithSystem(target: string, foregroundFolder: boolean) {
   await exec(process.platform === "darwin" ? "open" : "xdg-open", [target], { windowsHide: true, timeout: 15000 });
 }
 
+// CF_HDROP copies the file object, not its contents or a pathname string.
+// Preferred DropEffect=1 tells Explorer to paste a copy rather than move it.
+async function copyFileToClipboard(target: string) {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$items = New-Object System.Collections.Specialized.StringCollection",
+    "[void]$items.Add($env:PIWEB_LOCAL_OPEN_TARGET)",
+    "$data = New-Object System.Windows.Forms.DataObject",
+    "$data.SetFileDropList($items)",
+    "$data.SetData('Preferred DropEffect', [System.IO.MemoryStream]::new([byte[]]@(1,0,0,0)))",
+    "[System.Windows.Forms.Clipboard]::SetDataObject($data, $true, 10, 100)",
+  ].join(";");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const executable = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  await exec(executable, ["-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", encoded], {
+    env: { ...process.env, PIWEB_LOCAL_OPEN_TARGET: target }, windowsHide: true, timeout: 15000,
+  });
+}
+
 export async function POST(request: NextRequest) {
   // This opens a GUI on the server, so unlike a read-only file request it must
   // come from a same-origin browser action, not a cross-site or originless call.
@@ -37,7 +57,7 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "请求格式无效" }, { status: 400 });
   }
-  if (!body || typeof body.path !== "string" || body.path.length > 32767 || body.path.includes("\0") || !path.isAbsolute(body.path) || (body.action !== "file" && body.action !== "path")) {
+  if (!body || typeof body.path !== "string" || body.path.length > 32767 || body.path.includes("\0") || !path.isAbsolute(body.path) || (body.action !== "file" && body.action !== "path" && body.action !== "copy_file")) {
     return NextResponse.json({ error: "文件路径或操作无效" }, { status: 400 });
   }
   const filePath = path.normalize(body.path);
@@ -52,17 +72,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "文件不在允许访问的范围" }, { status: 403 });
     }
     if (!fileStat.isFile() && !fileStat.isDirectory()) return NextResponse.json({ error: "不是普通文件或目录" }, { status: 400 });
+    if (body.action === "copy_file") {
+      if (process.platform !== "win32") return NextResponse.json({ error: "复制文件仅支持 Windows 本机剪贴板" }, { status: 501 });
+      await copyFileToClipboard(filePath);
+      return NextResponse.json({ ok: true });
+    }
     const target = body.action === "path" && !fileStat.isDirectory() ? path.dirname(filePath) : filePath;
     await openWithSystem(target, body.action === "path" || fileStat.isDirectory());
     return NextResponse.json({ ok: true });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") return NextResponse.json({ error: "文件或目录不存在" }, { status: 404 });
-    console.error("[pi-web] open local file failed:", error);
+    console.error("[pi-web] open/copy local file failed:", error);
     const detail = error as { message?: string; stderr?: string };
     if (`${detail?.message ?? ""} ${detail?.stderr ?? ""}`.includes("PIWEB_EXPLORER_NOT_FOREGROUND")) {
       return NextResponse.json({ error: "目录已打开，但系统未允许置前" }, { status: 500 });
     }
-    return NextResponse.json({ error: "系统未能打开，请检查文件关联和权限" }, { status: 500 });
+    return NextResponse.json({ error: body.action === "copy_file" ? "复制文件失败，请检查本机剪贴板是否可用" : "系统未能打开，请检查文件关联和权限" }, { status: 500 });
   }
 }

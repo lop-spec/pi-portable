@@ -138,7 +138,12 @@ test('the committed manifest pins its base commit and every template by sha256',
     assert.equal(sha(fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n')), entry.sha, `${name}: template matches its pinned hash`);
   }
   const onDisk = [];
-  const walk = dir => { for (const item of fs.readdirSync(dir, { withFileTypes: true })) item.isDirectory() ? walk(path.join(dir, item.name)) : onDisk.push(path.relative(path.join(REDESIGN_ROOT, 'files'), path.join(dir, item.name)).replaceAll('\\', '/')); };
+  const walk = dir => { for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    // Local timestamped backups are not shipped by Git/CI and must not count as templates.
+    if (item.name === '_历史版本' || /\.bak-\d{8}-\d{6}(?:-[^/]*)?$/u.test(item.name)) continue;
+    if (item.isDirectory()) walk(path.join(dir, item.name));
+    else onDisk.push(path.relative(path.join(REDESIGN_ROOT, 'files'), path.join(dir, item.name)).replaceAll('\\', '/'));
+  } };
   walk(path.join(REDESIGN_ROOT, 'files'));
   assert.deepEqual(onDisk.sort(), [...names].sort(), 'no template is shipped without a manifest entry, and vice versa');
 });

@@ -211,6 +211,10 @@ jobs:
           Pop-Location
           node --experimental-strip-types --test upstream/lib/session-search.test.mjs
           if ($LASTEXITCODE -ne 0) { throw "full text search semantics regression" }
+          node --test tests/piweb-craft-session.mjs
+          if ($LASTEXITCODE -ne 0) { throw "runtime circle regression" }
+          node --experimental-strip-types --test upstream/lib/session-list-scanner.test.mjs upstream/lib/rpc-manager-extension-ui.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "runtime scan/question behavior regression" }
           node --experimental-strip-types --test tests/piweb-remove-sound.mjs upstream/lib/browser-notifications.test.mjs upstream/public/sw.test.mjs
           if ($LASTEXITCODE -ne 0) { throw "silent notification regression" }
           node --test --test-name-pattern="subagent browser attention|routes blocking extension|subagent completion stays silent|lifecycle refreshes" upstream/hooks/useAgentSession.test.mjs upstream/components/SessionSidebar.test.mjs

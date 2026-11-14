@@ -467,11 +467,11 @@
     },
     "lib/session-list-scanner.test.mjs": {
       "baseSha": "4364fd653201ba8eff2e134f0bc629fa2f4e639a3075f1e7aa57bf23ecf0efba",
-      "sha": "3d114d1b6c39be756a6cb74e48273b291aea3c59e8588764021a64b8a5fd7003"
+      "sha": "88f45da4a6ab9f69a9aea23274adef899dcb47cdfdbb57e1568438460e345ca0"
     },
     "lib/session-list-scanner.ts": {
       "baseSha": "ca1ee7359e97e620daeb426a7ac46191b893e251f1eeff64ec38dfc6566613b1",
-      "sha": "ac68f29f36ad3f3e39aed6b92636e966bfd87727fcce1b19b40e4cf95f27d54a"
+      "sha": "8b8c38404ef7403d9d43c7722a1a4cfa8958b74f28dff86f5ebcced6d0632e58"
     },
     "lib/session-reader.chat-view.test.mjs": {
       "baseSha": null,

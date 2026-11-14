@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, type MouseEvent } from "react";
 import { resolveLocalFileHref, resolveLocalFilePath } from "@/lib/file-links";
 import { PopMenu } from "./sidebar/PopMenu";
+import { copyText } from "@/lib/clipboard";
 
 export const PortableFileSession = createContext<string | undefined>(undefined);
 
@@ -42,7 +43,7 @@ export function usePortableFileMenu(cwd?: string, explicitSessionId?: string, on
     setError("");
     setState({ path: resolved, x: event.clientX, y: event.clientY, trigger: event.currentTarget });
   };
-  const run = async (action: "file" | "path") => {
+  const run = async (action: "file" | "path" | "copy_file") => {
     if (!state || busy) return;
     setBusy(true);
     setError("");
@@ -62,19 +63,34 @@ export function usePortableFileMenu(cwd?: string, explicitSessionId?: string, on
       setBusy(false);
     }
   };
-  return { state, error, busy, open, close, run };
+  const copyPath = async () => {
+    if (!state || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await copyText(state.path, "plain");
+      setState(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { state, error, busy, open, close, run, copyPath };
 }
 
 export type PortableFileMenuState = ReturnType<typeof usePortableFileMenu>;
 
 export function PortableFileContextMenu({ menu }: { menu: PortableFileMenuState }) {
-  const { state, error, busy, close, run } = menu;
+  const { state, error, busy, close, run, copyPath } = menu;
   if (!state) return null;
   return (
     <PopMenu anchor={{ kind: "point", x: state.x, y: state.y }} onClose={close} returnFocus={state.trigger} ariaLabel="文件操作" width={184}>
       <button type="button" role="menuitem" className="pw-menu-item" title="用系统默认程序打开文件" disabled={busy} onClick={() => void run("file")}>Open file</button>
       <button type="button" role="menuitem" className="pw-menu-item" title="打开文件所在目录" disabled={busy} onClick={() => void run("path")}>Open path</button>
-      {error && <div role="alert" style={{ padding: "6px 10px", color: "var(--danger)", overflowWrap: "anywhere" }}>打开失败：{error}</div>}
+      <button type="button" role="menuitem" className="pw-menu-item" title="复制文件，可在资源管理器中粘贴" disabled={busy} onClick={() => void run("copy_file")}>Copy file</button>
+      <button type="button" role="menuitem" className="pw-menu-item" title="复制完整文件路径" disabled={busy} onClick={() => void copyPath()}>Copy path</button>
+      {error && <div role="alert" style={{ padding: "6px 10px", color: "var(--danger)", overflowWrap: "anywhere" }}>操作失败：{error}</div>}
     </PopMenu>
   );
 }

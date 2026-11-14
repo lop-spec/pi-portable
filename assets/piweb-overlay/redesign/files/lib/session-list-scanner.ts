@@ -59,6 +59,7 @@ interface ScanState {
 interface IndexEntry {
 	fp: Fingerprint;
 	info: ScannedSessionInfo;
+	runtimeOutcome: SessionRuntimeOutcome;
 	/** Absent for entries written by older versions; the next change rescans fully. */
 	scan?: ScanState;
 }
@@ -76,12 +77,13 @@ const SCAN_MIN_BUFFER_BYTES = 64 * 1024;
 const INDEX_PERSIST_DELAY_MS = 2_000;
 
 type RawEntry = Record<string, unknown>;
+export type SessionRuntimeOutcome = 'idle' | 'awaiting' | 'asking' | 'completed' | 'stopped' | 'failed';
 
 function isRecord(value: unknown): value is RawEntry {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-const INDEX_FORMAT_VERSION = 1;
+const INDEX_FORMAT_VERSION = 2;
 
 interface PersistState {
 	timer?: ReturnType<typeof setTimeout>;
@@ -244,6 +246,7 @@ interface ScanAccumulator {
 	firstMessage: string;
 	firstFound: boolean;
 	lastActivity: number | undefined;
+	runtimeOutcome: SessionRuntimeOutcome;
 }
 
 // JSON.stringify writes entries as {"type":...} with no whitespace, and the SDK
@@ -292,7 +295,27 @@ function applyEntry(acc: ScanAccumulator, entry: RawEntry): boolean {
 		!("content" in message)
 	)
 		return true;
+	if (message.role === "toolResult") {
+		if (acc.runtimeOutcome === 'asking') acc.runtimeOutcome = 'awaiting';
+		return true;
+	}
 	if (message.role !== "user" && message.role !== "assistant") return true;
+	if (message.role === 'user') {
+		acc.runtimeOutcome = 'awaiting';
+	} else {
+		const blocks = Array.isArray(message.content) ? message.content : [];
+		const tools = blocks.filter((block): block is RawEntry => isRecord(block) && (block.type === 'toolCall' || block.type === 'tool_call'));
+		const asksUser = tools.some(block => {
+			const name = block.name ?? block.toolName;
+			return typeof name === 'string' && /^(askuserquestion|ask_user(?:_question)?)$/i.test(name);
+		});
+		const reason = message.stopReason;
+		acc.runtimeOutcome = reason === 'error' ? 'failed'
+			: reason === 'aborted' || reason === 'interrupted' || reason === 'length' ? 'stopped'
+			: asksUser ? 'asking'
+			: tools.length > 0 || reason === 'toolUse' ? 'awaiting'
+			: 'completed';
+	}
 	if (acc.firstFound || message.role !== "user") return true;
 
 	const textContent = extractTextContent(message);
@@ -326,6 +349,7 @@ function applyLine(acc: ScanAccumulator, bytes: Buffer, start: number, end: numb
 		if (type !== undefined && type !== "message" && type !== "session_info") return true;
 		if (type === "message" && TOOL_RESULT_LINE_RE.test(head)) {
 			acc.messageCount++;
+			if (acc.runtimeOutcome === 'asking') acc.runtimeOutcome = 'awaiting';
 			return true;
 		}
 	}
@@ -335,6 +359,7 @@ function applyLine(acc: ScanAccumulator, bytes: Buffer, start: number, end: numb
 
 interface ScanOutcome {
 	info: ScannedSessionInfo;
+	runtimeOutcome: SessionRuntimeOutcome;
 	scan?: ScanState;
 }
 
@@ -347,7 +372,7 @@ async function resumableState(
 	filePath: string,
 	prior: IndexEntry | undefined,
 	size: number,
-): Promise<{ state: ScanState; info: ScannedSessionInfo; anchor: Buffer } | null> {
+): Promise<{ state: ScanState; info: ScannedSessionInfo; anchor: Buffer; runtimeOutcome: SessionRuntimeOutcome } | null> {
 	const scan = prior?.scan;
 	if (!prior || !scan) return null;
 	let reason: string | null = null;
@@ -376,7 +401,7 @@ async function resumableState(
 		console.info(`[pi-web] session index: full rescan of ${basename(filePath)} (${reason})`);
 		return null;
 	}
-	return { state: scan, info: prior.info, anchor: Buffer.from(anchor) };
+	return { state: scan, info: prior.info, anchor: Buffer.from(anchor), runtimeOutcome: prior.runtimeOutcome };
 }
 
 /** The last `n` bytes across `parts` (in order), copied. */
@@ -416,8 +441,9 @@ async function scanSessionFile(
 				firstMessage: resume.state.firstFound ? resume.info.firstMessage : "",
 				firstFound: resume.state.firstFound,
 				lastActivity: resume.state.lastActivity,
+				runtimeOutcome: resume.runtimeOutcome,
 			}
-			: { header: null, name: undefined, messageCount: 0, firstMessage: "", firstFound: false, lastActivity: undefined };
+			: { header: null, name: undefined, messageCount: 0, firstMessage: "", firstFound: false, lastActivity: undefined, runtimeOutcome: 'idle' };
 		const startOffset = resume ? resume.state.offset : 0;
 		readTrace?.push([filePath, startOffset]);
 
@@ -544,10 +570,11 @@ async function scanSessionFile(
 			firstMessage: acc.firstMessage || "(no messages)",
 		};
 		const anchorLength = consumed - anchorStart({ headerLen }, consumed);
-		if (!resumable || anchorLength < 0 || anchorTail.length < anchorLength) return { info };
+		if (!resumable || anchorLength < 0 || anchorTail.length < anchorLength) return { info, runtimeOutcome: acc.runtimeOutcome };
 		const anchor = anchorTail.subarray(anchorTail.length - anchorLength);
 		return {
 			info,
+			runtimeOutcome: acc.runtimeOutcome,
 			scan: {
 				offset: consumed,
 				headerLen,
@@ -615,6 +642,11 @@ function getIndex(): Map<string, IndexEntry> {
 	return globalThis.__piWebScanIndex;
 }
 
+/** Reuse the scan index: never re-read a large transcript just to paint its status icon. */
+export function getScannedRuntimeOutcome(filePath: string): SessionRuntimeOutcome {
+	return getIndex().get(filePath)?.runtimeOutcome ?? 'idle';
+}
+
 function indexFilePath(): string {
 	return join(getAgentDir(), "pi-web-session-index.json");
 }
@@ -659,6 +691,7 @@ function loadPersistedIndex(): void {
 				typeof fp.size !== "number" || !Number.isSafeInteger(fp.size) || fp.size < 0 ||
 				typeof fp.mtimeMs !== "number" || !Number.isFinite(fp.mtimeMs) ||
 				info.path !== pathKey ||
+				!['idle', 'awaiting', 'asking', 'completed', 'stopped', 'failed'].includes(String(entry.runtimeOutcome)) ||
 				typeof info.id !== "string" ||
 				typeof info.cwd !== "string" ||
 				typeof info.firstMessage !== "string" ||
@@ -676,6 +709,7 @@ function loadPersistedIndex(): void {
 			if (info.firstMessage.length > FIRST_MESSAGE_MAX_CHARS) shrunk = true;
 			index.set(pathKey, {
 				fp: { size: fp.size, mtimeMs: fp.mtimeMs },
+				runtimeOutcome: entry.runtimeOutcome as SessionRuntimeOutcome,
 				info: {
 					path: pathKey,
 					id: info.id,
@@ -836,7 +870,7 @@ export async function listSessionsIncremental(
 	await runPool(changed, async ({ filePath, fp, resultIndex }) => {
 		const outcome = await scanSessionFile(filePath, index.get(filePath));
 		if (outcome) {
-			index.set(filePath, { fp, info: outcome.info, ...(outcome.scan ? { scan: outcome.scan } : {}) });
+			index.set(filePath, { fp, info: outcome.info, runtimeOutcome: outcome.runtimeOutcome, ...(outcome.scan ? { scan: outcome.scan } : {}) });
 			results[resultIndex] = outcome.info;
 		} else {
 			index.delete(filePath);

@@ -8,7 +8,7 @@ import { integrateMerge } from '../tools/patch-piweb-merge.mjs';
 import { integrateFeishuCopy } from '../tools/patch-piweb-feishu-copy.mjs';
 
 // 界面合并步骤（tools/patch-piweb-merge.mjs）的合同：接在固定版本的上游源码上，所有锚点各出现一次，
-// 输出里有标签栏 / 看板 / 继续任务 / 纸白主题 / 摘要 / 中文加粗的接入点，样式只用 token；锚点漂移时整体拒绝。
+// 输出里有标签栏 / 继续任务 / 纸白主题 / 摘要 / 中文加粗的接入点，不再包含看板；锚点漂移时整体拒绝。
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const source = process.env.PIWEB_SOURCE ?? path.join(repo, 'upstream');
 const available = fs.existsSync(path.join(source, 'package.json'));
@@ -19,20 +19,33 @@ test('merge step wires every view into the integrated sources', { skip: !availab
   const files = integrate(read);
   const shell = files.get('components/AppShell.tsx');
   assert.equal(count(shell, '<SessionTabs />'), 1);
-  assert.equal(count(shell, '<SessionBoard />'), 1);
+  assert.doesNotMatch(shell, /SessionBoard/);
   assert.equal(count(shell, 'publishPortableSessions('), 1);
   assert.match(shell, /useWindowEvent<CustomEvent<\{ id: string \}>>\(OPEN_SESSION_EVENT/);
   assert.match(shell, /useWindowEvent\(NEW_SESSION_EVENT/);
   assert.ok(shell.indexOf('<SessionTabs />') > shell.indexOf('className="pw-topbar-wrap"'), 'tabs sit inside the top bar wrapper');
-  assert.ok(shell.indexOf('<SessionBoard />') < shell.indexOf('<ChatWindow'), 'the board mounts next to the chat, never replaces it');
+  assert.doesNotMatch(files.get('components/SessionTabs.tsx'), /BoardIcon|boardOpen|setPortableBoardOpen|>看板</);
+  assert.doesNotMatch(files.get('lib/portable-session-store.ts'), /boardOpen|setPortableBoardOpen/);
+  assert.doesNotMatch(files.get('components/WelcomeResume.tsx'), /全部看板|setPortableBoardOpen/);
+  assert.ok(!files.has('components/SessionBoard.tsx'), 'board component is not shipped');
+  assert.ok(!files.has('lib/portable-session-board.mjs'), 'retired board logic is not shipped');
+  assert.doesNotMatch(files.get('app/merge.css'), /\.pw-(?:board|card)(?:[\s.:#-]|\s*\{)/, 'retired board styles are absent');
   assert.equal(count(files.get('components/ChatWindow.tsx'), '<WelcomeResume />'), 1);
   const markdown = files.get('lib/markdown.ts');
   assert.equal(count(markdown, 'portableCjkEmphasis]'), 2, 'both remark plugin lists carry the CJK-friendly bold fix');
   assert.match(files.get('app/layout.tsx'), /import "\.\/craft-transcript\.css";\nimport "\.\/merge\.css";/);
   assert.match(files.get('components/PortableProcessTimeline.tsx'), /timelineBreakdown\(activities,props\.startedAt,end\?\.at\)/);
   assert.match(files.get('components/PortableProcessTimeline.tsx'), /summary\|\|breakdown\?'':'已完成'/);
-  assert.match(files.get('components/CraftSessions.tsx'), /pw-craft-time' \+ \(props\.running\.has\(session\.id\) \? ' is-running' : ''\)/);
-  for (const name of ['lib/portable-session-store.ts', 'lib/portable-session-board.mjs', 'lib/portable-timeline-summary.mjs', 'lib/portable-cjk-emphasis.mjs', 'components/SessionTabs.tsx', 'components/SessionBoard.tsx', 'components/WelcomeResume.tsx', 'app/merge.css']) {
+  const craft = files.get('components/CraftSessions.tsx');
+  assert.match(craft, /pw-craft-runtime/);
+  assert.match(craft, /pw-craft-preview-line/);
+  assert.match(craft, /data-runtime-state=\{runtimeState\}/);
+  assert.match(files.get('app/api/agent/running/route.ts'), /askingSessionIds: getAskingRpcSessionIds\(\)/);
+  assert.match(files.get('lib/rpc-manager.ts'), /hasPendingUserQuestion\(\): boolean/);
+  assert.match(files.get('components/ProjectTree.tsx'), /asking=\{props.askingSessionIds\}/);
+  assert.match(files.get('lib/session-reader.ts'), /runtimeOutcome: getScannedRuntimeOutcome\(scanned.path\)/);
+  assert.doesNotMatch(craft, /props\.running\.has\(session\.id\) \? '运行中'/);
+  for (const name of ['lib/portable-session-store.ts', 'lib/portable-session-resume.mjs', 'lib/portable-timeline-summary.mjs', 'lib/portable-cjk-emphasis.mjs', 'components/SessionTabs.tsx', 'components/WelcomeResume.tsx', 'app/merge.css']) {
     assert.ok(files.has(name), `${name} is shipped`);
   }
 });
@@ -132,6 +145,8 @@ test('the merge step is a pure function of the state before it, and refuses when
   assert.throws(() => integrateMerge(withEdit('lib/markdown.ts', 'const chatRemarkPlugins: PluginList = [[remarkGfm, remarkGfmOptions], remarkMath];', 'const chatRemarkPlugins: PluginList = [];')), /markdown\.ts: anchor .* zero writes/u);
   assert.throws(() => integrateMerge(withEdit('components/PortableProcessTimeline.tsx', 'const active=activities.find(a=>a.id===selected);', 'const active=undefined;')), /PortableProcessTimeline\.tsx: anchor .* zero writes/u);
   assert.throws(() => integrateMerge(withEdit('components/ChatWindow.tsx', '<ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '<ExtensionStatusBar />')), /ChatWindow\.tsx: anchor .* zero writes/u);
-  assert.throws(() => integrateMerge(withEdit('components/CraftSessions.tsx', "{props.running.has(session.id) ? '运行中' : formatSessionTime(session.modified, new Date())}", "{'运行中'}")), /CraftSessions\.tsx: anchor .* zero writes/u);
+  assert.throws(() => integrateMerge(withEdit('components/CraftSessions.tsx', "{props.unread.has(session.id) ? '有新回复 · ' : ''}", "{'新回复'}")), /CraftSessions\.tsx: anchor .* zero writes/u);
   assert.throws(() => integrateMerge(withEdit('lib/theme.ts', '  { id: "dark", label: "settings.themeDark" },', '')), /theme\.ts: anchor .* zero writes/u);
+  assert.throws(() => integrateMerge(withEdit('app/api/agent/running/route.ts', '  getRunningRpcSessionIds,', '  getChangedRunningRpcSessionIds,')), /route\.ts: anchor .* zero writes/u);
+  assert.throws(() => integrateMerge(withEdit('lib/rpc-manager.ts', '  hasSuppressedCompletionNotifications(): boolean {', '  notificationsSuppressed(): boolean {')), /rpc-manager\.ts: anchor .* zero writes/u);
 });

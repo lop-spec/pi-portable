@@ -9,8 +9,8 @@
     "public/licenses/pi-desktop/source/host.tsx.txt": "481ca211dd9b85895b96bcf24602d3f38325f40d8765e2a1ee1951662c900095",
     "components/desktop-transcript/ToolRow.tsx": "304f5b2cfc6392ec72e9ad1e2624c42efb24faa42a909deefc20d82555cf7ab8",
     "public/licenses/pi-desktop/source/ToolRow.tsx.txt": "304f5b2cfc6392ec72e9ad1e2624c42efb24faa42a909deefc20d82555cf7ab8",
-    "components/PortableFileContextMenu.tsx": "17b4dae7a92c42b9f92e98e2c3071979c914275d3d5755c7c7ad93d14cdcff43",
-    "app/api/open-local-file/route.ts": "7a173cc154e8d6c2bb4f3d2488be6f2c316e4567c9ba88f467926ed8c5249548",
+    "components/PortableFileContextMenu.tsx": "fdf07c32e3541df51530064757a6e75372551a1dc398d4462e2888e0c28200f8",
+    "app/api/open-local-file/route.ts": "47bbd4c990a4c3bc3d8341cfd28f0e962e416bbb244de7f5b71047e665894f81",
     "lib/portable-windows-file-links.ts": "d6830f98b6be2eea613239ebb146b7dcf95b618f9759d33d7c50fd42ddf2cc23",
     "lib/portable-windows-folder-focus.ts": "d37d111179d8f644364b2de955b65bbf1b69c21953ff8930cd7e0dfb77474d68"
   }

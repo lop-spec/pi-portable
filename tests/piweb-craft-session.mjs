@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { STATUSES, statusOf, isFlagged, groupedSessions } from '../assets/piweb-overlay/craft-session/model.mjs';
+import { STATUSES, statusOf, isFlagged, groupedSessions, sessionRuntimeStatus } from '../assets/piweb-overlay/session-runtime/model.mjs';
 import { readStatusStore, updateStatusStore } from '../assets/piweb-overlay/craft-session/store.mjs';
 
 test('Craft status order and default are independent of processing and archive', () => {
@@ -15,6 +15,26 @@ test('Craft status order and default are independent of processing and archive',
   assert.deepEqual(groupedSessions(sessions, records, 'needs-review').flatMap(x => x.items.map(y => y.id)), ['b']);
   assert.equal(isFlagged(records, 'a'), true); assert.equal(isFlagged(records, 'b'), false);
 });
+test('runtime circle follows the agent rather than manual workflow status', () => {
+  assert.equal(sessionRuntimeStatus('idle', false, false), 'idle');
+  assert.equal(sessionRuntimeStatus('awaiting', false, false), 'stopped');
+  assert.equal(sessionRuntimeStatus('asking', false, false), 'stopped');
+  assert.equal(sessionRuntimeStatus('asking', true, false), 'running');
+  assert.equal(sessionRuntimeStatus('completed', false, false), 'completed');
+  assert.equal(sessionRuntimeStatus('completed', true, false), 'running');
+  assert.equal(sessionRuntimeStatus('asking', true, true), 'asking');
+  assert.equal(sessionRuntimeStatus('stopped', false, false), 'stopped');
+  assert.equal(sessionRuntimeStatus('failed', false, false), 'failed');
+  const view = fs.readFileSync(new URL('../assets/piweb-overlay/session-runtime/CraftSessions.tsx', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../assets/piweb-overlay/session-runtime/craft-session.css', import.meta.url), 'utf8');
+  assert.match(view, /runtimeState=\{runtimeForSession\(session, props\.running, props\.asking\)\}/);
+  assert.match(view, /data-runtime-state=\{runtimeState\}/);
+  assert.match(view, /RuntimeGlyph state=\{runtimeState\}/);
+  assert.match(view, /pw-craft-preview-line/);
+  assert.doesNotMatch(view, /props\.running\.has\(session\.id\) \? '运行中'/);
+  assert.match(css, /pw-craft-runtime\.is-completed\{color:var\(--success\)/);
+});
+
 test('status survives reload, independent flag changes and project path moves', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-craft-status-'));
   const id = 'session-123';

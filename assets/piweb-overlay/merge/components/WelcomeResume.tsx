@@ -3,8 +3,8 @@
 // 只在空白新会话页出现，点一下就回到那个会话；没有可继续的会话时什么都不显示。
 import { useMemo } from "react";
 import { hasAssignedStatus, statusOf } from "@/lib/craft-session/model.mjs";
-import { resumeCandidates } from "@/lib/portable-session-board.mjs";
-import { openPortableSession, setPortableBoardOpen, usePortableSessions, usePortableUnreadIds } from "@/lib/portable-session-store";
+import { resumeCandidates } from "@/lib/portable-session-resume.mjs";
+import { openPortableSession, usePortableSessions, usePortableUnreadIds } from "@/lib/portable-session-store";
 import { StatusGlyph, useSessionWorkflow } from "./CraftSessions";
 import { projectLabel } from "./sidebar/project-label";
 import { deriveSessionTitle } from "./sidebar/session-title";
@@ -29,7 +29,6 @@ export function WelcomeResume() {
       <section className="pw-resume" aria-label="继续任务">
         <header className="pw-resume-head">
           <h2>继续任务</h2>
-          <button type="button" className="pw-resume-all" onClick={() => setPortableBoardOpen(true)}>全部看板</button>
         </header>
         <div className="pw-resume-grid">
           {items.map(({ session, column }) => {

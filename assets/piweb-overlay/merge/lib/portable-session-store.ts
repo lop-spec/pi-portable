@@ -1,5 +1,5 @@
 "use client";
-// 标签栏、状态看板、欢迎页共用的会话快照：AppShell 发布，三个视图订阅；打开会话、新建会话走 window 事件，
+// 标签栏、欢迎页共用的会话快照：AppShell 发布，两个视图订阅；打开会话、新建会话走 window 事件，
 // 避免给 ChatWindow 这类 memo 组件增加会变引用的 props。
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { SessionInfo } from "@/lib/types";
@@ -10,11 +10,12 @@ export interface PortableSessionView {
   selectedId: string | null;
   /** 正在显示一个还没有保存的新会话输入框。 */
   draftOpen: boolean;
-  boardOpen: boolean;
+  /** 当前会话最近一条用户问题；由对话消息视图发布。 */
+  latestUserQuestion: { sessionId: string; text: string } | null;
 }
 
 const EMPTY: ReadonlySet<string> = new Set();
-let view: PortableSessionView = { sessions: [], running: EMPTY, selectedId: null, draftOpen: false, boardOpen: false };
+let view: PortableSessionView = { sessions: [], running: EMPTY, selectedId: null, draftOpen: false, latestUserQuestion: null };
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void): () => void {
@@ -24,18 +25,10 @@ function subscribe(listener: () => void): () => void {
 
 export function publishPortableSessions(next: Partial<PortableSessionView>): void {
   const merged: PortableSessionView = { ...view, ...next };
-  // 选中了某个会话或打开了新会话输入框，就离开看板。
-  const selectionChanged = "selectedId" in next && next.selectedId !== view.selectedId;
-  const draftOpened = next.draftOpen === true && !view.draftOpen;
-  if (selectionChanged || draftOpened) merged.boardOpen = false;
   const same = (Object.keys(merged) as (keyof PortableSessionView)[]).every((key) => merged[key] === view[key]);
   if (same) return;
   view = merged;
   listeners.forEach((listener) => listener());
-}
-
-export function setPortableBoardOpen(open: boolean): void {
-  publishPortableSessions({ boardOpen: open });
 }
 
 export function usePortableSessions(): PortableSessionView {
@@ -46,7 +39,6 @@ export const OPEN_SESSION_EVENT = "pi-web:open-session";
 export const NEW_SESSION_EVENT = "pi-web:new-session";
 
 export function openPortableSession(id: string): void {
-  setPortableBoardOpen(false);
   window.dispatchEvent(new CustomEvent<{ id: string }>(OPEN_SESSION_EVENT, { detail: { id } }));
 }
 
