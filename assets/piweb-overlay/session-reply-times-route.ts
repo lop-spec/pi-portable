@@ -5,7 +5,8 @@ import { listAllSessions, mergeSessionLists } from '@/lib/session-reader';
 import { getRpcSessionInfos } from '@/lib/rpc-manager';
 import { projectMutationAllowed } from '@/lib/portable-project-store.mjs';
 import { lastAssistantReplyTime } from '@/lib/session-reply-time.mjs';
-import { recentTasks } from '@/lib/recent-tasks.mjs';
+import { recentTasks, isTestTask } from '@/lib/recent-tasks.mjs';
+import { isTodoSession } from '@/lib/craft-session/model.mjs';
 import { readStatusStore } from '@/lib/craft-session/store.mjs';
 
 export const dynamic = 'force-dynamic';
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
 }
 export async function GET() {
   try {
-    const agentDir = getAgentDir(); let archived: Record<string, { relativePath?: string }> = {}, testSessionIds: string[] = [];
+    const agentDir = getAgentDir(); let archived: Record<string, { relativePath?: string; archivedAt?: string }> = {}, testSessionIds: string[] = [];
     try { archived = JSON.parse(await readFile(path.join(agentDir, 'session-archive.json'), 'utf8')).sessions ?? {}; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     try {
@@ -61,10 +62,12 @@ export async function GET() {
       catch { return { session, time: null, incomplete: true }; }
     });
     const replies = Object.fromEntries(values.map(value => [value.session.id, value.time === null ? null : new Date(value.time).toISOString()]));
-    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now(), new Set(testSessionIds), readStatusStore(agentDir).sessions);
-    const ids = new Set<string>(ranked.map((family: { root: { id: string } }) => family.root.id));
+    const records = readStatusStore(agentDir).sessions;
+    const ranked = recentTasks(values.map(value => ({ root: value.session, subagents: [] })), new Set(), replies, Date.now(), new Set(testSessionIds), records);
+    const resumedSessionIds = roots.filter(session => !isTestTask(session, new Set(testSessionIds)) && isTodoSession(records, session) && Date.parse(session.modified) > Date.parse(archived[session.id]?.archivedAt ?? '')).map(session => session.id);
+    const ids = new Set<string>([...ranked.map((family: { root: { id: string } }) => family.root.id), ...resumedSessionIds]);
     let count = 0;
     while (count !== ids.size) { count = ids.size; for (const s of all) if (matching(s) && s.relation?.kind === 'subagent' && ids.has(s.relation.parentSessionId)) ids.add(s.id); }
-    return Response.json({ sessions: all.filter(s => ids.has(s.id)), replies: Object.fromEntries([...ids].filter(id => id in replies).map(id => [id, replies[id]])), testSessionIds, incomplete: values.some(value => value.incomplete) }, { headers: { 'Cache-Control': 'no-store' } });
+    return Response.json({ sessions: all.filter(s => ids.has(s.id)).map(s => ({ ...s, firstMessage: s.firstMessage.slice(0, 320) })), resumedSessionIds, replies: Object.fromEntries([...ids].filter(id => id in replies).map(id => [id, replies[id]])), testSessionIds, incomplete: values.some(value => value.incomplete) }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 }); }
 }

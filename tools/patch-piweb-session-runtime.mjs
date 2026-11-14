@@ -53,7 +53,17 @@ export function getRunningRpcSessionIds(): string[] {`);
   change(row, '          <span className="pw-sess-title">{title}</span>', `          <span className="pw-sess-title">{title}</span>
           {runtimeState && <span className="pw-project-secondary"><span className="pw-project-preview">{displayFirstMessage.replace(/\\s+/g, ' ').trim() || '新对话'}</span><span className="pw-sess-time">{timeLabel}</span></span>}`);
   change(row, '      {!renaming && (\n        <span className="pw-sess-end">', '      {!renaming && !runtimeState && (\n        <span className="pw-sess-end">');
+  const search = 'components/SessionSearch.tsx';
+  change(search, 'useEffect, useState }', 'useEffect, useState, type ReactNode }');
+  change(search, 'onSelectSession, labelForSession }', 'onSelectSession, labelForSession, renderStatus }');
+  change(search, '  labelForSession: (session: SessionInfo) => string;', '  labelForSession: (session: SessionInfo) => string;\n  renderStatus?: (session: SessionInfo) => ReactNode;');
+  change(search, '          <button\n            key={session.id}', '          <div className="pw-search-row" key={session.id} data-session-id={session.id}>\n          {renderStatus?.(session)}\n          <button');
+  change(search, '          </button>\n        );', '          </button>\n          </div>\n        );');
   set('app/redesign-sidebar.css', get('app/redesign-sidebar.css') + `
+.pw-search-row{display:flex;align-items:flex-start;min-width:0;border-radius:6px}
+.pw-search-row>.pw-craft-status-button{flex:none;margin:8px 0 0 4px}
+.pw-search-row>.pw-search-item{flex:1;min-width:0}
+.pw-craft-glyph.status-unassigned{color:var(--text-muted)}
 .pw-project-session .pw-sess-row{height:auto;min-height:48px;padding-right:0}
 .pw-project-session .pw-sess-main{display:flex;flex-direction:column;align-items:stretch;gap:2px;min-width:0;padding-right:0}
 .pw-project-session .pw-sess-title{display:block;flex:none;min-width:0}

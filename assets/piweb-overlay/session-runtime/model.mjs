@@ -34,6 +34,15 @@ export function dateGroup(value, now = new Date()) {
   if (+day === +yesterday) return '昨天';
   return date.getFullYear() === now.getFullYear() ? `${date.getMonth() + 1}月${date.getDate()}日` : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
 }
+// modified is the catalogue's latest user/assistant activity, not the file mtime.
+export function isTodoSession(records, session) {
+  if (statusOf(records, session.id) === 'todo') return true;
+  const classified = Date.parse(records[session.id]?.statusUpdatedAt ?? '');
+  return Number.isFinite(classified) && Date.parse(session.modified) > classified;
+}
+export function matchesSessionFilter(records, session, filter) {
+  return filter === 'todo' ? isTodoSession(records, session) : matchesFilter(records, session.id, filter);
+}
 export function matchesFilter(records, id, filter) {
   return filter === 'all' || filter === 'archived' || (filter === 'flagged' ? isFlagged(records, id) : statusOf(records, id) === filter);
 }
@@ -41,7 +50,7 @@ export function matchesFilter(records, id, filter) {
 /** @template {{id: string, modified: string, created: string}} T @param {T[]} sessions @param {Record<string, {status?: string, flagged?: boolean}>} records @param {string} filter @param {Date} [now] @returns {{label: string, items: T[]}[]} */
 export function groupedSessions(sessions, records, filter, now = new Date()) {
   const grouped = new Map();
-  for (const session of [...sessions].filter(item => matchesFilter(records, item.id, filter)).sort((a, b) => (Date.parse(b.modified) || Date.parse(b.created) || 0) - (Date.parse(a.modified) || Date.parse(a.created) || 0) || a.id.localeCompare(b.id))) {
+  for (const session of [...sessions].filter(item => matchesSessionFilter(records, item, filter)).sort((a, b) => (Date.parse(b.modified) || Date.parse(b.created) || 0) - (Date.parse(a.modified) || Date.parse(a.created) || 0) || a.id.localeCompare(b.id))) {
     const label = dateGroup(session.modified || session.created, now);
     if (!grouped.has(label)) grouped.set(label, []);
     grouped.get(label).push(session);

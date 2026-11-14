@@ -2,15 +2,15 @@
 // Session workflow interaction adapted from Craft Agents (Apache-2.0, a883d64).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionInfo } from '@/lib/types';
-import { STATUSES, statusOf, isFlagged, groupedSessions, sessionRuntimeStatus } from '@/lib/craft-session/model.mjs';
+import { STATUSES, statusOf, hasAssignedStatus, matchesSessionFilter, isFlagged, groupedSessions, sessionRuntimeStatus } from '@/lib/craft-session/model.mjs';
 import { PopMenu, anchorFromElement, type MenuAnchor } from './sidebar/PopMenu';
 import { deriveSessionTitle } from './sidebar/session-title';
 import { formatSessionTime } from './sidebar/session-time';
 
 export type StatusId = 'backlog' | 'todo' | 'needs-review' | 'done' | 'cancelled';
-type RecordValue = { status: StatusId; flagged: boolean };
-type Records = Record<string, RecordValue>;
-type StatusPatch = { status?: StatusId; flagged?: boolean };
+type RecordValue = { status: StatusId; flagged: boolean; statusAssigned?: boolean; statusUpdatedAt?: string };
+export type Records = Record<string, RecordValue>;
+export type StatusPatch = { status?: StatusId; flagged?: boolean };
 
 export function useSessionWorkflow() {
   const [records, setRecords] = useState<Records>({});
@@ -75,20 +75,22 @@ export function runtimeForSession(session: SessionInfo, running: ReadonlySet<str
 export function FlagGlyph() { return <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 21V4m0 0c5-3 9 3 14 0v10c-5 3-9-3-14 0"/></svg>; }
 function ArchiveGlyph() { return <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true"><path d="M3 8h18v13H3zM2 3h20v5H2zM9 12h6"/></svg>; }
 
-export function StatusButton({ id, records, onSave, archived, onArchive, disabled, runtimeState }: { id: string; records: Records; onSave: (id: string, patch: StatusPatch) => Promise<void>; archived: boolean; onArchive: (id: string, archived: boolean) => void; disabled?: boolean; runtimeState: string }) {
+export function StatusButton({ id, records, onSave, archived, onArchive, disabled, runtimeState }: { id: string; records: Records; onSave: (id: string, patch: StatusPatch) => Promise<void>; archived?: boolean; onArchive?: (id: string, archived: boolean) => void; disabled?: boolean; runtimeState?: string }) {
   const [menu, setMenu] = useState<{ anchor: MenuAnchor; element: HTMLElement } | null>(null);
   const [filter, setFilter] = useState('');
-  const status = statusOf(records, id), label = STATUSES.find(item => item.id === status)?.label ?? '待办';
-  const runtimeLabel = runtimeLabels[runtimeState] ?? '未开始';
+  const assigned = hasAssignedStatus(records, id);
+  const status = assigned ? statusOf(records, id) : 'unassigned';
+  const label = STATUSES.find(item => item.id === status)?.label ?? '未设置';
+  const runtimeLabel = runtimeState ? runtimeLabels[runtimeState] ?? '未开始' : ''; 
   const shown = STATUSES.filter(item => item.label.includes(filter.trim()) || item.id.includes(filter.trim().toLowerCase()));
   return <>
-    <button type="button" className="pw-craft-status-button" data-runtime-state={runtimeState} aria-label={`会话${runtimeLabel}；设置分类：${label}`} aria-haspopup="menu" aria-expanded={Boolean(menu)} title={`会话${runtimeLabel} · 分类：${label}（点击修改）`} disabled={disabled} onClick={event => { event.stopPropagation(); setFilter(''); setMenu({ anchor: anchorFromElement(event.currentTarget), element: event.currentTarget }); }} onContextMenu={event => event.stopPropagation()}><RuntimeGlyph state={runtimeState}/></button>
+    <button type="button" className="pw-craft-status-button" data-runtime-state={runtimeState} data-workflow-status={status} aria-label={runtimeState ? `会话${runtimeLabel}；设置分类：${label}` : `设置状态：${label}`} aria-haspopup="menu" aria-expanded={Boolean(menu)} title={`${runtimeState ? `会话${runtimeLabel} · ` : ''}分类：${label}（点击修改）`} disabled={disabled} onClick={event => { event.stopPropagation(); setFilter(''); setMenu({ anchor: anchorFromElement(event.currentTarget), element: event.currentTarget }); }} onContextMenu={event => event.stopPropagation()}>{runtimeState ? <RuntimeGlyph state={runtimeState}/> : <StatusGlyph status={status}/>}</button>
     {menu && <PopMenu anchor={menu.anchor} returnFocus={menu.element} ariaLabel="设置会话状态" width={208} onClose={() => setMenu(null)} className="pw-craft-status-menu">
-      <input data-autofocus aria-label="筛选状态" placeholder="筛选状态…" value={filter} onChange={event => setFilter(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && shown[0]) { event.preventDefault(); setMenu(null); void onSave(id, { status: (filter.trim() ? shown[0].id : status) as StatusId }).catch(() => {}); } }} />
+      <input data-autofocus aria-label="筛选状态" placeholder="筛选状态…" value={filter} onChange={event => setFilter(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && shown[0]) { event.preventDefault(); setMenu(null); void onSave(id, { status: (filter.trim() || !assigned ? shown[0].id : status) as StatusId }).catch(() => {}); } }} />
       <div className="pw-craft-menu-items">
         {shown.map(item => <button type="button" role="menuitemradio" aria-checked={item.id === status} key={item.id} className={`pw-craft-menu-item${item.id === status ? ' is-current' : ''}`} onClick={() => { setMenu(null); void onSave(id, { status: item.id as StatusId }).catch(() => {}); }}><StatusGlyph status={item.id}/><span>{item.label}</span></button>)}
         {!shown.length && <div className="pw-craft-empty">没有匹配的状态</div>}
-        {!filter.trim() && <><div className="pw-craft-menu-separator"/><button type="button" role="menuitem" className="pw-craft-menu-item" onClick={() => { setMenu(null); onArchive(id, archived); }}><ArchiveGlyph/><span>{archived ? '恢复' : '归档'}</span></button></>}
+        {!filter.trim() && onArchive && <><div className="pw-craft-menu-separator"/><button type="button" role="menuitem" className="pw-craft-menu-item" onClick={() => { setMenu(null); onArchive(id, Boolean(archived)); }}><ArchiveGlyph/><span>{archived ? '恢复' : '归档'}</span></button></>}
       </div>
     </PopMenu>}
   </>;
@@ -101,7 +103,7 @@ export function WorkflowFilters({ sessions, records, filter, archived, onSelect,
   const roots = useMemo(() => sessions.filter(s => s.relation?.kind !== 'subagent'), [sessions]);
   return <div className="pw-craft-filters" onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
     <button type="button" role="menuitemradio" className={filter === 'all' && !archived ? 'is-active' : ''} aria-checked={filter === 'all' && !archived} onClick={() => onSelect('all')}><span className="pw-craft-all">☰</span><span>全部</span>{!archived && <small>{roots.length}</small>}</button>
-    {STATUSES.map(item => <button type="button" role="menuitemradio" key={item.id} className={filter === item.id && !archived ? 'is-active' : ''} aria-checked={filter === item.id && !archived} onClick={() => onSelect(item.id)}><StatusGlyph status={item.id}/><span>{item.label}</span>{!archived && <small>{roots.filter(s => statusOf(records, s.id) === item.id).length || ''}</small>}</button>)}
+    {STATUSES.map(item => <button type="button" role="menuitemradio" key={item.id} className={filter === item.id && !archived ? 'is-active' : ''} aria-checked={filter === item.id && !archived} onClick={() => onSelect(item.id)}><StatusGlyph status={item.id}/><span>{item.label}</span>{!archived && <small>{roots.filter(s => matchesSessionFilter(records, s, item.id)).length || ''}</small>}</button>)}
     <div className="pw-craft-separator"/>
     <button type="button" role="menuitemradio" className={filter === 'flagged' && !archived ? 'is-active' : ''} aria-checked={filter === 'flagged' && !archived} onClick={() => onSelect('flagged')}><FlagGlyph/><span>已标记</span>{!archived && <small>{roots.filter(s => isFlagged(records, s.id)).length || ''}</small>}</button>
     <button type="button" role="menuitemradio" className={archived ? 'is-active' : ''} aria-checked={archived} onClick={() => onSelect('archived')}><ArchiveGlyph/><span>已归档</span></button>
@@ -110,7 +112,7 @@ export function WorkflowFilters({ sessions, records, filter, archived, onSelect,
 
 type ViewProps = {
   sessions: SessionInfo[]; records: Records; selectedSessionId: string | null; running: ReadonlySet<string>; asking: ReadonlySet<string>; unread: ReadonlySet<string>;
-  archived: boolean; filter: string;
+  archived: boolean; archivedIds?: ReadonlySet<string>; filter: string;
   onSelect: (session: SessionInfo) => void; onSave: (id: string, patch: StatusPatch) => Promise<void>;
   onArchive: (id: string, archived: boolean) => void; onMenu: (id: string, point: { x: number; y: number }) => void;
 };
@@ -132,7 +134,7 @@ export function CraftSessionView(props: ViewProps) {
       {groups.map(group => <section key={group.label}>
         <button type="button" className="pw-craft-date" aria-expanded={!collapsed.has(group.label)} onClick={() => setCollapsed(previous => { const next = new Set(previous); next.has(group.label) ? next.delete(group.label) : next.add(group.label); return next; })}>{group.label} <span>{collapsed.has(group.label) ? '›' : '⌄'}</span></button>
         {!collapsed.has(group.label) && group.items.map(session => <div className={`pw-craft-row${session.id === props.selectedSessionId ? ' is-selected' : ''}`} key={session.id} data-session-id={session.id} data-pi-session-id={session.id} data-pi-session-row="" onContextMenu={event => { event.preventDefault(); props.onMenu(session.id, { x: event.clientX, y: event.clientY }); }}>
-          <StatusButton id={session.id} records={records} onSave={props.onSave} archived={archived} onArchive={props.onArchive} disabled={session.transient} runtimeState={runtimeForSession(session, props.running, props.asking)}/>
+          <StatusButton id={session.id} records={records} onSave={props.onSave} archived={archived || props.archivedIds?.has(session.id)} onArchive={props.onArchive} disabled={session.transient} runtimeState={runtimeForSession(session, props.running, props.asking)}/>
           <button type="button" className="pw-craft-open" aria-current={session.id === props.selectedSessionId ? 'page' : undefined} onClick={() => props.onSelect(session)} title={session.name || session.firstMessage}>
             <span className="pw-craft-row-top"><span className="pw-craft-title">{deriveSessionTitle(session.name, session.firstMessage, session.id)}</span></span>
             <span className="pw-craft-preview-line"><span className="pw-craft-preview">{props.unread.has(session.id) ? '有新回复 · ' : ''}{session.firstMessage.replace(/\s+/g, ' ').trim() || '新对话'}</span><span className="pw-craft-time">{formatSessionTime(session.modified, new Date())}</span></span>

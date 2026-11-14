@@ -1,4 +1,5 @@
 import './piweb-craft-session.mjs';
+import './piweb-reply-todo-status.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -30,7 +31,7 @@ test('explicit test sessions are excluded before ranking and older real work fil
   assert.deepEqual(recentTasks(entries, running, {}, now, ids).map(f => f.root.id), ['s11', 's10', 's08', 's07', 's06', 's05', 's04', 's03', 's02', 's01', 's00']);
   assert.equal(entries.length, 14); assert.equal(entries[9].root.id, 's09');
 });
-test('all explicitly assigned statuses leave recent, but defaults and flags stay; refill before limiting', async () => {
+test('classified sessions leave recent until new activity; explicit todo, defaults and flags stay', async () => {
   const { updateStatusStore, readStatusStore } = await import('../assets/piweb-overlay/craft-session/store.mjs');
   const os = await import('node:os'), path = await import('node:path');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recent-status-'));
@@ -41,7 +42,7 @@ test('all explicitly assigned statuses leave recent, but defaults and flags stay
     records.legacy = { status: 'done', flagged: false };
     records['legacy-flag'] = { status: 'todo', flagged: true };
     const entries = [...Object.keys(records), 'default'].map(id => family(id, new Date(now).toISOString()));
-    assert.deepEqual(recentTasks(entries, new Set(), {}, now, new Set(), records).map(f => f.root.id), ['default', 'flag-only', 'legacy-flag']);
+    assert.deepEqual(recentTasks(entries, new Set(), {}, now, new Set(), records).map(f => f.root.id), ['default', 'flag-only', 'legacy-flag', 'todo']);
     const older = Array.from({ length: 35 }, (_, i) => family(`older-${i}`, new Date(now - (i + 1) * 1000).toISOString()));
     assert.equal(recentTasks([...entries, ...older], new Set(), {}, now, new Set(), records).length, 30);
     updateStatusStore(dir, 'todo', { flagged: true });

@@ -1,5 +1,5 @@
 // Recent tasks are a view over project families, never a second physical classification.
-import { hasAssignedStatus } from './craft-session/model.mjs';
+import { hasAssignedStatus, isTodoSession } from './craft-session/model.mjs';
 export const RECENT_TASK_LIMIT = 30;
 export const RECENT_TASK_VISIBLE = 5;
 
@@ -31,7 +31,7 @@ export function visibleSessionItems(sessions, testIds = new Set()) {
  */
 export function recentTaskCandidates(families, _runningIds, _now, testIds = new Set(), records = {}) {
   // The catalogue's modified time can be the start of a long response, not its completion.
-  return families.filter(family => !isTestTask(family.root, testIds) && !hasAssignedStatus(records, family.root.id));
+  return families.filter(family => !isTestTask(family.root, testIds) && (!hasAssignedStatus(records, family.root.id) || isTodoSession(records, family.root)));
 }
 /**
  * @template {{root: {id: string, modified: string, created: string}, subagents: {id: string}[]}} T
