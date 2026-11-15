@@ -7,7 +7,8 @@ export function toolState(result, live, end) {
 }
 export function toolSummary(block) {
   const args = block.input ?? {};
-  const name = typeof args._displayName === 'string' && args._displayName.trim() ? args._displayName : block.toolName;
+  const names = { bash: '执行命令', read: '读取文件', edit: '修改文件', write: '保存文件', grep: '搜索内容', find: '查找文件', ls: '查看目录', browser: '查看网页', browser_task: '查阅网页', AskUserQuestion: '询问你的选择' };
+  const name = typeof args._displayName === 'string' && args._displayName.trim() ? args._displayName : names[block.toolName] ?? '执行工具';
   const intent = typeof args._intent === 'string' ? args._intent : typeof args.description === 'string' ? args.description : '';
   const input = ['command', 'path', 'file_path', 'pattern', 'url', 'query', 'action'].map(key => typeof args[key] === 'string' ? args[key] : '').filter(Boolean).join(' ');
   return { name, intent, input };
@@ -28,5 +29,42 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
   // Like Craft, the trailing streamed answer is outside the work log. Earlier
   // commentary remains a compact activity once subsequent tool activity arrives.
   if (live) while (activities.at(-1)?.type === 'intermediate') responses.unshift(activities.pop());
-  return { activities, responses, nodes, failedCount: activities.filter(a => a.status === 'error').length };
+  const phases = groupPhases(activities, live, end);
+  return { activities, phases, responses, nodes, failedCount: activities.filter(a => a.status === 'error').length };
+}
+
+// Phase markers are supplied only at a change of work, not inferred from commands.
+// Old calls and unmarked work stay in one neutral group; all records are retained.
+export function groupPhases(activities, live = false, end) {
+  const phases = [];
+  let current;
+  for (const activity of activities) {
+    const marker = activity.type === 'tool' && typeof activity.block.input?._phase === 'string' ? activity.block.input._phase.replace(/\s+/g, ' ').trim() : '';
+    if (marker && current?.name !== marker) {
+      if (current?.fallback && current.items.every(item => item.type === 'intermediate')) {
+        current.name = marker; current.fallback = false;
+      } else {
+        current = { id: activity.id, name: marker, items: [], fallback: false };
+        phases.push(current);
+      }
+    }
+    if (!current) {
+      current = { id: activity.id, name: '处理这项任务', items: [], fallback: true };
+      phases.push(current);
+    }
+    current.items.push(activity);
+  }
+  return phases.map((phase, index) => {
+    const tools = phase.items.filter(item => item.type === 'tool');
+    const last = index === phases.length - 1;
+    const missing = tools.filter(item => !item.result);
+    const errors = tools.filter(item => item.status === 'error').length;
+    const waiting = live && missing.some(item => item.block.toolName === 'AskUserQuestion');
+    // A successful later command cannot prove an earlier error was repaired.
+    // Non-blocking errors stay in details, and the phase is merely "ended".
+    const status = waiting ? 'waiting' : live && (last || missing.length) ? 'running'
+      : last && end?.status === 'error' ? 'blocked' : last && end?.status === 'stopped' ? 'stopped'
+      : missing.length ? 'unknown' : errors ? 'finished' : 'completed';
+    return { ...phase, status, errors, toolCount: tools.length };
+  });
 }

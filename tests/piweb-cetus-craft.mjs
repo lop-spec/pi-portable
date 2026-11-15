@@ -9,59 +9,54 @@ const { validateToolArguments } = await import(pathToFileURL(root + '/pi-ai/dist
 const { Agent } = await import(pathToFileURL(root + '/pi-agent-core/dist/agent.js'));
 const { AssistantMessageEventStream } = await import(pathToFileURL(root + '/pi-ai/dist/utils/event-stream.js'));
 
-test('one plain-language label is required without mutating the tool schema', () => {
-  const original = { name:'read', parameters:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}, execute(){} };
-  const tool = withMetadata(original);
-  assert.deepEqual(tool.parameters.required, ['_displayName','path']);
-  assert.deepEqual(Object.keys(tool.parameters.properties), ['_displayName','path']);
-  assert.deepEqual(Object.keys(original.parameters.properties), ['path']);
-  assert.match(tool.parameters.properties._displayName.description, /小学生/);
-  const message = {name:'read',arguments:{_displayName:'看修改要遵守哪些规则',path:'a'}};
-  assert.deepEqual(validateToolArguments(tool,message),message.arguments);
+const create = (name,execute=()=>({content:[]})) => ({name,label:name,description:'Inspect fixture',parameters:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false},execute});
+test('phase marker is optional; per-call labels are no longer advertised or required', () => {
+  const original=create('read'),tool=withMetadata(original);
+  assert.deepEqual(tool.parameters.required,['path']);
+  assert.deepEqual(Object.keys(tool.parameters.properties),['_phase','path']);
+  assert.deepEqual(Object.keys(original.parameters.properties),['path']);
+  assert.match(tool.parameters.properties._phase.description,/同阶段后续调用省略/);
+  for(const args of [{path:'a'},{_phase:'核对修改后的效果',path:'a'}])assert.deepEqual(validateToolArguments(tool,{name:'read',arguments:args}),args);
   assert.equal(withMetadata(tool),tool);
-  assert.deepEqual(withoutMetadata({...message.arguments,_intent:'旧版说明仍可清除'}),{path:'a'});
-  assert.equal(message.arguments._displayName,'看修改要遵守哪些规则');
-  const legacy = withMetadata({...original,parameters:{...original.parameters,properties:{...original.parameters.properties,_intent:{type:'string'}},required:['_intent','path']}});
-  assert.deepEqual(legacy.parameters.required,['_displayName','path']);
-  assert.equal(legacy.parameters.properties._intent,undefined);
+  assert.deepEqual(withoutMetadata({_phase:'新阶段',_displayName:'旧标题',_intent:'旧说明',path:'a'}),{path:'a'});
+  const legacy=withMetadata({...original,parameters:{...original.parameters,properties:{...original.parameters.properties,_intent:{type:'string'},_displayName:{type:'string'}},required:['_intent','_displayName','path']}});
+  assert.deepEqual(legacy.parameters.required,['path']);
+  assert.equal(legacy.parameters.properties._intent,undefined);assert.equal(legacy.parameters.properties._displayName,undefined);
 });
 
-test('real validator and hook strip execution copies, retaining history and dynamic tools', async () => {
+test('validator and hooks strip metadata only from execution copies, including dynamic tools', async () => {
   const seen=[];
-  const create = name => ({name,parameters:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false},execute(id,args,signal,update){seen.push({id,args,signal,update});return {content:[]};}});
-  const agent = new Agent({initialState:{tools:[create('read')]},streamFn:()=>{throw new Error('This registry test must not call a model');}});
-  agent.beforeToolCall = event => { seen.push(event.args); }; 
+  const agent=new Agent({initialState:{tools:[create('read',(id,args,signal,update)=>{seen.push({id,args,signal,update});return {content:[]};})]},streamFn:()=>{throw Error('Must not call a model');}});
+  agent.beforeToolCall=event=>{seen.push(event.args);};
   installToolIntent({agent});installToolIntent({agent});
-  const message={name:'read',arguments:{path:'a',_displayName:'查看这个文件的内容'}};
+  const message={name:'read',arguments:{path:'a',_phase:'查看目前的设置'}};
   const args=validateToolArguments(agent.state.tools[0],message);
   await agent.beforeToolCall({args,toolCall:message});
-  const signal=new AbortController().signal, update=()=>{};
+  const signal=new AbortController().signal,update=()=>{};
   await agent.state.tools[0].execute('call-1',args,signal,update);
   assert.deepEqual(seen[0],{path:'a'});assert.deepEqual(seen[1].args,{path:'a'});
   assert.equal(seen[1].signal,signal);assert.equal(seen[1].update,update);
-  assert.equal(message.arguments._displayName,'查看这个文件的内容');
-  agent.state.tools = [create('late-tool')];
-  assert.ok(agent.state.tools[0].parameters.required.includes('_displayName'));
-  assert.equal(agent.state.tools[0].parameters.properties._intent,undefined);
+  assert.equal(message.arguments._phase,'查看目前的设置');
+  agent.state.tools=[create('late-tool')];
+  assert.deepEqual(agent.state.tools[0].parameters.required,['path']);
+  assert.ok(agent.state.tools[0].parameters.properties._phase);
 });
 
-test('native Agent loop uses one label with no extra model round or execution changes', async () => {
-  let requests = 0; const received = [];
-  const tool = { name:'inspect', label:'Inspect', description:'Inspect fixture', parameters:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}, async execute(id,args){received.push(args);return {content:[{type:'text',text:'ok'}],details:{}};} };
-  const agent = new Agent({initialState:{tools:[tool]},streamFn:(_model,context)=>{
-    const advertised = context.tools?.[0] ?? context.messages.flatMap(message=>message.toolsAdded ?? []).filter(tool=>tool.name==='inspect').at(-1);
-    assert.ok(advertised?.parameters.required.includes('_displayName'));
-    assert.equal(advertised?.parameters.properties._intent,undefined);
-    const first = requests++ === 0;
-    const message = {role:'assistant',content:first?[{type:'toolCall',id:'native-call',name:'inspect',arguments:{path:'fixture',_displayName:'看测试文件能不能读取'}}]:[{type:'text',text:'完成'}],stopReason:first?'toolUse':'stop',api:'fixture',provider:'fixture',model:'fixture',timestamp:Date.now(),usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+test('native Agent needs no phase-only model turn; subsequent calls omit all metadata', async () => {
+  let requests=0;const received=[];
+  const tool=create('inspect',async(id,args)=>{received.push(args);return {content:[{type:'text',text:'ok'}],details:{}};});
+  const agent=new Agent({initialState:{tools:[tool]},streamFn:(_model,context)=>{
+    const advertised=context.tools?.[0]??context.messages.flatMap(m=>m.toolsAdded??[]).filter(t=>t.name==='inspect').at(-1);
+    assert.deepEqual(advertised.parameters.required,['path']);
+    const step=requests++;
+    const args=[{path:'first',_phase:'查看目前的设置'},{path:'second'},{path:'third',_phase:'核对修改后的效果'}][step];
+    const message={role:'assistant',content:args?[{type:'toolCall',id:'native-'+step,name:'inspect',arguments:args}]:[{type:'text',text:'完成'}],stopReason:args?'toolUse':'stop',api:'fixture',provider:'fixture',model:'fixture',timestamp:Date.now(),usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
     const stream=new AssistantMessageEventStream();stream.push({type:'start',partial:message});stream.push({type:'done',reason:message.stopReason,message});return stream;
   }});
-  installToolIntent({agent});
-  await agent.prompt('【测试任务】检查文件');
-  assert.equal(requests,2,JSON.stringify(agent.state.messages));
-  assert.deepEqual(received,[{path:'fixture'}]);
-  const saved=agent.state.messages.find(m=>m.role==='assistant').content[0].arguments;
-  assert.equal(saved._displayName,'看测试文件能不能读取');
-  assert.equal(saved._intent,undefined);
-  assert.equal(agent.state.messages.find(m=>m.role==='toolResult').isError,false);
+  installToolIntent({agent});await agent.prompt('【测试任务】查看设置并核对结果');
+  assert.equal(requests,4);
+  assert.deepEqual(received,[{path:'first'},{path:'second'},{path:'third'}]);
+  const calls=agent.state.messages.filter(m=>m.role==='assistant'&&m.stopReason==='toolUse').map(m=>m.content[0]);
+  assert.equal(calls[0].arguments._phase,'查看目前的设置');assert.deepEqual(calls[1].arguments,{path:'second'});
+  assert.equal(agent.state.messages.filter(m=>m.role==='toolResult'&&m.isError).length,0);
 });

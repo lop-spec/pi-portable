@@ -34,8 +34,8 @@ test('merge step wires every view into the integrated sources', { skip: !availab
   const markdown = files.get('lib/markdown.ts');
   assert.equal(count(markdown, 'portableCjkEmphasis]'), 2, 'both remark plugin lists carry the CJK-friendly bold fix');
   assert.match(files.get('app/layout.tsx'), /import "\.\/craft-transcript\.css";\nimport "\.\/merge\.css";/);
-  assert.match(files.get('components/PortableProcessTimeline.tsx'), /timelineBreakdown\(activities,props\.startedAt,end\?\.at\)/);
-  assert.match(files.get('components/PortableProcessTimeline.tsx'), /summary\|\|breakdown\?'':'已完成'/);
+  assert.match(files.get('components/PortableProcessTimeline.tsx'), /timelineBreakdown\(\[\],props\.startedAt,end\?\.at\)/);
+  assert.match(files.get('components/PortableProcessTimeline.tsx'), /phases.length\} 个阶段/);
   const craft = files.get('components/CraftSessions.tsx');
   assert.match(craft, /pw-craft-runtime/);
   assert.match(craft, /pw-craft-preview-line/);

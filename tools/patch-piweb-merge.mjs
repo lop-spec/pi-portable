@@ -35,12 +35,12 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   // 顶部主标题显示用户最初的原始问题，而非自动生成或手动设置的会话名。
   change(shell, 'selectedSession.name?.trim() || selectedSession.firstMessage.split(/\\r?\\n/).find((line) => line.trim())?.trim()', 'selectedSession.firstMessage.replace(/\\s+/gu, " ").trim() || selectedSession.name?.trim()');
 
-  // 5. 过程折叠行：不展开就能看出这一轮读了/改了/跑了什么，以及用时（取自 cc-haha）。
+  // 5. 阶段行只显示关键进度；工具分类计数不再挤进标题，仅保留耗时。
   set('lib/portable-timeline-summary.mjs', template('merge/lib/portable-timeline-summary.mjs'));
   const timeline = 'components/PortableProcessTimeline.tsx';
   prepend(timeline, 'import { timelineBreakdown } from "@/lib/portable-timeline-summary.mjs";\n');
-  change(timeline, "  const active=activities.find(a=>a.id===selected);", "  const breakdown=summary?'':timelineBreakdown(activities,props.startedAt,end?.at);\n  const active=activities.find(a=>a.id===selected);");
-  change(timeline, "<strong>{activities.length} 个步骤{summary?'':'已完成'}</strong>{summary&&<><span> · </span>{summary}</>}", "<strong>{activities.length} 个步骤{summary||breakdown?'':'已完成'}</strong>{summary?<><span> · </span>{summary}</>:breakdown?<><span> · </span>{breakdown}</>:null}");
+  change(timeline, "  const active=activities.find(a=>a.id===selected);", "  const breakdown=timelineBreakdown([],props.startedAt,end?.at);\n  const active=activities.find(a=>a.id===selected);");
+  change(timeline, "<strong>{phases.length} 个阶段</strong>{summary&&<><span> · </span>{summary}</>}", "<strong>{phases.length} 个阶段</strong>{summary&&<><span> · </span>{summary}</>}{breakdown&&<><span> · </span>{breakdown}</>}");
 
   // 6. 主题「纸白」（取自 cc-haha 的奶油暖色）：加进主题列表、图标、三种语言词条，设置页每个主题带色块预览。
   change('lib/theme.ts', '  { id: "dark", label: "settings.themeDark" },', '  { id: "dark", label: "settings.themeDark" },\n  { id: "paper", label: "settings.themePaper" },');

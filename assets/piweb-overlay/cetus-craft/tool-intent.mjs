@@ -1,19 +1,19 @@
 // Craft Agents metadata contract, adapted to Pi's native tool registry.
 // Metadata stays in assistant history; only the execution copy is stripped.
-export const displayNameSchema = { type: 'string', description: '用8～16字中文说这步做什么，小学生也能懂；如“查画面在哪里被放大”。不另写重复旁白。' };
+export const phaseSchema = { type: 'string', description: '仅开始新阶段时填一句中文人话，如“核对修改后的效果”；同阶段后续调用省略，不另写重复旁白。' };
 const installed = Symbol.for('pi-web.craft-tool-intent');
 export function withoutMetadata(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
-  const { _intent, _displayName, ...input } = args;
+  const { _intent, _displayName, _phase, ...input } = args;
   return input;
 }
 export function withMetadata(tool) {
   if (tool[installed]) return tool;
   const schema = tool.parameters;
   if (!schema || schema.type !== 'object') return tool;
-  const { _displayName, _intent, ...properties } = schema.properties ?? {};
+  const { _displayName, _intent, _phase, ...properties } = schema.properties ?? {};
   return { ...tool, [installed]: true,
-    parameters: { ...schema, properties: { _displayName: displayNameSchema, ...properties }, required: [...new Set(['_displayName', ...(schema.required || []).filter(key => key !== '_intent')])] },
+    parameters: { ...schema, properties: { _phase: phaseSchema, ...properties }, required: (schema.required || []).filter(key => !['_displayName', '_intent', '_phase'].includes(key)) },
     execute(id, args, ...rest) { return tool.execute.call(tool, id, withoutMetadata(args), ...rest); },
   };
 }
@@ -42,6 +42,7 @@ export function installToolIntent(session) {
     if (event.args && typeof event.args === 'object') {
       delete event.args._intent;
       delete event.args._displayName;
+      delete event.args._phase;
     }
     return before?.call(this, event);
   };
