@@ -60,6 +60,7 @@ try {
     if (ev.tool_input.command === "fixture-deny") return [{ id: "fixture", reason: "deny", fixup() { throw new Error("MUST NOT RUN"); } }];
     if (ev.tool_input.command === "fixture-mutate") ev.tool_input.command = "wrong-command";
     if (ev.tool_input.command === "fixture-throw") throw new Error("fixture-failure");
+    if ((ev.tool_name === "write" || ev.tool_name === "edit") && ev.tool_input.content === "fixture-deny") return [{ id: "fixture-" + ev.tool_name, reason: "deny-" + ev.tool_name }];
     return null;
   }\n`);
   if (process.env.PI_PRETOOL_RULES && !fs.existsSync(privateRules)) throw new Error("Explicit private rules file is missing");
@@ -152,6 +153,15 @@ try {
     check(command === "fixture-deny" ? result?.block === true : result === undefined, "allow-or-block only");
   }
   check(fs.readFileSync(process.env.PI_PRETOOL_LOG, "utf8").includes("fixture-failure"), "fail-open reason logged");
+  // Cline's command and edit tools (pi-web's Cline agent) are judged as Pi's bash, write and edit.
+  const cline = (toolName, input) => fake.emitToolCall({ type: "tool_call", toolName, toolCallId: "cline", input });
+  const commands = { commands: ["printf ok", "fixture-deny"] };
+  check((await cline("run_commands", commands))?.block === true, "one denied command blocks Cline's whole run_commands call");
+  assert.deepEqual(commands, { commands: ["printf ok", "fixture-deny"] });
+  check(await cline("run_commands", { commands: ["printf ok"] }) === undefined, "allowed Cline commands pass");
+  check(/deny-write/.test((await cline("editor", { path: "a.txt", new_text: "fixture-deny" }))?.reason ?? ""), "Cline editor creating a file is a write");
+  check(/deny-edit/.test((await cline("editor", { path: "a.txt", old_text: "x", new_text: "fixture-deny" }))?.reason ?? ""), "Cline editor replacing text is an edit");
+  check(await cline("editor", { path: "a.txt", new_text: "fine" }) === undefined, "allowed Cline edits pass");
   fs.writeFileSync(fixture, 'export function checkPreTool() { return [{ id: "new-snapshot", reason: "new snapshot" }]; }\n');
   const reloaded = await runner(fixture, a);
   const probe = { type: "tool_call", toolName: "bash", toolCallId: "reload", input: { command: "printf ok" } };
@@ -163,6 +173,8 @@ try {
     for (const command of ["ssh root@8.137.150.130 id", "powershell -Command 'Start-Process node'", 'mysql -h prod.example -e "DROP TABLE accounts"']) {
       const result = await ra.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "deny", input: { command } });
       check(result?.block, "existing safety restriction retained: " + command);
+      const viaCline = await ra.emitToolCall({ type: "tool_call", toolName: "run_commands", toolCallId: "deny-cline", input: { commands: ["echo ok", command] } });
+      check(viaCline?.block, "same restriction through Cline's run_commands: " + command);
     }
     check(await ra.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "readonly", input: { command: 'mysql -h prod.example -e "SELECT 1"' } }) === undefined, "read-only SQL remains allowed (not executed)");
     const cfg = path.join(a, ".pi/agent/settings.json"); fs.mkdirSync(path.dirname(cfg), { recursive: true }); fs.writeFileSync(cfg, "{}");

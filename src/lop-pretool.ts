@@ -32,6 +32,21 @@ function log(line: string) {
   }
 }
 
+// pi-web's Cline agent runs commands and edits files through Cline's own tools. They do
+// what Pi's bash, edit and write do, so the rules judge them under those names, one
+// command at a time; every other tool is checked as it is.
+function ruleCalls(toolName: string, input: any): Array<{ tool_name: string; tool_input: any }> {
+  if (toolName === "run_commands" && Array.isArray(input.commands)) {
+    return input.commands.map((command: unknown) => ({ tool_name: "bash", tool_input: { command: String(command) } }));
+  }
+  if (toolName === "editor" && typeof input.path === "string") {
+    const text = String(input.new_text ?? "");
+    const replaces = typeof input.old_text === "string";
+    return [{ tool_name: replaces ? "edit" : "write", tool_input: { path: input.path, old_string: input.old_text, new_string: text, content: text } }];
+  }
+  return [{ tool_name: toolName, tool_input: input }];
+}
+
 export default async function (pi: ExtensionAPI) {
   let pre: any;
   let rulesSha256 = "unavailable";
@@ -67,15 +82,19 @@ export default async function (pi: ExtensionAPI) {
     const call = `session=${oneLine(ctx.sessionManager.getSessionId() || "ephemeral")} call=${oneLine(event.toolCallId || "unknown")} tool=${oneLine(event.toolName)}`;
     if (unavailable) { log(`S7 FAIL_OPEN ${call} reason=${unavailable}`); return; }
     try {
-      const hits = pre.checkPreTool({
-        session_id: ctx.sessionManager.getSessionId() || "",
-        transcript_path: ctx.sessionManager.getSessionFile() || "",
-        tool_name: event.toolName,
-        // Rule predicates must not be able to mutate the real execution arguments.
-        tool_input: structuredClone(event.input ?? {}),
-      });
-      if (hits === null || (Array.isArray(hits) && hits.length === 0)) return;
-      if (!Array.isArray(hits)) throw new Error("invalid-rule-result");
+      const hits: any[] = [];
+      // Rule predicates must not be able to mutate the real execution arguments.
+      for (const ruleCall of ruleCalls(event.toolName, structuredClone(event.input ?? {}))) {
+        const found = pre.checkPreTool({
+          session_id: ctx.sessionManager.getSessionId() || "",
+          transcript_path: ctx.sessionManager.getSessionFile() || "",
+          ...ruleCall,
+        });
+        if (found === null) continue;
+        if (!Array.isArray(found)) throw new Error("invalid-rule-result");
+        hits.push(...found);
+      }
+      if (hits.length === 0) return;
       log(`S7 BLOCK ${call} hits=${hits.map((h: any) => oneLine(h.id)).join(",")}`);
       return {
         block: true,
