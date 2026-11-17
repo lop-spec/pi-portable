@@ -26,7 +26,7 @@ const CSS = `/* 回合下方操作：复制 · 分叉 · 固定为章节，放�
 
 const MESSAGES = {
   'zh-CN': {
-    'chat.commandFork': '从当前位置分叉出新会话；带提示词则在新会话里运行，这里保持不动',
+    'chat.commandFork': '从当前位置分叉出新会话；带提示词则在新会话里运行，这里保持不动（输入框里 Ctrl+Alt+Enter 等同于 /fork 加输入内容）',
     'chat.forkFromHere': '从此处分叉',
     'chat.forkFromHereHint': '开一个新会话，当前会话保持不变',
     'chat.forkFromMessageHint': '开一个新会话，这条消息的原文放进它的输入框，当前会话保持不变',
@@ -41,7 +41,7 @@ const MESSAGES = {
     'chat.forksHere': '此处已分叉 {count} 次',
   },
   en: {
-    'chat.commandFork': 'Fork the session from here; with a prompt it runs in the fork and this session stays put',
+    'chat.commandFork': 'Fork the session from here; with a prompt it runs in the fork and this session stays put (Ctrl+Alt+Enter in the composer sends its text this way)',
     'chat.forkFromHere': 'Fork from here',
     'chat.forkFromHereHint': 'Starts a new session from this point. This one stays as it is.',
     'chat.forkFromMessageHint': 'Starts a new session with this message in its composer. This one stays as it is.',
@@ -56,7 +56,7 @@ const MESSAGES = {
     'chat.forksHere': '{count} forks from here',
   },
   'zh-TW': {
-    'chat.commandFork': '從目前位置分叉出新工作階段；帶提示詞則在新工作階段執行，這裡保持不動',
+    'chat.commandFork': '從目前位置分叉出新工作階段；帶提示詞則在新工作階段執行，這裡保持不動（輸入框裡 Ctrl+Alt+Enter 等同於 /fork 加輸入內容）',
     'chat.forkFromHere': '從此處分叉',
     'chat.forkFromHereHint': '開一個新工作階段，目前工作階段保持不變',
     'chat.forkFromMessageHint': '開一個新工作階段，這則訊息的原文放進它的輸入框，目前工作階段保持不變',
@@ -219,8 +219,47 @@ export function integrateForkActions({ set, change, template }) {
           if (!sid) return complete({ handled: true, error: "No active session to clone" });`);
   change(hook, 'loadTools, promoteNewSession, onSessionForked, onSessionStatsPanelOpen]);', 'loadTools, promoteNewSession, onSessionForked, onSessionStatsPanelOpen, forkSourceTitle, isNew]);');
 
-  // Composer: /fork.
-  change('components/ChatInput.tsx', '  { name: "clone", description: "chat.commandClone", source: "builtin" },', '  { name: "clone", description: "chat.commandClone", source: "builtin" },\n  { name: "fork", description: "chat.commandFork", source: "builtin", availableWhileStreaming: true },');
+  // Composer: /fork, and Ctrl+Alt+Enter ("send in a forked session") which is /fork with what is typed.
+  const input = 'components/ChatInput.tsx';
+  change(input, '  { name: "clone", description: "chat.commandClone", source: "builtin" },', '  { name: "clone", description: "chat.commandClone", source: "builtin" },\n  { name: "fork", description: "chat.commandFork", source: "builtin", availableWhileStreaming: true },');
+  change(input, `  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const nativeEvent = e.nativeEvent;`, `  // Ctrl+Alt+Enter: the typed prompt runs in a fork of this session; the text stays here when the fork fails.
+  const sendInFork = useCallback(async (text: string) => {
+    if (!onBuiltinCommand || builtinCommandPendingRef.current) return;
+    builtinCommandPendingRef.current = true;
+    setBuiltinCommandPending(true);
+    try {
+      const result = await onBuiltinCommand(\`/fork \${text}\`);
+      if (result.handled && !result.error && valueRef.current.trim() === text) clearInput();
+    } finally {
+      builtinCommandPendingRef.current = false;
+      setBuiltinCommandPending(false);
+    }
+  }, [onBuiltinCommand, clearInput]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const nativeEvent = e.nativeEvent;`);
+  change(input, `      if (sendShortcut && (isComposing || recentlyComposed)) {
+        if (recentlyComposed) e.preventDefault();
+        return;
+      }
+`, `      if (sendShortcut && (isComposing || recentlyComposed)) {
+        if (recentlyComposed) e.preventDefault();
+        return;
+      }
+
+      if (sendShortcut && e.ctrlKey && e.altKey && !isComposing && !imageMode && !attachedImages.length && onBuiltinCommand) {
+        const text = value.trim();
+        if (text && !text.startsWith("/")) {
+          e.preventDefault();
+          void sendInFork(text);
+          return;
+        }
+      }
+`);
+  change(input, 'applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]', 'applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, attachedImages, onBuiltinCommand, sendInFork]');
 
   // Transcript: fork from a user message works while the session runs; the answer footer carries the actions.
   const chat = 'components/ChatWindow.tsx';
