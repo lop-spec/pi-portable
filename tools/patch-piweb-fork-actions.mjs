@@ -250,7 +250,7 @@ export function integrateForkActions({ set, change, template }) {
         return;
       }
 
-      if (sendShortcut && e.ctrlKey && e.altKey && !isComposing && !imageMode && !attachedImages.length && onBuiltinCommand) {
+      if (sendShortcut && e.ctrlKey && e.altKey && !isMobile && !isComposing && !imageMode && onBuiltinCommand && !attachedImages.length) {
         const text = value.trim();
         if (text && !text.startsWith("/")) {
           e.preventDefault();

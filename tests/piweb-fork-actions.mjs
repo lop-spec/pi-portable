@@ -91,7 +91,7 @@ test('integration puts copy, fork and pin under the answer and wires fork like t
   const input = files.get('components/ChatInput.tsx');
   assert.match(input, /\{ name: "fork", description: "chat\.commandFork", source: "builtin", availableWhileStreaming: true \}/);
   assert.match(input, /await onBuiltinCommand\(`\/fork \$\{text\}`\)/, 'Ctrl+Alt+Enter is /fork with what is typed');
-  assert.match(input, /if \(sendShortcut && e\.ctrlKey && e\.altKey && !isComposing && !imageMode && !attachedImages\.length && onBuiltinCommand\)/);
+  assert.match(input, /if \(sendShortcut && e\.ctrlKey && e\.altKey && !isMobile && !isComposing && !imageMode && onBuiltinCommand && !attachedImages\.length\)/, 'on a phone Ctrl+Alt+Enter keeps following up');
   assert.match(input, /applyHistoryInput, value, attachedImages, onBuiltinCommand, sendInFork\]/, 'the key handler sees the current text and the fork sender');
 
   const rpc = files.get('lib/rpc-manager.ts');
