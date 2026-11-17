@@ -229,6 +229,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "image output contracts failed" }
           node --test tests/piweb-turn-model.mjs tests/piweb-runtime-model.mjs
           if ($LASTEXITCODE -ne 0) { throw "turn model label regression" }
+          node --test tests/piweb-fork-actions.mjs
+          if ($LASTEXITCODE -ne 0) { throw "fork actions regression" }
           node --experimental-strip-types --test tests/piweb-feishu-copy.mjs
           if ($LASTEXITCODE -ne 0) { throw "Feishu clipboard regression" }
           Push-Location upstream

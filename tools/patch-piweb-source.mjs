@@ -33,6 +33,7 @@ import { integrateMerge } from './patch-piweb-merge.mjs';
 import { integrateFeishuCopy } from './patch-piweb-feishu-copy.mjs';
 import { integrateImmediateSteer } from './patch-piweb-immediate-steer.mjs';
 import { integrateClineAgent } from './patch-piweb-cline-agent.mjs';
+import { integrateForkActions } from './patch-piweb-fork-actions.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const templates = path.join(repo, 'assets/piweb-overlay');
@@ -430,6 +431,7 @@ export function integrate(getFile, { onBeforeRemoveSound, withoutMerge = false }
   }
   integrateImmediateSteer({ change });
   integrateClineAgent({ set, change, prepend, template });
+  integrateForkActions({ set, change, template });
   return files;
 }
 
