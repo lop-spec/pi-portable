@@ -10,6 +10,7 @@ const CSS = `.pw-agent-switch { display: inline-flex; flex: none; align-items: c
 
 export function integrateClineAgent({ set, change, prepend, template }) {
   set('lib/cline-bridge.ts', template('cline-agent/cline-bridge.ts'));
+  set('lib/cline-prompt-cache.ts', template('cline-agent/cline-prompt-cache.ts'));
   set('lib/cline-agent.ts', template('cline-agent/cline-agent.ts'));
   set('lib/portable-agent-choice.ts', template('cline-agent/agent-choice.ts'));
   set('components/PortableAgentSwitch.tsx', template('cline-agent/PortableAgentSwitch.tsx'));

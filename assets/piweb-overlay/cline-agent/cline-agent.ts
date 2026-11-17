@@ -5,9 +5,10 @@
 // (followed by Pi's project context, skills and extension sections), and Pi's file and
 // shell tools give way to Cline's, each one a proxy that the Cline process executes.
 // Because nothing else changes, the agent can be chosen again for every run.
-import { getAgentDir, type InlineExtension } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionContext, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { ClineTurn, resolveClineBinary, type ClineToolSpec } from "./cline-bridge";
+import { CLINE_STOPPED, ClineTurn, resolveClineBinary, type ClineToolSpec } from "./cline-bridge";
+import { promptCacheKey, readPrompt, writePrompt, type ClinePrompt } from "./cline-prompt-cache";
 
 export const CLINE_AGENT_EXTENSION_NAME = "pi-web-cline-agent";
 
@@ -18,6 +19,7 @@ export type ClineAgent = {
 };
 
 const LOADOUT_ENTRY = "pi-web-cline-agent";
+const START_TIMEOUT_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 // Cline's prompt is written for its own file and shell tools, so Pi's stand down.
 const PI_CODING_TOOLS = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
@@ -41,12 +43,52 @@ export function createClineAgent(cwd: string): ClineAgent {
   let savedLoadout = "";
   const proxies = new Map<string, string>();
 
-  const startTurn = async (): Promise<ClineTurn> => {
+  const binary = (): string => {
     const bin = resolveClineBinary(clineDir());
     if (!bin) throw new Error("未安装 Cline CLI");
+    return bin;
+  };
+  // Returns at once; the process comes up while the model is already working.
+  const launch = (): ClineTurn => {
     turn?.dispose();
-    turn = await ClineTurn.start({ bin, cwd, homeDir: join(clineDir(), "home"), requestTimeoutMs: REQUEST_TIMEOUT_MS });
-    return turn;
+    return (turn = ClineTurn.create({ bin: binary(), cwd, homeDir: join(clineDir(), "home"), startTimeoutMs: START_TIMEOUT_MS, requestTimeoutMs: REQUEST_TIMEOUT_MS }));
+  };
+  const ensureTurn = (): ClineTurn => (turn?.alive ? turn : launch());
+
+  // Cline's prompt and tools for this run, starting its process on the way. A saved copy
+  // lets the model call begin at once; without one (first use in this directory, or a new
+  // Cline build) the run waits for the process to say what they are.
+  const promptForRun = async (ctx: ExtensionContext): Promise<ClinePrompt | undefined> => {
+    const dir = join(clineDir(), "prompt-cache");
+    try {
+      const key = promptCacheKey(binary(), cwd);
+      const started = launch();
+      const saved = readPrompt(dir, key);
+      if (saved) {
+        // What the process reports replaces the saved copy for the next run.
+        void started.whenOpen(START_TIMEOUT_MS).then(
+          () => writePrompt(dir, key, { system: started.system, tools: started.tools }),
+          (error: Error) => {
+            // A process we stopped ourselves (the run needed no tool, or was stopped) is not a failure.
+            if (error.message === CLINE_STOPPED || !running || turn !== started) return;
+            try {
+              ctx.ui.notify(`Cline 启动失败：${error.message}`, "error");
+            } catch (cause) {
+              console.error("[pi-web] Cline start failure not reported:", cause);
+            }
+          },
+        );
+        return saved;
+      }
+      await started.whenOpen(START_TIMEOUT_MS);
+      const fresh = { system: started.system, tools: started.tools };
+      writePrompt(dir, key, fresh);
+      return fresh;
+    } catch (error) {
+      turn?.dispose();
+      ctx.ui.notify(`Cline 启动失败，本轮改用 Pi：${error instanceof Error ? error.message : String(error)}`, "error");
+      return undefined;
+    }
   };
 
   return {
@@ -70,8 +112,8 @@ export function createClineAgent(cwd: string): ClineAgent {
               description: spec.description,
               parameters: spec.parameters as never,
               async execute(toolCallId, params, signal) {
-                if (!turn) throw new Error("Cline 未在运行");
-                const text = await turn.callTool(toolCallId, spec.name, params, signal);
+                // Waits for the process if it is still loading.
+                const text = await ensureTurn().callTool(toolCallId, spec.name, params, signal);
                 return { content: [{ type: "text", text }], details: undefined };
               },
             });
@@ -96,14 +138,9 @@ export function createClineAgent(cwd: string): ClineAgent {
             if (own.length !== active.length) pi.setActiveTools(own);
             return undefined;
           }
-          let started: ClineTurn;
-          try {
-            started = await startTurn();
-          } catch (error) {
-            ctx.ui.notify(`Cline 启动失败，本轮改用 Pi：${error instanceof Error ? error.message : String(error)}`, "error");
-            return undefined;
-          }
-          registerProxies(started.tools);
+          const prompt = await promptForRun(ctx);
+          if (!prompt) return undefined;
+          registerProxies(prompt.tools);
           piLoadout = pi.getActiveTools().filter((name) => !proxies.has(name));
           const loadout = JSON.stringify(piLoadout);
           if (loadout !== savedLoadout) {
@@ -118,7 +155,7 @@ export function createClineAgent(cwd: string): ClineAgent {
           // The options are put back so the transcript keeps recording Pi's prompt.
           const options = event.systemPromptOptions;
           const { customPrompt, selectedTools, forceSystemPrompt } = options;
-          options.customPrompt = started.system;
+          options.customPrompt = prompt.system;
           options.selectedTools = ["read"];
           options.forceSystemPrompt = undefined;
           const systemPrompt = event.systemPrompt;
@@ -126,23 +163,13 @@ export function createClineAgent(cwd: string): ClineAgent {
           return { systemPrompt };
         });
 
-        // Before every model call Cline must have a request waiting for the answer. It
-        // already has one except after a retry or a follow-up, when the previous process
-        // has its final answer; the transcript holds all state, so a new process carries on.
-        pi.on("context", async (_event, ctx) => {
-          const signal = ctx.signal;
-          if (!running || signal?.aborted) return undefined;
+        // A retry or a follow-up arrives after the previous process was given its final
+        // answer. The transcript holds all state, so a new process carries on; it starts
+        // here, behind the model call that is about to be made.
+        pi.on("context", (_event, ctx) => {
+          if (!running || ctx.signal?.aborted) return undefined;
           try {
-            if (turn?.alive) {
-              try {
-                await turn.whenOpen(REQUEST_TIMEOUT_MS, signal);
-                return undefined;
-              } catch {
-                // Fall through to a fresh process.
-              }
-            }
-            if (signal?.aborted) return undefined;
-            await startTurn();
+            ensureTurn();
           } catch (error) {
             ctx.ui.notify(`Cline 无法继续：${error instanceof Error ? error.message : String(error)}`, "error");
             ctx.abort();

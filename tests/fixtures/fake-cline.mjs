@@ -5,6 +5,9 @@ import path from 'node:path';
 
 const args = process.argv.slice(2);
 const flag = name => args[args.indexOf(name) + 1];
+// The real program needs about a second to load before it asks anything; tests set a delay to model that.
+if (process.env.FAKE_CLINE_PIDFILE) fs.writeFileSync(process.env.FAKE_CLINE_PIDFILE, String(process.pid));
+if (process.env.FAKE_CLINE_DELAY_MS) await new Promise(resolve => setTimeout(resolve, Number(process.env.FAKE_CLINE_DELAY_MS)));
 const settings = JSON.parse(fs.readFileSync(path.join(flag('--data-dir'), 'settings', 'providers.json'), 'utf8'));
 const { baseUrl, apiKey } = settings.providers['openai-compatible'].settings;
 const messages = [{ role: 'system', content: 'You are Cline (fake).' }, { role: 'user', content: args.at(-1) }];
