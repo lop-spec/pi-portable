@@ -7,7 +7,16 @@ const entries=[{kind:'assistant',key:'a',entryId:'a',message:{timestamp:1,conten
 test('Craft model hides reasoning without modifying stored messages',()=>{const before=JSON.stringify(entries);const model=projectCraftTurn(entries,new Map(),true);assert.equal(model.activities.length,2);assert.equal(model.responses[0].name,'完成回复');assert.ok(!JSON.stringify(model).includes('private reasoning'));assert.equal(JSON.stringify(entries),before);});
 test('tool outcomes preserve failed, missing and stopped distinctions',()=>{assert.equal(toolState({isError:true},false),'error');assert.equal(toolState({details:{exitCode:2}},false),'error');assert.equal(toolState({details:{exitCode:0}},false),'completed');assert.equal(toolState(undefined,true),'running');assert.equal(toolState(undefined,false),'unknown');assert.equal(toolState(undefined,false,{status:'stopped'}),'stopped');});
 test('one list keeps all tools in order; failed count matches real outcomes',()=>{const input=[{kind:'assistant',key:'b',message:{content:[call,{...call,toolCallId:'t2'},{...call,toolCallId:'t3'}]}}];const model=projectCraftTurn(input,new Map([['t1',{content:[],details:{exitCode:1}}],['t2',{content:[]}]]),true);assert.deepEqual(model.activities.map(a=>a.status),['error','completed','running']);assert.equal(model.failedCount,1);assert.equal(model.activities.length,3);});
-test('rows use metadata without exposing raw metadata JSON in summaries',()=>{assert.deepEqual(toolSummary(call),{name:'检查工具',intent:'验证结果',input:'echo ok'});assert.equal(toolSummary({...call,input:{path:'x'}}).name,'执行命令');});
+test('rows excerpt public Chinese call text without generating a fallback label',()=>{
+  const summarize=input=>toolSummary({...call,toolName:'run_commands',input}).name;
+  const commands=['echo "核对 API 返回结果"', 'git status # 查看工作区改动', 'echo "核对 API 返回结果"'];
+  assert.equal(summarize({commands}), '核对 API 返回结果 · 查看工作区改动');
+  assert.equal(summarize({command:'git status', description:'正在核对修改后的效果'}), '正在核对修改后的效果');
+  assert.equal(summarize({commands:['git status','echo "检查这个密码字段"'],thinking:'不该显示的私有内容',path:'C:/工作区下面的目录'}),'');
+  assert.equal(toolSummary({...call,input:{},chatView:{callExcerpt:summarize({commands})}}).name,summarize({commands}));
+  const view=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');
+  assert.match(view,/phase\.items\.filter\(activity=>activity\.name\)/);
+});
 test('only phase lines are visible until expanded; search and original details remain accessible',()=>{const source=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');assert.match(source,/phases.map\(phase=>/);assert.match(source,/openPhases.has\(phase.id\)&&/);assert.match(source,/setOpenPhases/);assert.match(source,/const expanded=choice\?\?true/);assert.match(source,/JSON.stringify\(input,null,2\)/);assert.match(source,/activity.intent&&<p>/);assert.doesNotMatch(source,/projection.failedCount|current\?\.intent|craft-object|<code/);});
 const phaseInput=(markers,names=[])=>[{kind:'assistant',key:'phase-fixture',message:{content:markers.map((marker,i)=>({type:'toolCall',toolCallId:'p'+i,toolName:names[i]??'read',input:marker?{_phase:marker}:{path:'file-'+i}}))}}];
 const results=(...states)=>new Map(states.flatMap((state,i)=>state===null?[]:[['p'+i,{content:[],isError:state==='error'}]]));

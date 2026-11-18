@@ -2,7 +2,9 @@
 import crypto from 'node:crypto';
 export function integrateCraftTranscript({get,set,change,template}) {
   set('components/PortableProcessTimeline.tsx',template('craft-transcript/PortableProcessTimeline.tsx'));
-  set('lib/craft-transcript-model.mjs',template('craft-transcript/model.mjs'));
+  set('lib/craft-transcript-model.mjs',template('craft-transcript/model.mjs').replace('../tool-excerpts/tool-chinese-excerpts.mjs','./tool-chinese-excerpts.mjs'));
+  set('lib/session-reader.ts', 'import { callExcerpt } from "./craft-transcript-model.mjs";\n' + get('lib/session-reader.ts'));
+  change('lib/session-reader.ts','inputBytes: Buffer.byteLength(JSON.stringify(call.input ?? {})),','callExcerpt: callExcerpt(call.input),\n          inputBytes: Buffer.byteLength(JSON.stringify(call.input ?? {})),');
   set('app/craft-transcript.css',template('craft-transcript/craft-transcript.css'));
   change('app/layout.tsx','import "./desktop-transcript.css";','import "./craft-transcript.css";');
   change('lib/message-display.ts','return block.type === "thinking" && !block.thinking.trim() && !_options.isStreaming;','return block.type === "thinking";');
@@ -15,5 +17,6 @@ export function integrateCraftTranscript({get,set,change,template}) {
   set('public/licenses/craft-transcript/LICENSE',template('craft-transcript/LICENSE'));
   set('public/licenses/craft-transcript/NOTICE',template('craft-transcript/NOTICE'));
   const manifest=JSON.parse(template('craft-transcript/manifest.json'));
-  for(const [name,sha] of Object.entries(manifest.files))if(crypto.createHash('sha256').update(get(name)).digest('hex')!==sha)throw new Error(name+': Craft final-stage hash mismatch; zero writes');
+  const drift = Object.entries(manifest.files).map(([name,sha])=>[name,sha,crypto.createHash('sha256').update(get(name)).digest('hex')]).filter(([,expected,actual])=>expected!==actual);
+  if(drift.length)throw new Error('Craft final-stage hash mismatch; zero writes: '+drift.map(([name,,actual])=>`${name}=${actual}`).join(', '));
 }

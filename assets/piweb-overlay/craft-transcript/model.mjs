@@ -1,4 +1,34 @@
 // Pi adapter for Craft's WorkLog/ActivityRow contract. Never mutates persisted messages.
+import { extractChineseSource } from '../tool-excerpts/tool-chinese-excerpts.mjs';
+
+// Read only public descriptions, command literals and comments. Never walk arbitrary
+// payloads (editor text, credentials, URLs or private reasoning are not summaries).
+export function callExcerpt(args = {}) {
+  const phrases = new Set();
+  const add = text => {
+    if (typeof text !== 'string') return;
+    for (const phrase of extractChineseSource(text)) {
+      if (phrases.size < 3) phrases.add(phrase.slice(0, 180));
+    }
+  };
+  for (const key of ['_intent', 'description', '_phase', 'task', 'question']) add(args?.[key]);
+  const commands = Array.isArray(args?.commands) ? args.commands : [args?.command];
+  for (const cmd of commands) {
+    if (typeof cmd !== 'string' || phrases.size >= 3) continue;
+    for (const line of cmd.split(/\r?\n/u)) {
+      if (phrases.size >= 3) break;
+      if (/password|passwd|secret|authorization|token|api[_-]?key|cookie|密码|密钥|口令|reasoning|thinking|analysis/iu.test(line)) continue;
+      // Preserve complete quoted phrases, not the surrounding shell program.
+      for (const m of line.matchAll(/"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(?:^|\s)#\s*(.*)$/gu)) {
+        const value = m[1] ?? m[2] ?? m[3];
+        if (/[\\/]/u.test(value) || /[${}]/u.test(value)) continue;
+        add(value);
+      }
+    }
+  }
+  return [...phrases].join(' · ');
+}
+
 export function toolState(result, live, end) {
   if (!result) return live ? 'running' : end?.status === 'stopped' ? 'stopped' : 'unknown';
   const d = result.details;
@@ -7,8 +37,7 @@ export function toolState(result, live, end) {
 }
 export function toolSummary(block) {
   const args = block.input ?? {};
-  const names = { bash: '执行命令', read: '读取文件', edit: '修改文件', write: '保存文件', grep: '搜索内容', find: '查找文件', ls: '查看目录', browser: '查看网页', browser_task: '查阅网页', AskUserQuestion: '询问你的选择' };
-  const name = typeof args._displayName === 'string' && args._displayName.trim() ? args._displayName : names[block.toolName] ?? '执行工具';
+  const name = block.chatView?.callExcerpt ?? callExcerpt(args);
   const intent = typeof args._intent === 'string' ? args._intent : typeof args.description === 'string' ? args.description : '';
   const input = ['command', 'path', 'file_path', 'pattern', 'url', 'query', 'action'].map(key => typeof args[key] === 'string' ? args[key] : '').filter(Boolean).join(' ');
   return { name, intent, input };
