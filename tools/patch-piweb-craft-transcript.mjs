@@ -3,7 +3,9 @@ import crypto from 'node:crypto';
 export function integrateCraftTranscript({get,set,change,template}) {
   set('components/PortableProcessTimeline.tsx',template('craft-transcript/PortableProcessTimeline.tsx'));
   set('lib/craft-transcript-model.mjs',template('craft-transcript/model.mjs').replace('../tool-excerpts/tool-chinese-excerpts.mjs','./tool-chinese-excerpts.mjs'));
-  set('lib/session-reader.ts', 'import { callExcerpt } from "./craft-transcript-model.mjs";\n' + get('lib/session-reader.ts'));
+  change('lib/session-reader.ts', 'chatView: { bytes: number; images: number; truncated: boolean }', 'chatView: { bytes: number; images: number; truncated: boolean; chineseExcerpts: string[] }');
+  change('lib/session-reader.ts', 'chatView: { bytes, images, truncated: text.length > CHAT_VIEW_PREVIEW_CHARS || images > 0 },', 'chatView: { bytes, images, truncated: text.length > CHAT_VIEW_PREVIEW_CHARS || images > 0, chineseExcerpts: toolChineseExcerpts(result) },');
+  set('lib/session-reader.ts', 'import { toolChineseExcerpts } from "./tool-chinese-excerpts.mjs";\nimport { callExcerpt } from "./craft-transcript-model.mjs";\n' + get('lib/session-reader.ts'));
   change('lib/session-reader.ts','inputBytes: Buffer.byteLength(JSON.stringify(call.input ?? {})),','callExcerpt: callExcerpt(call.input),\n          inputBytes: Buffer.byteLength(JSON.stringify(call.input ?? {})),');
   set('app/craft-transcript.css',template('craft-transcript/craft-transcript.css'));
   change('app/layout.tsx','import "./desktop-transcript.css";','import "./craft-transcript.css";');

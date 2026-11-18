@@ -1,5 +1,5 @@
 // Pi adapter for Craft's WorkLog/ActivityRow contract. Never mutates persisted messages.
-import { extractChineseSource } from '../tool-excerpts/tool-chinese-excerpts.mjs';
+import { extractChineseSource, newToolChineseExcerpts } from '../tool-excerpts/tool-chinese-excerpts.mjs';
 
 // Read only public descriptions, command literals and comments. Never walk arbitrary
 // payloads (editor text, credentials, URLs or private reasoning are not summaries).
@@ -43,7 +43,7 @@ export function toolSummary(block) {
   return { name, intent, input };
 }
 export function projectCraftTurn(entries, toolResults, live = false, end) {
-  const activities = [], responses = [], nodes = [];
+  const activities = [], responses = [], nodes = [], seenOutput = new Set();
   for (const entry of entries) {
     if (entry.kind !== 'assistant') { nodes.push(entry); continue; }
     entry.message.content.forEach((block, index) => {
@@ -51,7 +51,7 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
       const base = { id: `${entry.entryId ?? entry.key}:${index}`, entryId: entry.entryId, block, timestamp: entry.message.timestamp };
       if (block.type === 'toolCall') {
         const result = toolResults.get(block.toolCallId);
-        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, status: toolState(result, live, end), ...toolSummary(block) });
+        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, phrases: newToolChineseExcerpts(result, seenOutput), status: toolState(result, live, end), ...toolSummary(block) });
       } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' '), intent: '', input: '' });
     });
   }

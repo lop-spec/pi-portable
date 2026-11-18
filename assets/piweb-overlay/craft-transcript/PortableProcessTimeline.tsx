@@ -4,6 +4,7 @@
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, CircleX, ChevronRight, Terminal, FileText, Search, Globe, Wrench, MessageSquareText, LoaderCircle, Minus, X, Copy, MoreHorizontal } from 'lucide-react';
 import type { AssistantContentBlock, AssistantMessage, ToolResultMessage, ToolCallContent } from '@/lib/types';
+import { ToolChineseExcerpt } from './ToolChineseExcerpt';
 import { PortableTextBlock } from './MessageView';
 import { InlineFailure } from './conversation/ErrorNotice';
 import { ImagePreview } from './ImagePreview';
@@ -15,7 +16,7 @@ export type PortableTimelineEntry =
  | {kind:'failure';key:string;entryId?:string;message:AssistantMessage};
 export type TimelineEnd = {status:'done'|'error'|'stopped';at?:number};
 type Props = {entries:PortableTimelineEntry[];toolResultEntryIds?:Map<string,string>;toolResults:Map<string,ToolResultMessage>;cwd?:string;sessionId?:string;searchEntryId?:string;searchBlock?:AssistantContentBlock;live?:boolean;modelNames?:Record<string,string>;collapseKey?:string;startedAt?:number;end?:TimelineEnd|null;phase?:string|null;streamingMessage?:AssistantMessage|null;onOpenFile?:(path:string,page?:number)=>void;onOpenSession?:(session:string)=>void};
-type Activity = {id:string;entryId?:string;block:AssistantContentBlock;timestamp?:number;type:string;result?:ToolResultMessage;status:string;name:string;intent:string;input:string};
+type Activity = {phrases?:string[];id:string;entryId?:string;block:AssistantContentBlock;timestamp?:number;type:string;result?:ToolResultMessage;status:string;name:string;intent:string;input:string};
 type WorkPhase = {id:string;name:string;status:string;items:Activity[];errors:number;toolCount:number};
 const statusNames:Record<string,string> = {completed:'已完成',error:'错误',running:'进行中',stopped:'已停止',unknown:'待确认',waiting:'等你选择',blocked:'受阻',finished:'已结束'};
 function ToolIcon({activity}:{activity:Activity}) {
@@ -111,6 +112,7 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
       {expanded&&<div ref={list} className="craft-log-body" onScroll={()=>{const el=list.current;if(el)follow.current=el.scrollHeight-el.scrollTop-el.clientHeight<32;}}>
         {phases.map(phase=><div key={phase.id} className="craft-phase" data-phase-status={phase.status}>
           <button type="button" className={'craft-phase-row '+phase.status} aria-expanded={openPhases.has(phase.id)} title={`${phase.name} · ${statusNames[phase.status]} · 点击查看执行记录`} onClick={()=>setOpenPhases(previous=>{const next=new Set(previous);if(next.has(phase.id))next.delete(phase.id);else next.add(phase.id);return next;})}><ChevronRight size={14} aria-hidden="true" className={openPhases.has(phase.id)?'craft-chevron open':'craft-chevron'}/><span className="craft-tool-name">{phase.name}</span><ResultGlyph status={phase.status}/></button>
+          {phase.items.map(a=>a.block.type==='toolCall' && a.phrases?.length ? <ToolChineseExcerpt key={a.id} phrases={a.phrases} entryId={a.entryId} toolName={a.block.toolName} replyActive={live}/> : null)}
           {openPhases.has(phase.id)&&<div className="craft-phase-items">{phase.items.filter(activity=>activity.name).map(activity=><div key={activity.id} data-entry-id={activity.entryId} data-search-target={activity.id===target?.id||undefined} className="craft-row-wrap"><button type="button" className={'craft-activity-row '+activity.status} title={`${activity.name} · 点击查看详情`} aria-label={`${activity.name}：${statusNames[activity.status]}，查看详情`} onClick={()=>setSelected(activity.id)}><span className="craft-icon-slot"><ToolIcon activity={activity}/></span><span className="craft-tool-name">{activity.name}</span>{activity.type==='tool'&&<ResultGlyph status={activity.status}/>}</button></div>)}</div>}
         </div>)}
       </div>}

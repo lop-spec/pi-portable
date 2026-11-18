@@ -149,6 +149,27 @@ test('real React clamps each tool output to two visual lines, preserving all sou
   assert.match(html, /white-space:pre-wrap/);
   for (const phrase of phrases) assert.ok(html.includes(phrase));
 });
+test('shipping Craft timeline shows result excerpts before expanding the phase, live and on history reopen', { skip: !source }, async () => {
+  const require = createRequire(path.join(source, 'package.json'));
+  const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
+  const overlay = p => fs.readFileSync(path.join(root, 'assets/piweb-overlay', p), 'utf8');
+  const view = loadTs(overlay('craft-transcript/PortableProcessTimeline.tsx'), {
+    './MessageView': {}, './ImagePreview': {}, './conversation/ErrorNotice': {},
+    './ToolChineseExcerpt': loadTs(overlay('tool-excerpts/ToolChineseExcerpt.tsx'), {}, 'ToolChineseExcerpt.tsx'),
+    '@/lib/craft-transcript-model.mjs': await import('../assets/piweb-overlay/craft-transcript/model.mjs'),
+    'lucide-react': new Proxy({}, {get:()=>()=>null}),
+  }, 'PortableProcessTimeline.tsx').PortableProcessTimeline;
+  const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','empty'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status']}}))}}];
+  const a='核对工作区的修改记录。', b='构建产物已通过完整性校验。', c='第二次检查也已完成。';
+  for (const live of [true,false]) {
+    const msgs=[result(a+'\n\n'+b),result(b+'\n\n'+c),result('nothing to commit')];
+    const toolResults=new Map(['first','second','empty'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
+    const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
+    assert.equal((html.match(/data-tool-chinese-excerpt=/g)||[]).length,2);
+    for(const text of [a,b,c])assert.equal(html.split(text).length,2);
+    assert.doesNotMatch(html,/执行工具|nothing to commit|craft-phase-items/);
+  }
+});
 test('overflow reacts to long single paragraphs, streaming replacements and viewport resize', { skip: !source }, () => {
   const values = []; let cursor = 0, dirty = false, effect, resized;
   const content = { scrollHeight: 60, clientHeight: 40 };
