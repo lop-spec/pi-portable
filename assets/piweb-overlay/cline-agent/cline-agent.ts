@@ -161,7 +161,7 @@ export function createClineAgent(cwd: string): ClineAgent {
           // The options are put back so the transcript keeps recording Pi's prompt.
           const options = event.systemPromptOptions;
           const { customPrompt, selectedTools, forceSystemPrompt } = options;
-          options.customPrompt = `You are Cline. Answer directly; use tools when needed. Batch independent work and verify changes proportionately. Follow the latest user_input mode: plan is read-only; act/yolo permits implementation within the user's request. Workspace: ${cwd}`;
+          options.customPrompt = "Run independent tool calls in parallel.";
           options.selectedTools = ["read"];
           options.forceSystemPrompt = undefined;
           const systemPrompt = event.systemPrompt;
