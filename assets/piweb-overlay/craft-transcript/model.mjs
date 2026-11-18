@@ -26,8 +26,8 @@ function chineseResult(result) {
   const paragraphs = toolChineseExcerpts(result).flatMap(phrase=>phrase.split(/\r?\n/u)).map(line=>{
     if (/^\s*[\[{]|(?:所在位置|字符[:：])/u.test(line)) return '';
     return line.replace(/(?:[a-z]:[\\/]|https?:\/\/|(?:\/|\\)[\w.])[^\s，。；！、）】]+/giu,'')
-      .replace(/[^\p{Script=Han}，。！？；：、（）【】《》“”‘’…\s]/gu,'')
-      .replace(/\s+/gu,' ').trim().replace(/^[，。！？；：、\s]+/u,'');
+      .replace(/[^\p{Script=Han}，。！？；：、（）【】《》“”‘’…]/gu,'')
+      .replace(/^[，。！？；：、]+/u,'');
   }).filter(line=>/\p{Script=Han}/u.test(line));
   const excerpt = [...new Set(paragraphs)].join('\n');
   resultExcerpts.set(result, excerpt);

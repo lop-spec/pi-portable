@@ -38,6 +38,7 @@ test('stage title is not echoed by tool rows, even in saved previews or returned
     assert.equal(phases[0].name,stage);
     assert.deepEqual(phases[0].items.map(a=>a.name),['文件校验已经完成','读取文件','读取文件']);
     assert.equal(activities[0].excerpt,stage+'。\n文件校验已经完成。');
+    assert.ok(phases[0].items.every(item=>!/[\t \u3000]/u.test(item.name)));
   }
 });
 const phaseInput=(markers,names=[])=>[{kind:'assistant',key:'phase-fixture',message:{content:markers.map((marker,i)=>({type:'toolCall',toolCallId:'p'+i,toolName:names[i]??'read',input:marker?{_phase:marker}:{path:'file-'+i}}))}}];

@@ -161,7 +161,7 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
   const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','empty'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status']}}))}}];
   const a='核对工作区的修改记录。', b='构建产物已通过完整性校验。', c='第二次检查也已完成。';
   for (const live of [true,false]) {
-    const msgs=[result(a+'\n\n'+b),result(b+'\n\n'+c),result('nothing to commit')];
+    const msgs=[result(a+'\n\n'+b),result('构建产物\u3000已通过 SHA256 完整性校验。\n\n第二次\t检查也已完成。'),result('nothing to commit')];
     const toolResults=new Map(['first','second','empty'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
     const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
     assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1),'运行命令']);
@@ -169,8 +169,7 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
     const {projectCraftTurn}=await import('../assets/piweb-overlay/craft-transcript/model.mjs');
     const selected=projectCraftTurn(entries,toolResults,live).activities[1];
     const details=renderToStaticMarkup(React.createElement(Details,{activity:selected,onClose(){}}));
-    assert.match(details,/data-call-result-excerpt="true"/);
-    assert.ok(details.includes(b)&&details.includes(c));
+    assert.equal(details.match(/<pre data-call-result-excerpt="true">([^<]*)<\/pre>/u)?.[1],b+'\n'+c);
     assert.ok(!details.includes(a));
     assert.doesNotMatch(details,/git status|nothing to commit|<h3>输入|<h3>输出/);
   }
