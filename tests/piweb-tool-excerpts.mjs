@@ -164,7 +164,7 @@ test('real React clamps each tool output to two visual lines, preserving all sou
   assert.match(html, /white-space:pre-wrap/);
   for (const phrase of phrases) assert.ok(html.includes(phrase));
 });
-test('shipping timeline renders one Chinese-only button per call, live and in history', { skip: !source }, async () => {
+test('shipping timeline renders only calls with Chinese results, live and in history', { skip: !source }, async () => {
   const require = createRequire(path.join(source, 'package.json'));
   const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
   const overlay = p => fs.readFileSync(path.join(root, 'assets/piweb-overlay', p), 'utf8');
@@ -173,15 +173,15 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
     '@/lib/craft-transcript-model.mjs': await import('../assets/piweb-overlay/craft-transcript/model.mjs'),
     'lucide-react': new Proxy({}, {get:()=>()=>null}),
   }, 'PortableProcessTimeline.tsx');
-  const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','empty'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status']}}))}}];
+  const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','english','filtered','pending'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status'],_intent:'这段调用说明不是结果'}}))}}];
   const a='核对工作区的修改记录。', b='构建产物已通过完整性校验。', c='第二次检查也已完成。';
   for (const live of [true,false]) {
     const corrupted = new TextDecoder('gb18030').decode(new TextEncoder().encode(b));
-    const msgs=[result(a+'\n\n'+b),result(corrupted+'\n\n第二次\t检查\u3000也已完成。'),result('nothing to commit')];
-    const toolResults=new Map(['first','second','empty'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
+    const msgs=[result(a+'\n\n'+b),result(corrupted+'\n\n第二次\t检查\u3000也已完成。'),result('nothing to commit'),result('所在位置：这里不是中文摘录')];
+    const toolResults=new Map(['first','second','english','filtered'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
     const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
-    assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1),'运行命令']);
-    assert.doesNotMatch(html,/执行工具|nothing to commit|展开摘录|收起摘录/);
+    assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1)]);
+    assert.doesNotMatch(html,/执行工具|nothing to commit|展开摘录|收起摘录|这段调用说明不是结果|这里不是中文摘录/);
     const {projectCraftTurn}=await import('../assets/piweb-overlay/craft-transcript/model.mjs');
     const selected=projectCraftTurn(entries,toolResults,live).activities[1];
     const details=renderToStaticMarkup(React.createElement(Details,{activity:selected,onClose(){}}));

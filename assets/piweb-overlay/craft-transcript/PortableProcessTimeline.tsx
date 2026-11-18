@@ -48,6 +48,7 @@ function Details({activity,onClose,cwd,onOpenFile}:{activity:Activity;onClose:()
     </section>
   </dialog>;
 }
+const isVisibleActivity = (activity:Activity) => Boolean(activity.type==='tool'?activity.excerpt:activity.name);
 const choices=new Map<string,boolean>();
 export const PortableProcessTimeline=memo(function PortableProcessTimeline(props:Props){
   const {entries,toolResults,live=false,end,searchEntryId,searchBlock,sessionId,collapseKey,cwd,onOpenFile}=props;
@@ -58,12 +59,13 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
   const [selected,setSelected]=useState<string|null>(null),[menu,setMenu]=useState(false),[copyError,setCopyError]=useState('');
   const [closedPhases,setClosedPhases]=useState<Set<string>>(()=>new Set());
   const list=useRef<HTMLDivElement>(null),follow=useRef(true),header=useRef<HTMLButtonElement>(null);
-  const target=activities.find(a=>a.entryId===searchEntryId&&(!searchBlock||a.block===searchBlock));
+  const visibleActivities=activities.filter(isVisibleActivity);
+  const target=visibleActivities.find(a=>a.entryId===searchEntryId&&(!searchBlock||a.block===searchBlock));
   const [reveal,setReveal]=useState<string|undefined>();
   useEffect(()=>{setChoice(choices.get(key));setSelected(null);setMenu(false);setClosedPhases(new Set());},[key]);
   useEffect(()=>{if(target){setChoice(true);setReveal(target.id);const phase=phases.find(p=>p.items.some(a=>a.id===target.id));if(phase)setClosedPhases(previous=>{const next=new Set(previous);next.delete(phase.id);return next;});}},[target?.id,key]);
   const expanded=choice??true;
-  useEffect(()=>{if(expanded&&live&&follow.current&&list.current)list.current.scrollTop=list.current.scrollHeight;},[activities.length,expanded,live]);
+  useEffect(()=>{if(expanded&&live&&follow.current&&list.current)list.current.scrollTop=list.current.scrollHeight;},[visibleActivities.length,expanded,live]);
   useEffect(()=>{if(reveal&&expanded)list.current?.querySelector('[data-search-target="true"]')?.scrollIntoView({block:'nearest'});},[reveal,expanded]);
   const toggle=()=>{const next=!expanded;choices.set(key,next);if(choices.size>500)choices.delete(choices.keys().next().value!);setChoice(next);follow.current=true;};
   const current=phases.find(p=>p.status==='waiting')??phases.find(p=>p.status==='running')??phases.at(-1);
@@ -82,7 +84,7 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
       {expanded&&<div ref={list} className="craft-log-body" onScroll={()=>{const el=list.current;if(el)follow.current=el.scrollHeight-el.scrollTop-el.clientHeight<32;}}>
         {phases.map(phase=><div key={phase.id} className="craft-phase" data-phase-status={phase.status}>
           <button type="button" className={'craft-phase-row '+phase.status} aria-expanded={!closedPhases.has(phase.id)} title={`${phase.name} · ${statusNames[phase.status]} · 展开或收起执行记录`} onClick={()=>setClosedPhases(previous=>{const next=new Set(previous);if(next.has(phase.id))next.delete(phase.id);else next.add(phase.id);return next;})}><ChevronRight size={14} aria-hidden="true" className={!closedPhases.has(phase.id)?'craft-chevron open':'craft-chevron'}/><span className="craft-tool-name">{phase.name}</span><ResultGlyph status={phase.status}/></button>
-          {!closedPhases.has(phase.id)&&<div className="craft-phase-items">{phase.items.filter(activity=>activity.name).map(activity=><div key={activity.id} data-entry-id={activity.entryId} data-search-target={activity.id===target?.id||undefined} className="craft-row-wrap"><button type="button" className={'craft-activity-row '+activity.status} title={`${activity.name} · 点击查看详情`} aria-label={`${activity.name}：${statusNames[activity.status]}，查看详情`} onClick={()=>setSelected(activity.id)}><span className="craft-icon-slot"><ToolIcon activity={activity}/></span><span className="craft-tool-name" data-call-excerpt={activity.type==='tool'||undefined}>{activity.name}</span>{activity.type==='tool'&&<ResultGlyph status={activity.status}/>}</button></div>)}</div>}
+          {!closedPhases.has(phase.id)&&<div className="craft-phase-items">{phase.items.filter(isVisibleActivity).map(activity=><div key={activity.id} data-entry-id={activity.entryId} data-search-target={activity.id===target?.id||undefined} className="craft-row-wrap"><button type="button" className={'craft-activity-row '+activity.status} title={`${activity.name} · 点击查看详情`} aria-label={`${activity.name}：${statusNames[activity.status]}，查看详情`} onClick={()=>setSelected(activity.id)}><span className="craft-icon-slot"><ToolIcon activity={activity}/></span><span className="craft-tool-name" data-call-excerpt={activity.type==='tool'||undefined}>{activity.name}</span>{activity.type==='tool'&&<ResultGlyph status={activity.status}/>}</button></div>)}</div>}
         </div>)}
       </div>}
     </div>}
@@ -90,6 +92,6 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
     {responses.map(activity=>activity.block.type==='text'?<div key={activity.id} className="craft-answer" data-entry-id={activity.entryId}><PortableTextBlock block={activity.block} isStreaming={live} cwd={cwd} onOpenFile={onOpenFile}/></div>:null)}
     {(projection.nodes as PortableTimelineEntry[]).map(entry=><Fragment key={entry.key}>{entry.kind==='node'?entry.node:entry.kind==='compaction'?<div className="craft-compaction">上下文已压缩</div>:entry.kind==='failure'?<InlineFailure failures={[{entryId:entry.entryId,raw:entry.message.errorMessage??'',truncated:entry.message.stopReason==='length',timestamp:entry.message.timestamp}]} continued={live}/>:null}</Fragment>)}
     <div className="craft-output-images">{activities.filter(a=>a.result?.content.some(b=>b.type==='image')).map(a=><Images key={a.id} result={a.result}/>)}</div>
-    {active&&<Details key={active.id} activity={active} cwd={cwd} onOpenFile={onOpenFile} onClose={()=>setSelected(null)}/>}
+    {active&&isVisibleActivity(active)&&<Details key={active.id} activity={active} cwd={cwd} onOpenFile={onOpenFile} onClose={()=>setSelected(null)}/>}
   </div>;
 });

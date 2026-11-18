@@ -14,8 +14,6 @@ test('rows excerpt public Chinese call text without generating a fallback label'
   assert.equal(summarize({command:'git status', description:'正在核对修改后的效果'}), '正在核对修改后的效果');
   assert.equal(summarize({commands:['git status','echo "检查这个密码字段"'],thinking:'不该显示的私有内容',path:'C:/工作区下面的目录'}),'');
   assert.equal(toolSummary({...call,input:{},chatView:{callExcerpt:summarize({commands})}}).name,summarize({commands}));
-  const view=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');
-  assert.match(view,/phase\.items\.filter\(activity=>activity\.name\)/);
 });
 test('phase rows are expanded by default; clicking a tool row opens its Chinese result only',()=>{const source=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');assert.match(source,/phases.map\(phase=>/);assert.match(source,/closedPhases.has\(phase.id\)&&/);assert.match(source,/setClosedPhases/);assert.match(source,/const expanded=choice\?\?true/);assert.match(source,/data-call-result-excerpt/);assert.doesNotMatch(source,/JSON.stringify\(input,null,2\)|activity.intent&&<p>/);assert.doesNotMatch(source,/projection.failedCount|current\?\.intent|craft-object|<code/);});
 test('one short Han label per invocation including parallel duplicates, noisy logs and pending calls',()=>{
