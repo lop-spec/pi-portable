@@ -19,7 +19,7 @@ export const LIVE_CODEX_MODEL_PATTERNS = Object.freeze([NEWER_CODEX_MODEL_PATTER
 export const MANAGED_PROVIDER_NAME = "Codex live catalogue via 8794";
 // The bundled catalogue predates Sol/Luna. Ultra is an orchestration mode,
 // not a thinking effort that the single-agent Responses adapter can send.
-export const GPT6_CODEX_IDS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]);
+export const GPT6_CODEX_IDS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]);
 export const GPT6_THINKING_MAP = Object.freeze({
   off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
 });
@@ -106,7 +106,14 @@ export function buildLiveModelConfiguration(modelsInput, settingsInput, { fileAu
   native.models = Array.isArray(native.models)
     ? native.models.filter(model => !/^gpt-5\.6(?:-|$)/u.test(model?.id ?? ""))
     : [];
-  for (const [id, name] of [["gpt-6-sol", "GPT-6 Sol"], ["gpt-6-luna", "GPT-6 Luna"], ["gpt-6.1-sol", "GPT-6.1 Sol"]]) {
+  // The Responses bridge can serve these models before the account catalogue lists them.
+  for (const [id, name] of [
+    ["gpt-6-sol", "GPT-6 Sol"],
+    ["gpt-6-luna", "GPT-6 Luna"],
+    ["gpt-6.1-sol", "GPT-6.1 Sol"],
+    ["gpt-6.2-astra", "GPT-6.2 Astra"],
+    ["gpt-6.2-sol", "GPT-6.2 Sol"],
+  ]) {
     const existingModel = native.models.find(model => model.id === id);
     if (existingModel) existingModel.thinkingLevelMap = { ...GPT6_THINKING_MAP };
     else native.models.push({
