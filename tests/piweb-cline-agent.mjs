@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { integrate } from '../tools/patch-piweb-source.mjs';
 import { ClineTurn, resolveClineBinary } from '../assets/piweb-overlay/cline-agent/cline-bridge.ts';
 import { promptCacheKey, promptForDay, readPrompt, writePrompt } from '../assets/piweb-overlay/cline-agent/cline-prompt-cache.ts';
+import { getAgentChoice, setAgentChoice } from '../assets/piweb-overlay/cline-agent/agent-choice.ts';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const source = process.env.PIWEB_SOURCE ?? path.join(repo, 'upstream');
@@ -76,7 +77,24 @@ test('integration wires the agent into the session, the prompt and the composer'
   assert.match(rpc, /if \(typeof command\.agent === "string"\) this\.clineAgent\?\.setAgent/, 'a prompt that names no agent keeps the current one');
   assert.equal(count(files.get('lib/agent-client.ts'), 'command.type === "prompt" ? { ...command, agent: agentForPrompt(sessionId) } : command'), 1);
   assert.equal(count(files.get('components/ChatInput.tsx'), '<PortableAgentSwitch sessionKey={providedDraftKey} />'), 1);
-  assert.equal(count(files.get('app/redesign-chrome.css'), '.pw-agent-switch {'), 1);
+  assert.equal(count(files.get('components/PortableAgentSwitch.tsx'), 'role="menuitemradio"'), 1);
+  assert.match(files.get('components/PortableAgentSwitch.tsx'), /aria-haspopup="menu"/, 'the agent is chosen from a dropdown');
+});
+
+test('the agent is Cline until a choice is made, and a Pi choice is kept', () => {
+  const store = new Map();
+  globalThis.window = { dispatchEvent() {} };
+  globalThis.localStorage = { getItem: key => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value); } };
+  try {
+    assert.equal(getAgentChoice(), 'cline');
+    assert.equal(getAgentChoice('s1'), 'cline');
+    setAgentChoice('s1', 'pi');
+    assert.equal(getAgentChoice('s1'), 'pi');
+    assert.equal(getAgentChoice('s2'), 'pi', 'a session without a choice follows the last one');
+  } finally {
+    delete globalThis.window;
+    delete globalThis.localStorage;
+  }
 });
 
 test('the binary resolves from the pinned install or an explicit path, never from PATH', () => {

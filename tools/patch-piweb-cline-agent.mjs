@@ -2,12 +2,6 @@
 // The session stays Pi's: an inline extension swaps the prompt and the file/shell tools
 // for Cline's during a run and hands those tool calls to a Cline process. See
 // docs/cline-agent.md.
-const CSS = `.pw-agent-switch { display: inline-flex; flex: none; align-items: center; gap: 2px; height: var(--control-h); padding: 2px; border-radius: var(--r-md); background: var(--bg-hover); }
-.pw-agent-switch > button { height: 100%; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-secondary); font: inherit; font-size: 12.5px; line-height: 1; white-space: nowrap; cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
-.pw-agent-switch > button:hover { color: var(--text); }
-.pw-agent-switch > button[aria-checked="true"] { background: var(--bg); color: var(--text); }
-`;
-
 export function integrateClineAgent({ set, change, prepend, template }) {
   set('lib/cline-bridge.ts', template('cline-agent/cline-bridge.ts'));
   set('lib/cline-prompt-cache.ts', template('cline-agent/cline-prompt-cache.ts'));
@@ -34,5 +28,4 @@ export function integrateClineAgent({ set, change, prepend, template }) {
   const input = 'components/ChatInput.tsx';
   prepend(input, 'import { PortableAgentSwitch } from "./PortableAgentSwitch";\n');
   change(input, '              <span className="pw-composer-vsep" aria-hidden="true" />\n              {!imageMode && (modelOptions.length > 0 || model || modelError) && onModelChange && (', '              <span className="pw-composer-vsep" aria-hidden="true" />\n              {!imageMode && !compact && <PortableAgentSwitch sessionKey={providedDraftKey} />}\n              {!imageMode && (modelOptions.length > 0 || model || modelError) && onModelChange && (');
-  change('app/redesign-chrome.css', '.pw-composer-chip {\n', `${CSS}.pw-composer-chip {\n`);
 }

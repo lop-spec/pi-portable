@@ -1,11 +1,12 @@
 // Which agent runs a session's next prompt. A session keeps the agent it last used; a
 // session that has not chosen yet (a new draft included) follows the last choice made
-// anywhere. Kept in the browser, like the other composer preferences.
+// anywhere; with no choice at all it is Cline. Kept in the browser, like the other composer preferences.
 export type AgentChoice = "pi" | "cline";
 
 type Stored = { last?: AgentChoice; sessions?: Record<string, AgentChoice> };
 
-const KEY = "pi-web:agent";
+// v2 makes Cline the default; v1 records were the old Pi default, written on every prompt.
+const KEY = "pi-web:agent-v2";
 const CHANGED = "pi-web:agent-choice";
 const MAX_SESSIONS = 300;
 
@@ -22,7 +23,7 @@ function read(): Stored {
 export function getAgentChoice(sessionKey?: string): AgentChoice {
   const stored = read();
   const choice = (sessionKey ? stored.sessions?.[sessionKey] : undefined) ?? stored.last;
-  return choice === "cline" ? "cline" : "pi";
+  return choice === "pi" ? "pi" : "cline";
 }
 
 export function setAgentChoice(sessionKey: string | undefined, choice: AgentChoice): void {
