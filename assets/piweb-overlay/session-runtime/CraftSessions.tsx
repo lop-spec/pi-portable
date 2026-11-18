@@ -15,6 +15,7 @@ export type StatusPatch = { status?: StatusId; flagged?: boolean };
 export function useSessionWorkflow() {
   const [records, setRecords] = useState<Records>({});
   const [error, setError] = useState('');
+  const [pending, setPending] = useState<{ id: string; patch: StatusPatch; revision: number; at: string }[]>([]);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const revision = useRef(0);
   const channel = useRef<BroadcastChannel | null>(null);
@@ -39,17 +40,33 @@ export function useSessionWorkflow() {
     return () => { channel.current?.close(); channel.current = null; document.removeEventListener('visibilitychange', visible); };
   }, [load]);
   const save = useCallback((id: string, patch: StatusPatch) => {
-    ++revision.current;
+    const change = { id, patch, revision: ++revision.current, at: new Date().toISOString() };
+    setPending(previous => [...previous, change]);
     const task = queue.current.then(async () => {
-      const response = await fetch('/api/session-status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, patch }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || '会话状态保存失败');
-      setRecords(data.sessions); setError(''); channel.current?.postMessage('changed');
+      try {
+        const response = await fetch('/api/session-status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, patch }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '会话状态保存失败');
+        setRecords(data.sessions); setError(''); channel.current?.postMessage('changed');
+      } finally {
+        // Drop just this change. A later edit (including a flag change) stays
+        // visible even if an earlier request fails or resolves out of view.
+        setPending(previous => previous.filter(item => item.revision !== change.revision));
+      }
     });
     queue.current = task.catch(cause => { setError(cause instanceof Error ? cause.message : '会话状态保存失败'); });
     return task;
   }, []);
-  return { records, error, save, reload: load };
+  const visibleRecords = useMemo(() => {
+    if (!pending.length) return records;
+    const next = { ...records };
+    for (const { id, patch, at } of pending) {
+      next[id] = { ...(next[id] ?? { status: 'backlog', flagged: false }), ...patch,
+        ...(patch.status !== undefined ? { statusAssigned: true, statusUpdatedAt: at } : {}) };
+    }
+    return next;
+  }, [pending, records]);
+  return { records: visibleRecords, error, save, reload: load };
 }
 
 export function StatusGlyph({ status }: { status: string }) {

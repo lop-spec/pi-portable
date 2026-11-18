@@ -34,14 +34,21 @@ function chineseResult(result) {
   return excerpt;
 }
 const labelKey = text => text.normalize('NFKC').replace(/[\p{P}\p{Z}\s]/gu,'');
-function rowLabel(block, description, excerpt, phaseTitle) {
-  const title = labelKey(phaseTitle);
+function rowLabel(block, description, excerpt, title) {
   const distinct = label => label && labelKey(label) !== title;
-  // Skip echoed stage titles in output as well as in call descriptions.
+  // Skip echoed stage titles, but only inspect as many Han characters as the
+  // row can show. The full excerpt is still available in the detail dialog.
   for (const line of excerpt.split('\n')) {
-    if (!distinct(line)) continue;
-    const preview = chineseLine(line) || [...line.matchAll(/\p{Script=Han}/gu)].slice(0,32).map(m=>m[0]).join('');
-    if (distinct(preview)) return preview;
+    if (!line) continue;
+    let preview = chineseLine(line);
+    if (!preview) {
+      let count = 0;
+      for (const match of line.matchAll(/\p{Script=Han}/gu)) {
+        preview += match[0];
+        if (++count === 32) break;
+      }
+    }
+    if (distinct(preview) && distinct(line)) return preview;
   }
   for (const phrase of description.split(' · ')) {
     if (!distinct(phrase)) continue;
@@ -93,6 +100,17 @@ export function toolSummary(block) {
   const input = ['command', 'path', 'file_path', 'pattern', 'url', 'query', 'action'].map(key => typeof args[key] === 'string' ? args[key] : '').filter(Boolean).join(' ');
   return { name, intent, input };
 }
+// React snapshots reuse immutable tool blocks and replace result objects when
+// output changes. Keep only the most recent label per call; a change of phase or
+// result must not reuse an old label. Pending streaming tool arguments aren't used.
+const callSummaries = new WeakMap();
+const labels = new WeakMap();
+function cachedToolSummary(block) {
+  let summary = callSummaries.get(block);
+  if (!summary) { summary = toolSummary(block); callSummaries.set(block, summary); }
+  return summary;
+}
+
 export function projectCraftTurn(entries, toolResults, live = false, end) {
   const activities = [], responses = [], nodes = [];
   for (const entry of entries) {
@@ -102,19 +120,32 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
       const base = { id: `${entry.entryId ?? entry.key}:${index}`, entryId: entry.entryId, block, timestamp: entry.message.timestamp };
       if (block.type === 'toolCall') {
         const result = toolResults.get(block.toolCallId);
-        const summary = toolSummary(block);
+        const summary = entry.streaming ? toolSummary(block) : cachedToolSummary(block);
         const excerpt = chineseResult(result);
-        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, status: toolState(result, live, end), ...summary });
+        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, status: toolState(result, live, end), streaming: entry.streaming, ...summary });
       } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' '), intent: '', input: '' });
     });
   }
   // Like Craft, the trailing streamed answer is outside the work log. Earlier
   // commentary remains a compact activity once subsequent tool activity arrives.
-  if (live) while (activities.at(-1)?.type === 'intermediate') responses.unshift(activities.pop());
+  if (live) {
+    let i = activities.length;
+    while (i > 0 && activities[i - 1].type === 'intermediate') i--;
+    for (let j = i; j < activities.length; j++) responses.push(activities[j]);
+    activities.length = i;
+  }
   const phases = groupPhases(activities, live, end);
   for (const phase of phases) {
+    const title = labelKey(phase.name);
     for (const item of phase.items) {
-      if (item.type === 'tool') item.name = rowLabel(item.block, item.name, item.excerpt, phase.name);
+      if (item.type !== 'tool') continue;
+      const cached = item.streaming ? undefined : labels.get(item.block);
+      if (cached && cached.title === title && cached.result === item.result) {
+        item.name = cached.name;
+      } else {
+        item.name = rowLabel(item.block, item.name, item.excerpt, title);
+        if (!item.streaming) labels.set(item.block, { title, result: item.result, name: item.name });
+      }
     }
   }
   return { activities, phases, responses, nodes, failedCount: activities.filter(a => a.status === 'error').length };

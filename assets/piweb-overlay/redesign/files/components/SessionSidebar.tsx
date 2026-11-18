@@ -322,6 +322,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
     const poll = async () => {
       if (stopped || document.visibilityState !== "visible") return;
+      clearTimer();
       const current = new AbortController();
       controller?.abort();
       controller = current;
@@ -351,11 +352,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       } catch {
         // Keep the last known state; the next visible-tab poll retries.
       } finally {
-        if (controller === current) controller = null;
-        schedule();
+        if (controller === current) {
+          controller = null;
+          schedule();
+        }
       }
     };
 
+    const refreshRunning = () => { void poll(); };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         void poll();
@@ -367,11 +371,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     };
 
     void poll();
+    window.addEventListener("pi-web:refresh-running-sessions", refreshRunning);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       stopped = true;
       clearTimer();
       controller?.abort();
+      window.removeEventListener("pi-web:refresh-running-sessions", refreshRunning);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [loadSessions, updateRunningSessionIds]);

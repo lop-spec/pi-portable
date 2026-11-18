@@ -213,8 +213,8 @@ const TOOL_OUTPUT_COMMIT_MS = 1_000;
 const SETTLE_RELOAD_DEBOUNCE_MS = 250;
 
 type SessionViewSnapshotInput = Parameters<typeof setSessionViewSnapshot>[0];
-// View-cache writes serialize every cached snapshot to size them; do that when idle,
-// not while switching sessions or finishing a turn. Reads flush a pending write first.
+// Admit snapshots to the size-bounded LRU when idle. A switch can read the
+// pending snapshot directly; never serialize the cache on the click path.
 const pendingSnapshotWrites = new Map<string, SessionViewSnapshotInput>();
 let snapshotFlushScheduled = false;
 
@@ -226,7 +226,9 @@ function flushSnapshotWrites(): void {
 }
 
 function queueSessionViewSnapshot(snapshot: SessionViewSnapshotInput): void {
+  pendingSnapshotWrites.delete(snapshot.sessionId);
   pendingSnapshotWrites.set(snapshot.sessionId, snapshot);
+  if (pendingSnapshotWrites.size > 8) pendingSnapshotWrites.delete(pendingSnapshotWrites.keys().next().value!);
   if (snapshotFlushScheduled) return;
   snapshotFlushScheduled = true;
   if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
@@ -236,13 +238,8 @@ function queueSessionViewSnapshot(snapshot: SessionViewSnapshotInput): void {
   }
 }
 
-function readSessionViewSnapshot(sessionId: string): ReturnType<typeof getSessionViewSnapshot> {
-  const pending = pendingSnapshotWrites.get(sessionId);
-  if (pending) {
-    pendingSnapshotWrites.delete(sessionId);
-    setSessionViewSnapshot(pending);
-  }
-  return getSessionViewSnapshot(sessionId);
+function readSessionViewSnapshot(sessionId: string): SessionViewSnapshotInput | null {
+  return pendingSnapshotWrites.get(sessionId) ?? getSessionViewSnapshot(sessionId);
 }
 
 function dropSessionViewSnapshot(sessionId: string): void {
@@ -778,6 +775,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         queueSessionViewSnapshot({
           sessionId: sid,
           revision: d.snapshotRevision!,
+          filePath: d.filePath,
+          toolNames: d.toolNames,
           messages: messagesRef.current,
           entryIds: entryIdsRef.current,
           leafId: d.leafId,
@@ -807,6 +806,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         queueSessionViewSnapshot({
           sessionId: sid,
           revision: d.snapshotRevision,
+          filePath: d.filePath,
+          toolNames: d.toolNames,
           messages: persistedMessages,
           entryIds: loadedWindow.entryIds,
           leafId: d.leafId,

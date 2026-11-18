@@ -52,6 +52,12 @@ export function integrateHistory({ get, set, change, prepend, template }) {
   change(reader, 'return { ...message, content };', 'return { ...message, content } as AgentMessage;', 2);
   change(reader, 'if (!options.deferThinking || message.role !== "assistant") return message;', 'message = uiMessage(message) as AgentMessage;\n      if (!options.deferThinking || message.role !== "assistant") return message;');
 
+  const snapshot = 'lib/session-view-cache.ts';
+  change(snapshot, '\trevision: string;', '\trevision: string;\n\tfilePath?: string;\n\ttoolNames?: string[];');
+  // Snapshots are immutable. Measure each entry once, not every entry at each write.
+  change(snapshot, 'function snapshotBytes(snapshot: SessionViewSnapshot): number {', 'const snapshotSizes = new WeakMap<SessionViewSnapshot, number>();\nfunction snapshotBytes(snapshot: SessionViewSnapshot): number {\n\tconst cached = snapshotSizes.get(snapshot);\n\tif (cached !== undefined) return cached;');
+  change(snapshot, '\t\treturn JSON.stringify(snapshot).length;', '\t\tconst bytes = JSON.stringify(snapshot).length;\n\t\tsnapshotSizes.set(snapshot, bytes);\n\t\treturn bytes;');
+
   const detail = 'app/api/sessions/[id]/route.ts';
   prepend(detail, 'import { openDiskSession, diskViewRevision } from "@/lib/session-disk-reader.mjs";\n');
   const tailDef = '    const rawTail = Number(searchParams.get("tail"));\n    const tail = Number.isFinite(rawTail) && rawTail > 0 ? Math.min(rawTail, 1000) : 50;\n';
@@ -96,17 +102,17 @@ export function integrateHistory({ get, set, change, prepend, template }) {
   change(hook, 'new URLSearchParams({ deferThinking: "1", deferMedia: "1", tree: "summary" })', 'new URLSearchParams({ deferThinking: "1", deferMedia: "1", tree: "summary", view: "chat", tail: "50" })');
   change(hook, 'const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);', `const previous = readSessionViewSnapshot(sid);
       const res = await fetch(\`/api/sessions/\${encodeURIComponent(sid)}?\${params}\`, { signal: controller.signal,
-        headers: previous?.revision && dataRef.current?.sessionId === sid && dataRef.current.filePath ? { "If-None-Match": \`"\${previous.revision}"\` } : undefined,
+        headers: previous?.filePath ? { "If-None-Match": \`"\${previous.revision}"\` } : undefined,
       });`);
   change(hook, '      if (!res.ok) throw new Error(`HTTP ${res.status}`);\n      const d = await res.json() as SessionData;', `      if (!res.ok && res.status !== 304) throw new Error(\`HTTP \${res.status}\`);
       let d: SessionData & { metadataPending?: boolean };
       if (res.status === 304) {
-        const cached = readSessionViewSnapshot(sid);
-        if (!cached) throw new Error("Session snapshot expired during validation");
-        d = { sessionId: sid, filePath: dataRef.current?.filePath ?? "", totalActiveMs: cached.totalActiveMs ?? 0,
+        const cached = previous;
+        if (!cached?.filePath) throw new Error("Unexpected session snapshot validation response");
+        d = { sessionId: sid, filePath: cached.filePath, totalActiveMs: cached.totalActiveMs ?? 0,
           tree: cached.summaryTree as SessionTreeNode[], treeFormat: "summary", leafId: cached.leafId, snapshotRevision: cached.revision,
           context: { messages: cached.messages, entryIds: cached.entryIds, oldestEntryId: cached.oldestEntryId, hasMore: cached.hasMore, thinkingLevel: cached.thinkingLevel, model: cached.model }, stats: cached.stats as SessionFileStats | undefined,
-          ...(dataRef.current?.sessionId === sid ? { toolNames: dataRef.current.toolNames } : {}),
+          toolNames: cached.toolNames,
         };
       } else d = await res.json() as typeof d;
       if (d.metadataPending) {

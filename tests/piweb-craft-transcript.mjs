@@ -39,6 +39,25 @@ test('stage title is not echoed by tool rows, even in saved previews or returned
     assert.ok(phases[0].items.every(item=>!/[\t \u3000]/u.test(item.name)));
   }
 });
+test('cached tool labels track changed results and phase context without shortening details',()=>{
+  const block={...call,input:{}};
+  const input=[{kind:'assistant',key:'x',message:{content:[block]}}];
+  const results=new Map([['t1',{role:'toolResult',content:[{type:'text',text:'核对文件修改记录。'}]}]]);
+  assert.equal(projectCraftTurn(input,results,true).activities[0].name,'核对文件修改记录');
+  const long='校验输出没有遗漏'.repeat(4096);
+  results.set('t1',{role:'toolResult',content:[{type:'text',text:long}]});
+  for(const live of [true,false]){
+    const item=projectCraftTurn(input,results,live).activities[0];
+    assert.equal(item.name,long.slice(0,32));
+    assert.equal(item.excerpt,long);
+  }
+  const second={...call,toolCallId:'second',input:{_phase:'核对文件修改记录'}};
+  const moved=[{kind:'assistant',key:'x',message:{content:[second,block]}}];
+  results.set('t1',{role:'toolResult',content:[{type:'text',text:'核对文件修改记录。\n确认原始结果仍在。'}]});
+  assert.equal(projectCraftTurn(input,results,true).activities[0].name,'核对文件修改记录');
+  assert.equal(projectCraftTurn(moved,results,true).activities[1].name,'确认原始结果仍在');
+});
+
 const phaseInput=(markers,names=[])=>[{kind:'assistant',key:'phase-fixture',message:{content:markers.map((marker,i)=>({type:'toolCall',toolCallId:'p'+i,toolName:names[i]??'read',input:marker?{_phase:marker}:{path:'file-'+i}}))}}];
 const results=(...states)=>new Map(states.flatMap((state,i)=>state===null?[]:[['p'+i,{content:[],isError:state==='error'}]]));
 test('multiple commands and commentary share a phase; only a new explicit marker starts another',()=>{const input=phaseInput(['查看目前设置',null,'查看目前设置','修改显示方式',null]);const original=JSON.stringify(input);const model=projectCraftTurn(input,results('ok','ok','ok','ok','ok'),true);assert.equal(model.phases.length,2);assert.deepEqual(model.phases.map(p=>[p.name,p.toolCount,p.status]),[['查看目前设置',3,'completed'],['修改显示方式',2,'running']]);assert.equal(JSON.stringify(input),original);});

@@ -67,7 +67,7 @@
     },
     "components/AppShell.tsx": {
       "baseSha": "0591b0c1cb97d1520a12cc426200f4e8774300ab9167e301d460c10efd60a9ff",
-      "sha": "bb85f566193953a4e8dd13b3fad1b22e531718d7021328c282ced231282ec464"
+      "sha": "40e2c1eb85943a010ea1c6b226c4072aad3412cf57ef870d6d6c1159b46d5b0a"
     },
     "components/AppShell.workspace-memory.test.mjs": {
       "baseSha": "747779462f2d235ead23e8ea32bcc97d4f93c51c86ea377a17be678535b58174",
@@ -259,7 +259,7 @@
     },
     "components/SessionSidebar.tsx": {
       "baseSha": "a9944194d98091db18c962bea2a0bd68a65161011eee06234a7551edd322e89e",
-      "sha": "b19b800b3fe5c98c430ebef0d691ef623e4591191e0570589d9a5172588babcb"
+      "sha": "5c336bd699c1369dd121e7fd6e3479061cd0eea3dfd427e618a92b87a6aa79b9"
     },
     "components/settings-section-icon.tsx": {
       "baseSha": null,
@@ -375,7 +375,7 @@
     },
     "hooks/useAgentSession.ts": {
       "baseSha": "a567bb09aff1749ed1b24f9f59f07e50eb461ae8281c1304e00030c69aab3d37",
-      "sha": "965c97df0eafbe4515b3c9a1b3a9c63f32bbb473bae1d69970f09439590885d6"
+      "sha": "655649d1d858dd835f74c13ef9fe93785970c0329d92e082a21782a745acd6f9"
     },
     "hooks/useI18n.tsx": {
       "baseSha": "6d6369843895f6a87dc1d990b5fda1566c7b9d6e3b2edaa26d25d3675d66d9d6",

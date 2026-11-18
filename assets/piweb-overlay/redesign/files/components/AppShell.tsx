@@ -954,10 +954,9 @@ export function AppShell() {
   }, [handleSelectSession, locale]);
 
   const handleAgentEnd = useCallback(() => {
-    // No forced list reload here (P15): the server invalidates the session list on
-    // agent_end, the sidebar's running poll (2.5s) sees the new list version and
-    // reloads once without force, and handleSessionsChange merges the selected
-    // row (title, message count, transient) from that list.
+    // Refresh authoritative runtime state on this lifecycle event rather than
+    // waiting for the next 2.5s poll. Do not guess that a continuation is idle.
+    window.dispatchEvent(new Event("pi-web:refresh-running-sessions"));
     setExplorerRefreshKey((k) => k + 1);
 
     if (selectedSession?.relation?.kind === "subagent") return;

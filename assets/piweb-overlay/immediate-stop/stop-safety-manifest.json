@@ -1,7 +1,7 @@
 {
   "stage": "stop-safety-after-craft",
   "files": {
-    "hooks/useAgentSession.ts": "e1dc95e76531aa68b06836567681847e2579b294f43a782b1ceb595d001df023",
+    "hooks/useAgentSession.ts": "6822c401e946feb329e759ecdaefd43210e2a0a13de990f81415177fbd2a3925",
     "lib/rpc-manager.ts": "d73d969127862a98fdefadcbb2765351a6dc23d7b5b4778cc6c3457abc048a51",
     "components/ChatInput.tsx": "2f7a65601b68d9664cd7678fdc4c193dbba635344b3d33a9255a4e5e96fbfa22",
     "components/ChatWindow.tsx": "77188f95f63269c4659f98c0b42cde528bdd0f1f23a009fcdca891986233ee9b",
