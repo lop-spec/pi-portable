@@ -109,7 +109,13 @@ export function createClineAgent(cwd: string): ClineAgent {
             pi.registerTool({
               name: spec.name,
               label: spec.name,
-              description: spec.description,
+              description: ({
+                read_files: "Read absolute paths together; optional inclusive line ranges.",
+                search_codebase: "Search workspace by regex; batch independent queries.",
+                run_commands: "Run noninteractive PowerShell commands from the workspace. Quote literal paths; confirm exact targets before recursive or forced deletion.",
+                fetch_web_content: "Fetch URLs with extraction prompts; batch independent requests.",
+                editor: "Create, replace one exact match, or insert before a 1-based line. Use absolute paths.",
+              } as Record<string, string>)[spec.name] ?? spec.description,
               parameters: spec.parameters as never,
               async execute(toolCallId, params, signal) {
                 // Waits for the process if it is still loading.
@@ -155,7 +161,7 @@ export function createClineAgent(cwd: string): ClineAgent {
           // The options are put back so the transcript keeps recording Pi's prompt.
           const options = event.systemPromptOptions;
           const { customPrompt, selectedTools, forceSystemPrompt } = options;
-          options.customPrompt = prompt.system;
+          options.customPrompt = `You are Cline. Answer directly; use tools when needed. Batch independent work and verify changes proportionately. Follow the latest user_input mode: plan is read-only; act/yolo permits implementation within the user's request. Workspace: ${cwd}`;
           options.selectedTools = ["read"];
           options.forceSystemPrompt = undefined;
           const systemPrompt = event.systemPrompt;
