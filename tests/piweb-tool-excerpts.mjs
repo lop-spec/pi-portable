@@ -149,13 +149,12 @@ test('real React clamps each tool output to two visual lines, preserving all sou
   assert.match(html, /white-space:pre-wrap/);
   for (const phrase of phrases) assert.ok(html.includes(phrase));
 });
-test('shipping Craft timeline shows result excerpts before expanding the phase, live and on history reopen', { skip: !source }, async () => {
+test('shipping timeline renders one Chinese-only button per call, live and in history', { skip: !source }, async () => {
   const require = createRequire(path.join(source, 'package.json'));
   const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
   const overlay = p => fs.readFileSync(path.join(root, 'assets/piweb-overlay', p), 'utf8');
   const view = loadTs(overlay('craft-transcript/PortableProcessTimeline.tsx'), {
     './MessageView': {}, './ImagePreview': {}, './conversation/ErrorNotice': {},
-    './ToolChineseExcerpt': loadTs(overlay('tool-excerpts/ToolChineseExcerpt.tsx'), {}, 'ToolChineseExcerpt.tsx'),
     '@/lib/craft-transcript-model.mjs': await import('../assets/piweb-overlay/craft-transcript/model.mjs'),
     'lucide-react': new Proxy({}, {get:()=>()=>null}),
   }, 'PortableProcessTimeline.tsx').PortableProcessTimeline;
@@ -165,9 +164,8 @@ test('shipping Craft timeline shows result excerpts before expanding the phase, 
     const msgs=[result(a+'\n\n'+b),result(b+'\n\n'+c),result('nothing to commit')];
     const toolResults=new Map(['first','second','empty'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
     const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
-    assert.equal((html.match(/data-tool-chinese-excerpt=/g)||[]).length,2);
-    for(const text of [a,b,c])assert.equal(html.split(text).length,2);
-    assert.doesNotMatch(html,/执行工具|nothing to commit|craft-phase-items/);
+    assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1),'运行命令']);
+    assert.doesNotMatch(html,/执行工具|nothing to commit|展开摘录|收起摘录/);
   }
 });
 test('overflow reacts to long single paragraphs, streaming replacements and viewport resize', { skip: !source }, () => {

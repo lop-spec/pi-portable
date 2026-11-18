@@ -309,7 +309,8 @@ test('turn process uses Craft work log for history and live without independent 
   assert.match(timeline, /<Details key=/);
   assert.doesNotMatch(timeline, /desktop-transcript|ThinkingRow|TurnProcess|ProcessActivityGroup/);
   assert.doesNotMatch(timeline, /ThinkingGroup|showTool\(block\)/);
-  assert.match(timeline, /<ToolChineseExcerpt\b[^>]*phrases=\{a\.phrases\}/);
+  assert.doesNotMatch(timeline, /<ToolChineseExcerpt/);
+  assert.match(timeline, /data-call-excerpt=/);
   const disclosure = integrated.get('components/desktop-transcript/disclosure.tsx');
   assert.match(disclosure, /const requestedOpen = choice \? choice.open : \(derivedOpen \|\| reading\)/);
   assert.match(disclosure, /requestedOpen && scope.visible/);

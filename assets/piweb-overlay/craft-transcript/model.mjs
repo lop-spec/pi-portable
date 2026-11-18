@@ -1,5 +1,33 @@
 // Pi adapter for Craft's WorkLog/ActivityRow contract. Never mutates persisted messages.
-import { extractChineseSource, newToolChineseExcerpts } from '../tool-excerpts/tool-chinese-excerpts.mjs';
+import { extractChineseSource, toolChineseExcerpts } from '../tool-excerpts/tool-chinese-excerpts.mjs';
+
+// Pick one contiguous Chinese clause, never join words across code or numbers.
+// Prefer a complete short clause over cutting a long one at an arbitrary character.
+function chineseLine(text) {
+  for (const line of text.slice(0, 4096).split(/\r?\n/u)) {
+    if (/[/\\{}=]|(?:密码|密钥|口令|所在位置|字符[:：]|authorization|token|secret|cookie)/iu.test(line)) continue;
+    for (const part of line.split(/[，。！？；：、·,;:!?]/u)) {
+      const clause = part.trim();
+      if (/^\p{Script=Han}{2,32}$/u.test(clause)) return clause;
+    }
+  }
+  return '';
+}
+const actions = [
+  [/read.*file|^read$/, '读取文件'], [/edit|apply_patch|write/, '修改文件'],
+  [/search|grep|find/, '检索内容'], [/bash|run_commands|terminal|shell|exec/, '运行命令'],
+  [/browser|web|fetch/, '查阅网页'], [/question|ask/, '询问选择'], [/wait/, '等待结果'],
+  [/image/, '处理图片'], [/sql|mongo|redis|aliyun|k8s|sls|^es_/, '查询数据'], [/^ls$/, '查看目录'],
+];
+function rowLabel(block, summary, result) {
+  const intent = chineseLine(summary.name);
+  if (intent) return intent;
+  for (const phrase of toolChineseExcerpts(result)) {
+    const label = chineseLine(phrase);
+    if (label) return label;
+  }
+  return actions.find(([pattern])=>pattern.test(String(block.toolName).toLowerCase()))?.[1] ?? '处理请求';
+}
 
 // Read only public descriptions, command literals and comments. Never walk arbitrary
 // payloads (editor text, credentials, URLs or private reasoning are not summaries).
@@ -43,7 +71,7 @@ export function toolSummary(block) {
   return { name, intent, input };
 }
 export function projectCraftTurn(entries, toolResults, live = false, end) {
-  const activities = [], responses = [], nodes = [], seenOutput = new Set();
+  const activities = [], responses = [], nodes = [];
   for (const entry of entries) {
     if (entry.kind !== 'assistant') { nodes.push(entry); continue; }
     entry.message.content.forEach((block, index) => {
@@ -51,7 +79,8 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
       const base = { id: `${entry.entryId ?? entry.key}:${index}`, entryId: entry.entryId, block, timestamp: entry.message.timestamp };
       if (block.type === 'toolCall') {
         const result = toolResults.get(block.toolCallId);
-        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, phrases: newToolChineseExcerpts(result, seenOutput), status: toolState(result, live, end), ...toolSummary(block) });
+        const summary = toolSummary(block);
+        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, status: toolState(result, live, end), ...summary, name: rowLabel(block, summary, result) });
       } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' '), intent: '', input: '' });
     });
   }

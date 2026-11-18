@@ -36,13 +36,12 @@ test('integrated Craft component renders model above steps, with exact ID toolti
    vm.runInNewContext('(function(require,module,exports){'+compiled+'\n})',{console},{filename:name+'.tsx'})(resolve,module,module.exports);
    return module.exports;
  }
- const excerpt=loadComponent('ToolChineseExcerpt',req);
- const localRequire=id=>id==='@/lib/clipboard'?{copyText:async()=>{throw new Error('Static rendering must not copy');}}:id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./ToolChineseExcerpt'?excerpt:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
+ const localRequire=id=>id==='@/lib/clipboard'?{copyText:async()=>{throw new Error('Static rendering must not copy');}}:id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
  const {PortableProcessTimeline}=loadComponent('PortableProcessTimeline',localRequire);
  const render=p=>renderToStaticMarkup(React.createElement(PortableProcessTimeline,p));
  const text='检查结果已经通过。';
  const output=render({...props,toolResults:new Map([['tool',{role:'toolResult',content:[{type:'text',text}]}]])});
- assert.ok(output.includes('data-tool-excerpt-content="true"')&&output.includes(text));
+ assert.ok(output.includes('data-call-excerpt="true"')&&output.includes(text.slice(0,-1)));
  const live=render({...props,streamingMessage:b});
  assert.match(live,/class="craft-model-label" title="actual\/model-b" data-model="actual\/model-b" aria-live="polite">Model B<\/div>/);
  assert.ok(live.indexOf('craft-model-label')<live.indexOf('class="craft-work-log'));

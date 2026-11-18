@@ -17,7 +17,16 @@ test('rows excerpt public Chinese call text without generating a fallback label'
   const view=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');
   assert.match(view,/phase\.items\.filter\(activity=>activity\.name\)/);
 });
-test('only phase lines are visible until expanded; search and original details remain accessible',()=>{const source=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');assert.match(source,/phases.map\(phase=>/);assert.match(source,/openPhases.has\(phase.id\)&&/);assert.match(source,/setOpenPhases/);assert.match(source,/const expanded=choice\?\?true/);assert.match(source,/JSON.stringify\(input,null,2\)/);assert.match(source,/activity.intent&&<p>/);assert.doesNotMatch(source,/projection.failedCount|current\?\.intent|craft-object|<code/);});
+test('phase rows are expanded by default; search and original details remain accessible',()=>{const source=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');assert.match(source,/phases.map\(phase=>/);assert.match(source,/closedPhases.has\(phase.id\)&&/);assert.match(source,/setClosedPhases/);assert.match(source,/const expanded=choice\?\?true/);assert.match(source,/JSON.stringify\(input,null,2\)/);assert.match(source,/activity.intent&&<p>/);assert.doesNotMatch(source,/projection.failedCount|current\?\.intent|craft-object|<code/);});
+test('one short Han label per invocation including parallel duplicates, noisy logs and pending calls',()=>{
+  const names=['read_files','read_files','run_commands','search_codebase','browser'];
+  const content=names.map((toolName,i)=>({type:'toolCall',toolCallId:String(i),toolName,input:{}}));
+  const output=['核对文件修改记录。\n\n下一段不应显示。','核对文件修改记录。','OK C:\\项目目录\\备份文件 SHA=7d12e\n所在位置 行:1 字符:537','{"sessionListVersion":8}'];
+  const results=new Map(output.map((text,i)=>[String(i),{role:'toolResult',content:[{type:'text',text}]}]));
+  const labels=projectCraftTurn([{kind:'assistant',key:'x',message:{content}}],results,true).activities.map(a=>a.name);
+  assert.deepEqual(labels,['核对文件修改记录','核对文件修改记录','运行命令','检索内容','查阅网页']);
+  assert.ok(labels.every(x=>/^\p{Script=Han}{2,32}$/u.test(x)));
+});
 const phaseInput=(markers,names=[])=>[{kind:'assistant',key:'phase-fixture',message:{content:markers.map((marker,i)=>({type:'toolCall',toolCallId:'p'+i,toolName:names[i]??'read',input:marker?{_phase:marker}:{path:'file-'+i}}))}}];
 const results=(...states)=>new Map(states.flatMap((state,i)=>state===null?[]:[['p'+i,{content:[],isError:state==='error'}]]));
 test('multiple commands and commentary share a phase; only a new explicit marker starts another',()=>{const input=phaseInput(['查看目前设置',null,'查看目前设置','修改显示方式',null]);const original=JSON.stringify(input);const model=projectCraftTurn(input,results('ok','ok','ok','ok','ok'),true);assert.equal(model.phases.length,2);assert.deepEqual(model.phases.map(p=>[p.name,p.toolCount,p.status]),[['查看目前设置',3,'completed'],['修改显示方式',2,'running']]);assert.equal(JSON.stringify(input),original);});
