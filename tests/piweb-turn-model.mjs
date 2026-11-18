@@ -30,12 +30,19 @@ const source=process.env.PIWEB_SOURCE??fileURLToPath(new URL('../upstream',impor
 const available=fs.existsSync(path.join(source,'node_modules/typescript'))&&fs.existsSync(path.join(source,'lib/turn-model-label.mjs'));
 test('integrated Craft component renders model above steps, with exact ID tooltip and no new fetch',{skip:!available},()=>{
  const req=createRequire(path.join(source,'package.json')),ts=req('typescript'),React=req('react'),{renderToStaticMarkup}=req('react-dom/server');
- const code=fs.readFileSync(path.join(source,'components/PortableProcessTimeline.tsx'),'utf8');
- const module={exports:{}};
- const localRequire=id=>id==='@/lib/clipboard'?{copyText:async()=>{throw new Error('Static rendering must not copy');}}:id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
- const compiled=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
- vm.runInNewContext('(function(require,module,exports){'+compiled+'\n})',{console},{filename:'PortableProcessTimeline.tsx'})(localRequire,module,module.exports);
- const render=p=>renderToStaticMarkup(React.createElement(module.exports.PortableProcessTimeline,p));
+ function loadComponent(name,resolve){
+   const code=fs.readFileSync(path.join(source,'components',name+'.tsx'),'utf8'),module={exports:{}};
+   const compiled=ts.transpileModule(code,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;
+   vm.runInNewContext('(function(require,module,exports){'+compiled+'\n})',{console},{filename:name+'.tsx'})(resolve,module,module.exports);
+   return module.exports;
+ }
+ const excerpt=loadComponent('ToolChineseExcerpt',req);
+ const localRequire=id=>id==='@/lib/clipboard'?{copyText:async()=>{throw new Error('Static rendering must not copy');}}:id==='@/lib/turn-model-label.mjs'?{resolveTimelineModel}:id==='@/lib/craft-transcript-model.mjs'?{projectCraftTurn}:id==='@/lib/portable-timeline-summary.mjs'?{timelineBreakdown}:id==='./ToolChineseExcerpt'?excerpt:id==='./MessageView'?{PortableTextBlock:()=>null}:id==='./conversation/ErrorNotice'?{InlineFailure:()=>null}:id==='./ImagePreview'?{ImagePreview:({children})=>children}:req(id);
+ const {PortableProcessTimeline}=loadComponent('PortableProcessTimeline',localRequire);
+ const render=p=>renderToStaticMarkup(React.createElement(PortableProcessTimeline,p));
+ const text='检查结果已经通过。';
+ const output=render({...props,toolResults:new Map([['tool',{role:'toolResult',content:[{type:'text',text}]}]])});
+ assert.ok(output.includes('data-tool-excerpt-content="true"')&&output.includes(text));
  const live=render({...props,streamingMessage:b});
  assert.match(live,/class="craft-model-label" title="actual\/model-b" data-model="actual\/model-b" aria-live="polite">Model B<\/div>/);
  assert.ok(live.indexOf('craft-model-label')<live.indexOf('class="craft-work-log'));
