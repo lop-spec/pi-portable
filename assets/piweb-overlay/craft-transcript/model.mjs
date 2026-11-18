@@ -33,11 +33,23 @@ function chineseResult(result) {
   resultExcerpts.set(result, excerpt);
   return excerpt;
 }
-function rowLabel(block, summary, excerpt) {
-  // The compact label previews the same output that opens on click.
-  const first = excerpt.split('\n',1)[0];
-  const preview = chineseLine(first) || [...first.matchAll(/\p{Script=Han}/gu)].slice(0,32).map(m=>m[0]).join('');
-  return preview || chineseLine(summary.name) || actions.find(([pattern])=>pattern.test(String(block.toolName).toLowerCase()))?.[1] || '处理请求';
+const labelKey = text => text.normalize('NFKC').replace(/[\p{P}\p{Z}\s]/gu,'');
+function rowLabel(block, description, excerpt, phaseTitle) {
+  const title = labelKey(phaseTitle);
+  const distinct = label => label && labelKey(label) !== title;
+  // Skip echoed stage titles in output as well as in call descriptions.
+  for (const line of excerpt.split('\n')) {
+    if (!distinct(line)) continue;
+    const preview = chineseLine(line) || [...line.matchAll(/\p{Script=Han}/gu)].slice(0,32).map(m=>m[0]).join('');
+    if (distinct(preview)) return preview;
+  }
+  for (const phrase of description.split(' · ')) {
+    if (!distinct(phrase)) continue;
+    const preview = chineseLine(phrase);
+    if (distinct(preview)) return preview;
+  }
+  const action = actions.find(([pattern])=>pattern.test(String(block.toolName).toLowerCase()))?.[1];
+  return [action,'处理请求','查看结果'].find(distinct);
 }
 
 // Read only public descriptions, command literals and comments. Never walk arbitrary
@@ -50,7 +62,7 @@ export function callExcerpt(args = {}) {
       if (phrases.size < 3) phrases.add(phrase.slice(0, 180));
     }
   };
-  for (const key of ['_intent', 'description', '_phase', 'task', 'question']) add(args?.[key]);
+  for (const key of ['_intent', 'description', 'task', 'question']) add(args?.[key]);
   const commands = Array.isArray(args?.commands) ? args.commands : [args?.command];
   for (const cmd of commands) {
     if (typeof cmd !== 'string' || phrases.size >= 3) continue;
@@ -92,7 +104,7 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
         const result = toolResults.get(block.toolCallId);
         const summary = toolSummary(block);
         const excerpt = chineseResult(result);
-        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, status: toolState(result, live, end), ...summary, name: rowLabel(block, summary, excerpt) });
+        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, status: toolState(result, live, end), ...summary });
       } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' '), intent: '', input: '' });
     });
   }
@@ -100,6 +112,11 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
   // commentary remains a compact activity once subsequent tool activity arrives.
   if (live) while (activities.at(-1)?.type === 'intermediate') responses.unshift(activities.pop());
   const phases = groupPhases(activities, live, end);
+  for (const phase of phases) {
+    for (const item of phase.items) {
+      if (item.type === 'tool') item.name = rowLabel(item.block, item.name, item.excerpt, phase.name);
+    }
+  }
   return { activities, phases, responses, nodes, failedCount: activities.filter(a => a.status === 'error').length };
 }
 

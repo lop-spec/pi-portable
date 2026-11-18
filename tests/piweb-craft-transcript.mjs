@@ -27,6 +27,19 @@ test('one short Han label per invocation including parallel duplicates, noisy lo
   assert.deepEqual(labels,['核对文件修改记录','核对文件修改记录','运行命令','检索内容','查阅网页']);
   assert.ok(labels.every(x=>/^\p{Script=Han}{2,32}$/u.test(x)));
 });
+test('stage title is not echoed by tool rows, even in saved previews or returned Chinese text',()=>{
+  const stage='核对工作区修改记录';
+  const mk=(id,input,chatView)=>({...call,toolName:'read_files',toolCallId:id,input,chatView});
+  const content=[mk('first',{_phase:stage}),mk('second',{}, {callExcerpt:stage+'。'}),mk('third',{_intent:stage+'。'})];
+  assert.equal(toolSummary(content[0]).name,'');
+  const toolResults=new Map([['first',{role:'toolResult',content:[{type:'text',text:stage+'。\n文件校验已经完成。'}]}]]);
+  for(const live of [true,false]){
+    const {phases,activities}=projectCraftTurn([{kind:'assistant',key:'phase-test',message:{content}}],toolResults,live);
+    assert.equal(phases[0].name,stage);
+    assert.deepEqual(phases[0].items.map(a=>a.name),['文件校验已经完成','读取文件','读取文件']);
+    assert.equal(activities[0].excerpt,stage+'。\n文件校验已经完成。');
+  }
+});
 const phaseInput=(markers,names=[])=>[{kind:'assistant',key:'phase-fixture',message:{content:markers.map((marker,i)=>({type:'toolCall',toolCallId:'p'+i,toolName:names[i]??'read',input:marker?{_phase:marker}:{path:'file-'+i}}))}}];
 const results=(...states)=>new Map(states.flatMap((state,i)=>state===null?[]:[['p'+i,{content:[],isError:state==='error'}]]));
 test('multiple commands and commentary share a phase; only a new explicit marker starts another',()=>{const input=phaseInput(['查看目前设置',null,'查看目前设置','修改显示方式',null]);const original=JSON.stringify(input);const model=projectCraftTurn(input,results('ok','ok','ok','ok','ok'),true);assert.equal(model.phases.length,2);assert.deepEqual(model.phases.map(p=>[p.name,p.toolCount,p.status]),[['查看目前设置',3,'completed'],['修改显示方式',2,'running']]);assert.equal(JSON.stringify(input),original);});
