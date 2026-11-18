@@ -14,6 +14,21 @@ test('Chinese is a selection condition, not a split point: preserve punctuation,
   assert.deepEqual(toolChineseExcerpts(result(text)), [text]);
   assert.deepEqual(toolChineseExcerpts(result('四个汉字')), []);
 });
+test('recovers Windows UTF-8 mojibake in live results and saved excerpts without touching valid Chinese', () => {
+  const gb = new TextDecoder('gb18030');
+  const damaged = s => gb.decode(new TextEncoder().encode(s));
+  const original = '核对配置文件成功';
+  const text = damaged(original);
+  assert.notEqual(text, original);
+  assert.deepEqual(toolChineseExcerpts(result(text)), [original]);
+  assert.deepEqual(toolChineseExcerpts({...result(''),chatView:{chineseExcerpts:[text]}}), [original]);
+  const traditional = '確認繁體中文內容及罕見漢字鑑鑰維護';
+  assert.deepEqual(toolChineseExcerpts(result(traditional)), [traditional]);
+  assert.deepEqual(toolChineseExcerpts(result(damaged('命令执行结束，构建已经通过。'))), ['命令执行结束，构建已经通过']);
+  assert.deepEqual(toolChineseExcerpts(result('鏍稿\uE1EE閰嶇疆鏂囦欢鎴愬姛銆�')), ['核对配置文件成功']);
+  assert.deepEqual(toolChineseExcerpts(result('銆锛鍙鐨鏍\uE111�')), []);
+  assert.deepEqual(toolChineseExcerpts(result(damaged('密码不要展示。'))), []);
+});
 test('JSON keys/quotes delimit complete values, including escaped quotes and newlines', () => {
   const message = '已检查 API 的 3 个分支，结果为“正常”。\n下一行保留 index.ts 和 502。';
   assert.deepEqual(extractChineseSource(JSON.stringify({ message, status: 'success', nested: { text: '继续核对 foo.ts：耗时 12 ms。' } })), [message, '继续核对 foo.ts：耗时 12 ms。']);
@@ -161,7 +176,8 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
   const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','empty'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status']}}))}}];
   const a='核对工作区的修改记录。', b='构建产物已通过完整性校验。', c='第二次检查也已完成。';
   for (const live of [true,false]) {
-    const msgs=[result(a+'\n\n'+b),result('构建产物\u3000已通过 SHA256 完整性校验。\n\n第二次\t检查也已完成。'),result('nothing to commit')];
+    const corrupted = new TextDecoder('gb18030').decode(new TextEncoder().encode(b));
+    const msgs=[result(a+'\n\n'+b),result(corrupted+'\n\n第二次\t检查\u3000也已完成。'),result('nothing to commit')];
     const toolResults=new Map(['first','second','empty'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
     const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
     assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1),'运行命令']);
@@ -169,7 +185,7 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
     const {projectCraftTurn}=await import('../assets/piweb-overlay/craft-transcript/model.mjs');
     const selected=projectCraftTurn(entries,toolResults,live).activities[1];
     const details=renderToStaticMarkup(React.createElement(Details,{activity:selected,onClose(){}}));
-    assert.equal(details.match(/<pre data-call-result-excerpt="true">([^<]*)<\/pre>/u)?.[1],b+'\n'+c);
+    assert.equal(details.match(/<pre data-call-result-excerpt="true">([^<]*)<\/pre>/u)?.[1],b.slice(0,-1)+'\n'+c);
     assert.ok(!details.includes(a));
     assert.doesNotMatch(details,/git status|nothing to commit|<h3>输入|<h3>输出/);
   }

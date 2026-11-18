@@ -15,12 +15,65 @@ function decodeLiteral(raw) {
   });
 }
 
+// Windows sometimes decodes a UTF-8 subprocess stream with code page 936.
+// Reverse only high-confidence runs, before filtering or extracting text.
+const suspect = /[銆锛鍙鐨鏍缁瀹绱杩浣鏂鍐鎴涔爜閰闅楠鍗鍒鍑鎵瀵嬪濂锟鈥闂绔]/gu;
+const hanChar = /\p{Script=Han}/gu;
+let gbPairs;
+function windowsPairs() {
+  if (gbPairs) return gbPairs;
+  const decoder = new TextDecoder('gb18030', { fatal: true });
+  const pairs = new Map([['€',0x80]]), bytes = new Uint8Array(2);
+  for (let lead = 0x81; lead <= 0xfe; lead++) {
+    bytes[0] = lead;
+    for (let trail = 0x40; trail <= 0xfe; trail++) {
+      if (trail === 0x7f) continue;
+      bytes[1] = trail;
+      try {
+        const ch = decoder.decode(bytes);
+        if (ch.length === 1 && !pairs.has(ch)) pairs.set(ch, lead * 256 + trail);
+      } catch { /* not a code-page pair */ }
+    }
+  }
+  gbPairs = pairs;
+  return pairs;
+}
+function repairWindowsText(text) {
+  return text.replace(/[^\x00-\x7f\s]{5,}/gu, run => {
+    const signals = run.match(suspect)?.length ?? 0;
+    const lossy = run.includes('\uFFFD');
+    const privateUse = /[\uE000-\uF8FF]/u.test(run);
+    if (signals < 2 && !(signals && (lossy || privateUse))) return run;
+    const pairs = windowsPairs();
+    const repair = part => {
+      const bytes = new Uint8Array(part.length * 2);
+      let i = 0;
+      for (const ch of part) {
+        const pair = pairs.get(ch);
+        if (pair === undefined) return null;
+        if (pair > 255) bytes[i++] = pair >> 8;
+        bytes[i++] = pair & 255;
+      }
+      try {
+        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+        // If Windows substituted a broken byte, keep the strictly decodable prefix only.
+        const decoded = decoder.decode(bytes.subarray(0,i), { stream: lossy });
+        const han = decoded.match(hanChar)?.length ?? 0;
+        return han >= 3 && han * 2 >= decoded.length && !/[\x00-\x1f\x7f]/u.test(decoded) ? decoded : null;
+      } catch { return null; }
+    };
+    if (!lossy) return repair(run) ?? (signals >= 3 && privateUse ? '' : run);
+    const repaired = run.split(/\uFFFD+/u).filter(Boolean).map(part => repair(part));
+    return repaired.some(Boolean) ? repaired.filter(Boolean).join(' ') : signals >= 2 ? '' : run;
+  });
+}
+
 /** Keep complete JSON string values, quoted code/UI strings, or plain paragraphs. */
 export function extractChineseSource(text) {
   const excerpts = new Set();
   const add = value => {
     if (typeof value !== 'string') return;
-    const clean = value.replaceAll('\r\n', '\n').trim();
+    const clean = repairWindowsText(value).replaceAll('\r\n', '\n').trim();
     if (hasChinese(clean) && !sensitive.test(clean) && !privateLine.test(clean)) excerpts.add(clean);
   };
   const walk = value => {
