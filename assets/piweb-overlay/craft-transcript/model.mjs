@@ -19,14 +19,25 @@ const actions = [
   [/browser|web|fetch/, '查阅网页'], [/question|ask/, '询问选择'], [/wait/, '等待结果'],
   [/image/, '处理图片'], [/sql|mongo|redis|aliyun|k8s|sls|^es_/, '查询数据'], [/^ls$/, '查看目录'],
 ];
-function rowLabel(block, summary, result) {
-  const intent = chineseLine(summary.name);
-  if (intent) return intent;
-  for (const phrase of toolChineseExcerpts(result)) {
-    const label = chineseLine(phrase);
-    if (label) return label;
-  }
-  return actions.find(([pattern])=>pattern.test(String(block.toolName).toLowerCase()))?.[1] ?? '处理请求';
+const resultExcerpts = new WeakMap();
+function chineseResult(result) {
+  if (!result || typeof result !== 'object') return '';
+  if (resultExcerpts.has(result)) return resultExcerpts.get(result);
+  const paragraphs = toolChineseExcerpts(result).flatMap(phrase=>phrase.split(/\r?\n/u)).map(line=>{
+    if (/^\s*[\[{]|(?:所在位置|字符[:：])/u.test(line)) return '';
+    return line.replace(/(?:[a-z]:[\\/]|https?:\/\/|(?:\/|\\)[\w.])[^\s，。；！、）】]+/giu,'')
+      .replace(/[^\p{Script=Han}，。！？；：、（）【】《》“”‘’…\s]/gu,'')
+      .replace(/\s+/gu,' ').trim().replace(/^[，。！？；：、\s]+/u,'');
+  }).filter(line=>/\p{Script=Han}/u.test(line));
+  const excerpt = [...new Set(paragraphs)].join('\n');
+  resultExcerpts.set(result, excerpt);
+  return excerpt;
+}
+function rowLabel(block, summary, excerpt) {
+  // The compact label previews the same output that opens on click.
+  const first = excerpt.split('\n',1)[0];
+  const preview = chineseLine(first) || [...first.matchAll(/\p{Script=Han}/gu)].slice(0,32).map(m=>m[0]).join('');
+  return preview || chineseLine(summary.name) || actions.find(([pattern])=>pattern.test(String(block.toolName).toLowerCase()))?.[1] || '处理请求';
 }
 
 // Read only public descriptions, command literals and comments. Never walk arbitrary
@@ -80,7 +91,8 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
       if (block.type === 'toolCall') {
         const result = toolResults.get(block.toolCallId);
         const summary = toolSummary(block);
-        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, status: toolState(result, live, end), ...summary, name: rowLabel(block, summary, result) });
+        const excerpt = chineseResult(result);
+        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, status: toolState(result, live, end), ...summary, name: rowLabel(block, summary, excerpt) });
       } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' '), intent: '', input: '' });
     });
   }

@@ -3,8 +3,8 @@
   "files": {
     "components/ChatWindow.tsx": "9171eefd10beab0fc6679dac314e05a3d23659ce3b2a237db4cc0db61aa552ff",
     "lib/session-reader.ts": "69b0a2d414543bfca04e136ac1c60d416a836ded2f7f5fea96af2aeea9dfedc7",
-    "components/PortableProcessTimeline.tsx": "b813e6ab0c0f4730177ed7dd39eb07607b3e321d4ca5d4af02bbf229bab8b69b",
-    "lib/craft-transcript-model.mjs": "4b8c550ee4160cdcb0f3de6673d7649ef42cf6acd3126e27fa6ae016e82ac319",
+    "components/PortableProcessTimeline.tsx": "b7da89b2b9e87dca853330d53ab229613f83c314c989d166848e00778c661a03",
+    "lib/craft-transcript-model.mjs": "2b74d8406f123c21e038980d988b7e3b3d882125bee05b75a3f2e394549e9dba",
     "app/craft-transcript.css": "3ef41000db04506cbc95ad98bbbccd1aa1989a022763d598d183ce9d3a1011e7",
     "app/layout.tsx": "e91de5c94a6abfcd9df9e040bc70d300a56805503340ca696bcc85b62ebb25e5",
     "lib/message-display.ts": "fb452c6728a4d34b3388e7bdfa4e54b67361b2911666d6f0cd4d4ba3cb399912",

@@ -36,7 +36,7 @@ export function integrateFeishuCopy({ get, set, change, prepend, template }) {
   change(hook, 'navigator.clipboard.writeText(textToCopy)', 'copyText(textToCopy, "markdown")');
   const timeline = 'components/PortableProcessTimeline.tsx';
   prepend(timeline, 'import { copyText } from "@/lib/clipboard";\n');
-  change(timeline, 'navigator.clipboard.writeText(', 'copyText(', 2);
+  change(timeline, 'navigator.clipboard.writeText(', 'copyText(');
   const preview = 'components/PortableFilePreview.tsx';
   prepend(preview, 'import { copyText, fileCopyFormat } from "@/lib/clipboard";\n');
   change(preview, 'navigator.clipboard.writeText(await response.text())', 'copyText(await response.text(), fileCopyFormat(path))');

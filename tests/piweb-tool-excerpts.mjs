@@ -153,11 +153,11 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
   const require = createRequire(path.join(source, 'package.json'));
   const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
   const overlay = p => fs.readFileSync(path.join(root, 'assets/piweb-overlay', p), 'utf8');
-  const view = loadTs(overlay('craft-transcript/PortableProcessTimeline.tsx'), {
+  const { PortableProcessTimeline: view, Details } = loadTs(overlay('craft-transcript/PortableProcessTimeline.tsx')+'\nexport { Details };', {
     './MessageView': {}, './ImagePreview': {}, './conversation/ErrorNotice': {},
     '@/lib/craft-transcript-model.mjs': await import('../assets/piweb-overlay/craft-transcript/model.mjs'),
     'lucide-react': new Proxy({}, {get:()=>()=>null}),
-  }, 'PortableProcessTimeline.tsx').PortableProcessTimeline;
+  }, 'PortableProcessTimeline.tsx');
   const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','empty'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status']}}))}}];
   const a='核对工作区的修改记录。', b='构建产物已通过完整性校验。', c='第二次检查也已完成。';
   for (const live of [true,false]) {
@@ -166,6 +166,13 @@ test('shipping timeline renders one Chinese-only button per call, live and in hi
     const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
     assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1),'运行命令']);
     assert.doesNotMatch(html,/执行工具|nothing to commit|展开摘录|收起摘录/);
+    const {projectCraftTurn}=await import('../assets/piweb-overlay/craft-transcript/model.mjs');
+    const selected=projectCraftTurn(entries,toolResults,live).activities[1];
+    const details=renderToStaticMarkup(React.createElement(Details,{activity:selected,onClose(){}}));
+    assert.match(details,/data-call-result-excerpt="true"/);
+    assert.ok(details.includes(b)&&details.includes(c));
+    assert.ok(!details.includes(a));
+    assert.doesNotMatch(details,/git status|nothing to commit|<h3>输入|<h3>输出/);
   }
 });
 test('overflow reacts to long single paragraphs, streaming replacements and viewport resize', { skip: !source }, () => {

@@ -2,8 +2,8 @@
 // Adapted from Craft Agents WorkLog.tsx / ActivityRow.tsx (Apache-2.0).
 // Host bindings use Pi messages and Cetus file previews, not Electron IPC.
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, CircleX, ChevronRight, Terminal, FileText, Search, Globe, Wrench, MessageSquareText, LoaderCircle, Minus, X, Copy, MoreHorizontal } from 'lucide-react';
-import type { AssistantContentBlock, AssistantMessage, ToolResultMessage, ToolCallContent } from '@/lib/types';
+import { Check, CircleX, ChevronRight, Terminal, FileText, Search, Globe, Wrench, MessageSquareText, LoaderCircle, Minus, X, MoreHorizontal } from 'lucide-react';
+import type { AssistantContentBlock, AssistantMessage, ToolResultMessage } from '@/lib/types';
 import { PortableTextBlock } from './MessageView';
 import { InlineFailure } from './conversation/ErrorNotice';
 import { ImagePreview } from './ImagePreview';
@@ -15,7 +15,7 @@ export type PortableTimelineEntry =
  | {kind:'failure';key:string;entryId?:string;message:AssistantMessage};
 export type TimelineEnd = {status:'done'|'error'|'stopped';at?:number};
 type Props = {entries:PortableTimelineEntry[];toolResultEntryIds?:Map<string,string>;toolResults:Map<string,ToolResultMessage>;cwd?:string;sessionId?:string;searchEntryId?:string;searchBlock?:AssistantContentBlock;live?:boolean;modelNames?:Record<string,string>;collapseKey?:string;startedAt?:number;end?:TimelineEnd|null;phase?:string|null;streamingMessage?:AssistantMessage|null;onOpenFile?:(path:string,page?:number)=>void;onOpenSession?:(session:string)=>void};
-type Activity = {id:string;entryId?:string;block:AssistantContentBlock;timestamp?:number;type:string;result?:ToolResultMessage;status:string;name:string;intent:string;input:string};
+type Activity = {excerpt?:string;id:string;entryId?:string;block:AssistantContentBlock;timestamp?:number;type:string;result?:ToolResultMessage;status:string;name:string;intent:string;input:string};
 type WorkPhase = {id:string;name:string;status:string;items:Activity[];errors:number;toolCount:number};
 const statusNames:Record<string,string> = {completed:'已完成',error:'错误',running:'进行中',stopped:'已停止',unknown:'待确认',waiting:'等你选择',blocked:'受阻',finished:'已结束'};
 function ToolIcon({activity}:{activity:Activity}) {
@@ -36,50 +36,21 @@ function Images({result}:{result?:ToolResultMessage}) {
     return src?<ImagePreview key={index} src={src}><img className="craft-output-image" src={src} alt="工具生成图片"/></ImagePreview>:null;
   })}</>;
 }
-function Details({activity,onClose,cwd,onOpenFile,onOpenSession,sessionId,resultEntryId}:{activity:Activity;onClose:()=>void;cwd?:string;onOpenFile?:Props['onOpenFile'];onOpenSession?:Props['onOpenSession'];sessionId?:string;resultEntryId?:string}) {
-  const dialog=useRef<HTMLDialogElement>(null),title=useId();const [copyState,setCopyState]=useState('复制');
+function Details({activity,onClose,cwd,onOpenFile}:{activity:Activity;onClose:()=>void;cwd?:string;onOpenFile?:Props['onOpenFile']}) {
+  const dialog=useRef<HTMLDialogElement>(null),title=useId();
   useEffect(()=>{const previous=document.activeElement as HTMLElement|null;dialog.current?.showModal();return()=>{dialog.current?.close();previous?.focus({preventScroll:true});};},[]);
-  const [full,setFull]=useState<{block:AssistantContentBlock;result?:ToolResultMessage}|null>(null),[loadError,setLoadError]=useState(''),[retry,setRetry]=useState(0),[loading,setLoading]=useState(false);
-  const deferred=Boolean((activity.block as unknown as {chatView?:unknown}).chatView || (activity.result as unknown as {chatView?:unknown})?.chatView);
-  useEffect(()=>{
-    if(!deferred||!sessionId||!activity.entryId)return;
-    const controller=new AbortController();setLoading(true);setLoadError('');
-    const load=async(id:string)=>{const response=await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(id)}`,{signal:controller.signal});if(!response.ok)throw new Error(`详情读取失败（${response.status}）`);return (await response.json()).message;};
-    Promise.all([load(activity.entryId),resultEntryId?load(resultEntryId):Promise.resolve(null)]).then(([message,result])=>{
-      if(controller.signal.aborted)return;
-      const block=message?.content?.find((b:ToolCallContent)=>b.type==='toolCall'&&b.toolCallId===activity.id);
-      if(!block)throw new Error('未找到完整工具参数');
-      setFull({block,result:result??activity.result});
-    }).catch(error=>{if(!controller.signal.aborted)setLoadError(String(error.message??error));}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
-    return()=>controller.abort();
-  },[deferred,sessionId,activity.entryId,activity.id,resultEntryId,retry]);
-  const block=full?.block??activity.block, result=full?.result??activity.result;
-  const output=result?.content.filter((b):b is {type:'text';text:string}=>b.type==='text').map(b=>b.text).join('\n')??(activity.status==='running'?'工具正在执行…':'没有记录到工具结果');
-  const input=block.type==='toolCall'?Object.fromEntries(Object.entries(block.input??{}).filter(([key])=>!key.startsWith('_'))):{};
-  const details=result?.details as {sessionId?:string;diff?:string}|undefined;
   return <dialog ref={dialog} className="craft-details" aria-labelledby={title} onCancel={onClose} onClick={event=>{if(event.target===event.currentTarget)onClose();}}>
     <section onClick={event=>event.stopPropagation()}>
-      <header><ToolIcon activity={activity}/><h2 id={title}>{activity.name}</h2><ResultGlyph status={activity.status}/><button type="button" aria-label="关闭详情" title="关闭详情（Esc）" onClick={onClose}><X size={18}/></button></header>
+      <header><ToolIcon activity={activity}/><h2 id={title}>{activity.name}</h2><ResultGlyph status={activity.status}/><button type="button" aria-label="关闭详情" onClick={onClose}><X size={18}/></button></header>
       <div className="craft-detail-content">
-        {loading&&<p role="status">正在加载完整详情…</p>}
-        {loadError&&<p role="alert">{loadError} <button type="button" onClick={()=>setRetry(retry+1)}>重试</button></p>}
-        {activity.intent&&<p>{activity.intent}</p>}
-        {block.type==='text'?<PortableTextBlock block={block} cwd={cwd} onOpenFile={onOpenFile}/>:<>
-          <div className="craft-detail-heading"><h3>输入</h3><button type="button" onClick={()=>{void navigator.clipboard.writeText(JSON.stringify(input,null,2)+'\n\n'+output).then(()=>setCopyState('已复制')).catch(()=>setCopyState('复制失败'));}}><Copy size={14}/>{copyState}</button></div>
-          <pre>{JSON.stringify(input,null,2)}</pre>
-          {typeof input.path==='string'&&onOpenFile&&<button type="button" className="craft-file-link" onClick={()=>{onClose();onOpenFile(input.path as string);}}>打开文件：{input.path}</button>}
-          <h3>输出</h3><pre>{output}</pre>
-          {details?.diff&&<><h3>文件差异</h3><pre>{details.diff}</pre></>}
-          {details?.sessionId&&onOpenSession&&<button type="button" onClick={()=>{onClose();onOpenSession(details.sessionId!);}}>打开子会话</button>}
-          <Images result={result}/>
-        </>}
+        {activity.block.type==='text'?<PortableTextBlock block={activity.block} cwd={cwd} onOpenFile={onOpenFile}/>:<pre data-call-result-excerpt>{activity.excerpt || (activity.status==='running'?'正在等工具返回结果':'这次调用没有可摘录的中文结果')}</pre>}
       </div>
     </section>
   </dialog>;
 }
 const choices=new Map<string,boolean>();
 export const PortableProcessTimeline=memo(function PortableProcessTimeline(props:Props){
-  const {entries,toolResults,live=false,end,searchEntryId,searchBlock,sessionId,collapseKey,cwd,onOpenFile,onOpenSession}=props;
+  const {entries,toolResults,live=false,end,searchEntryId,searchBlock,sessionId,collapseKey,cwd,onOpenFile}=props;
   const projection=useMemo(()=>projectCraftTurn(entries,toolResults,live,end),[entries,toolResults,live,end]);
   const activities=projection.activities as Activity[], responses=projection.responses as Activity[], phases=projection.phases as WorkPhase[];
   const key=`${sessionId??''}:${collapseKey??entries[0]?.key??''}`;
@@ -119,6 +90,6 @@ export const PortableProcessTimeline=memo(function PortableProcessTimeline(props
     {responses.map(activity=>activity.block.type==='text'?<div key={activity.id} className="craft-answer" data-entry-id={activity.entryId}><PortableTextBlock block={activity.block} isStreaming={live} cwd={cwd} onOpenFile={onOpenFile}/></div>:null)}
     {(projection.nodes as PortableTimelineEntry[]).map(entry=><Fragment key={entry.key}>{entry.kind==='node'?entry.node:entry.kind==='compaction'?<div className="craft-compaction">上下文已压缩</div>:entry.kind==='failure'?<InlineFailure failures={[{entryId:entry.entryId,raw:entry.message.errorMessage??'',truncated:entry.message.stopReason==='length',timestamp:entry.message.timestamp}]} continued={live}/>:null}</Fragment>)}
     <div className="craft-output-images">{activities.filter(a=>a.result?.content.some(b=>b.type==='image')).map(a=><Images key={a.id} result={a.result}/>)}</div>
-    {active&&<Details key={active.id} activity={active} sessionId={sessionId} resultEntryId={props.toolResultEntryIds?.get(active.id)} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} onClose={()=>setSelected(null)}/>}
+    {active&&<Details key={active.id} activity={active} cwd={cwd} onOpenFile={onOpenFile} onClose={()=>setSelected(null)}/>}
   </div>;
 });
