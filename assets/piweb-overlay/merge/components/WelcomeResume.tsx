@@ -4,13 +4,13 @@
 import { useMemo } from "react";
 import { hasAssignedStatus, statusOf } from "@/lib/craft-session/model.mjs";
 import { resumeCandidates } from "@/lib/portable-session-resume.mjs";
-import { openPortableSession, usePortableSessions, usePortableUnreadIds } from "@/lib/portable-session-store";
+import { usePortableSessions, usePortableUnreadIds } from "@/lib/portable-session-store";
 import { StatusGlyph, useSessionWorkflow } from "./CraftSessions";
 import { projectLabel } from "./sidebar/project-label";
 import { deriveSessionTitle } from "./sidebar/session-title";
 import { formatSessionTime } from "./sidebar/session-time";
 
-export function WelcomeResume() {
+export function WelcomeResume({ onOpenSession }: { onOpenSession: (id: string) => void }) {
   const { sessions, running } = usePortableSessions();
   const unread = usePortableUnreadIds();
   const workflow = useSessionWorkflow();
@@ -35,7 +35,7 @@ export function WelcomeResume() {
             const title = deriveSessionTitle(session.name, session.firstMessage, session.id);
             const state = column === "running" ? "运行中" : column === "attention" ? (unread.has(session.id) ? "有新回复" : "待审查") : formatSessionTime(session.modified || session.created, now);
             return (
-              <button key={session.id} type="button" data-session-id={session.id} className={`pw-resume-card${column === "running" ? " is-running" : column === "attention" ? " is-attention" : ""}`} title={title} onClick={() => openPortableSession(session.id)}>
+              <button key={session.id} type="button" data-session-id={session.id} className={`pw-resume-card${column === "running" ? " is-running" : column === "attention" ? " is-attention" : ""}`} title={title} onClick={() => onOpenSession(session.id)}>
                 <span className="pw-resume-title">
                   {column === "running" ? <span className="pw-spinner pw-spinner--sm" aria-hidden="true" /> : <StatusGlyph status={column === "attention" ? "needs-review" : statusOf(workflow.records, session.id)} />}
                   <span>{title}</span>

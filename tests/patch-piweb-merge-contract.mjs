@@ -30,7 +30,8 @@ test('merge step wires every view into the integrated sources', { skip: !availab
   assert.ok(!files.has('components/SessionBoard.tsx'), 'board component is not shipped');
   assert.ok(!files.has('lib/portable-session-board.mjs'), 'retired board logic is not shipped');
   assert.doesNotMatch(files.get('app/merge.css'), /\.pw-(?:board|card)(?:[\s.:#-]|\s*\{)/, 'retired board styles are absent');
-  assert.equal(count(files.get('components/ChatWindow.tsx'), '<WelcomeResume />'), 1);
+  assert.equal(count(files.get('components/ChatWindow.tsx'), '<WelcomeResume onOpenSession={onOpenSession} />'), 1);
+  assert.match(files.get('components/WelcomeResume.tsx'), /onClick=\{\(\) => onOpenSession\(session\.id\)\}/);
   const markdown = files.get('lib/markdown.ts');
   assert.equal(count(markdown, 'portableCjkEmphasis]'), 2, 'both remark plugin lists carry the CJK-friendly bold fix');
   assert.match(files.get('app/layout.tsx'), /import "\.\/craft-transcript\.css";\nimport "\.\/merge\.css";/);

@@ -1,6 +1,6 @@
 "use client";
 // Session workflow interaction adapted from Craft Agents (Apache-2.0, a883d64).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionInfo } from '@/lib/types';
 import { STATUSES, statusOf, hasAssignedStatus, matchesSessionFilter, isFlagged, groupedSessions, sessionRuntimeStatus } from '@/lib/craft-session/model.mjs';
 import { PopMenu, anchorFromElement, type MenuAnchor } from './sidebar/PopMenu';
@@ -133,7 +133,7 @@ type ViewProps = {
   onSelect: (session: SessionInfo) => void; onSave: (id: string, patch: StatusPatch) => Promise<void>;
   onArchive: (id: string, archived: boolean) => void; onMenu: (id: string, point: { x: number; y: number }) => void;
 };
-export function CraftSessionView(props: ViewProps) {
+export const CraftSessionView = memo(function CraftSessionView(props: ViewProps) {
   const { sessions, records, filter, archived } = props;
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const roots = useMemo(() => sessions.filter(s => s.relation?.kind !== 'subagent'), [sessions]);
@@ -163,4 +163,4 @@ export function CraftSessionView(props: ViewProps) {
       </section>)}
     </div>
   </div>;
-}
+});

@@ -11,7 +11,7 @@
     "lib/session-reader.ts": "977b00b9ec67e3e74c02452c1e9cf54dd38cb33985c1664807f519fa72732f9b",
     "components/desktop-transcript/ToolRow.tsx": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
     "public/licenses/pi-desktop/source/ToolRow.tsx.txt": "a6b0ebcdffd09050f5d00f21dddcc03c525a92534bd8b58a407ac296c1aa96a9",
-    "components/AppShell.tsx": "d9353676c1a47f4d27a1a58ec8d14ad0fd7f13cf85650937fc331e0adc345054",
+    "components/AppShell.tsx": "c992eff77d4dc203d385938dd332cd5fa3c1d2a51ac259df22d72e2929842199",
     "components/TurnWrittenFiles.tsx": "b1231ebd6a35c5c49af85446a7c01689a0089f7d25bf278b7ee5567295fbc8d4"
   }
 }

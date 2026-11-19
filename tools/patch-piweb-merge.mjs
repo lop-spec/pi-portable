@@ -108,7 +108,7 @@ export async function GET(request: Request) {`);
   const chat = 'components/ChatWindow.tsx';
   change(chat, '<span style={{ fontSize: 11, color: "var(--text-muted)" }}>', '<span style={{ fontSize: 12, color: "var(--text-muted)" }}>', 2);
   prepend(chat, 'import { publishPortableSessions } from "@/lib/portable-session-store";\nimport { WelcomeResume } from "./WelcomeResume";\n');
-  change(chat, '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />\n        {isEmptyNew && <WelcomeResume />}');
+  change(chat, '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '        <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />\n        {isEmptyNew && onOpenSession && <WelcomeResume onOpenSession={onOpenSession} />}');
   // 消息数据就绪或用户继续提问时，把真实最新问题推给唯一标签；无需额外读取会话文件。
   change(chat, '  const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;', `  const latestUserQuestion = inputHistory[inputHistory.length - 1];
   useEffect(() => {

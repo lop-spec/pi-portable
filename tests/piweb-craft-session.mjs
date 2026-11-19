@@ -65,7 +65,9 @@ test('status filters float on dwell, close on selection and never force a wide s
   assert.match(tree, /onPointerEnter=.*setTimeout\(.*200\)/);
   assert.match(tree, /onPointerLeave=\{scheduleClose\}/);
   assert.match(tree, /ariaLabel="会话状态分类" width=\{156\}/);
-  assert.match(tree, /onSelect=\{value => \{[^}]*setStatusMenu\(null\)/);
+  assert.match(tree, /toggle && mode === 'status' && statusMenu\?\.focus === 'checked'/);
+  assert.match(tree, /onSelect=\{value => \{[^}]*closeStatusMenu\(\)/);
+  assert.match(tree, /props\.onSearchClose\(\);\s*setFilter\(value\)/);
   assert.match(tree, /aria-haspopup="menu"/);
   assert.match(view, /role="menuitemradio"/);
   assert.match(view, /pw-craft-current-filter/);
