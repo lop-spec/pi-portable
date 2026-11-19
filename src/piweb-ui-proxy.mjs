@@ -317,6 +317,7 @@ export class PiWebUiProxy {
     this.healthPort = Number(options.healthPort || process.env.PI_RUN_SUPERVISOR_PORT || (this.publicWebPort || this.webPort) + 1);
     this.bridgePort = Number(options.bridgePort || process.env.CODEX_PROXY_PORT || 8794);
     this.fetch = options.fetchImpl || globalThis.fetch;
+    this.webRequest = options.webRequest || ((options, callback) => http.request(options, callback));
     this.now = options.now || Date.now;
     this.archiveStore = options.archiveStore || new SessionArchiveStore(
       options.archiveFile || path.join(path.dirname(this.sessionRoot), "session-archive.json"),
@@ -420,7 +421,7 @@ export class PiWebUiProxy {
   }
 
   streamProxy(request, response) {
-    const upstream = http.request({
+    const upstream = this.webRequest({
       hostname: "127.0.0.1",
       port: this.webPort,
       method: request.method,
@@ -451,7 +452,7 @@ export class PiWebUiProxy {
     delete headers["if-none-match"];
     delete headers["if-modified-since"];
     return new Promise((resolve, reject) => {
-      const upstream = http.request({
+      const upstream = this.webRequest({
         hostname: "127.0.0.1",
         port: this.webPort,
         method: request.method,

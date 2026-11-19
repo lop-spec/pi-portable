@@ -1,0 +1,42 @@
+name: Pi Web Desktop Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/piweb-portless-desktop]
+permissions:
+  contents: read
+jobs:
+  stage:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - name: Verify desktop transport and existing HTTP mode
+        shell: pwsh
+        run: |
+          node --test --test-timeout=15000 tests/desktop-local-http.test.mjs tests/piweb-ui-proxy.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Transport contracts failed' }
+          foreach ($script in Get-ChildItem src/desktop/*.mjs) {
+            node --check $script.FullName
+            if ($LASTEXITCODE -ne 0) { throw 'Desktop source failed syntax validation' }
+          }
+      - name: Package desktop runtime integration
+        shell: pwsh
+        run: |
+          $stage = New-Item -Type Directory desktop-dist
+          Copy-Item -Recurse src,assets $stage.FullName
+          New-Item -Type Directory (Join-Path $stage.FullName 'tests') | Out-Null
+          Copy-Item tests/desktop-backend-smoke.mjs (Join-Path $stage.FullName 'tests')
+          Copy-Item LICENSE $stage.FullName
+          $receipt = [ordered]@{commit=$env:GITHUB_SHA;runId=$env:GITHUB_RUN_ID;electron='45.4.1';electronSha256='2ba6223afa9121f42831fefe92c434334907540165294fc56697449d12e7cfe9'}
+          $receipt | ConvertTo-Json | Set-Content desktop-dist/build.json -Encoding utf8
+          Compress-Archive -Path desktop-dist/* -DestinationPath pi-web-desktop-win-x64.zip
+          (Get-FileHash pi-web-desktop-win-x64.zip -Algorithm SHA256).Hash | Set-Content pi-web-desktop-win-x64.zip.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-web-desktop-win-x64
+          path: |
+            pi-web-desktop-win-x64.zip
+            pi-web-desktop-win-x64.zip.sha256

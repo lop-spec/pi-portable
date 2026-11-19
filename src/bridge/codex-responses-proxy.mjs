@@ -1073,7 +1073,9 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: { message: "只支持 POST /v1/responses" } }));
 });
 
-server.listen(PORT, HOST, () => {
+export { server as codexHttpServer };
+
+if (process.env.PI_DESKTOP_INTERNAL_BRIDGE !== '1') server.listen(PORT, HOST, () => {
   log(`listening http://${HOST}:${PORT}`);
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
   log(`推理强度：透传会话请求值（桥不改写）`);
