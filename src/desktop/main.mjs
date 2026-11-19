@@ -8,12 +8,18 @@ import { localFetch } from './local-http.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const smoke = process.argv.includes('--desktop-smoke');
-const appHome = path.resolve(process.env.PI_DESKTOP_PROFILE || path.join(app.getPath('appData'), 'PiWebDesktop'));
+const profileSwitch = process.argv.find(arg => arg.startsWith('--desktop-profile='))?.slice('--desktop-profile='.length);
+const appHome = path.resolve(profileSwitch || process.env.PI_DESKTOP_PROFILE || path.join(app.getPath('appData'), 'PiWebDesktop'));
 fs.mkdirSync(appHome, { recursive: true });
 app.setPath('userData', appHome);
 app.commandLine.appendSwitch('no-proxy-server'); // only the separate Codex worker uses the user's proxy
 app.commandLine.appendSwitch('disable-background-networking');
-const config = JSON.parse(fs.readFileSync(path.join(appHome, 'desktop.json'), 'utf8').replace(/^\uFEFF/u, ''));
+let config;
+try { config = JSON.parse(fs.readFileSync(path.join(appHome, 'desktop.json'), 'utf8').replace(/^\uFEFF/u, '')); }
+catch (error) {
+  if (!smoke) dialog.showErrorBox('Pi Web', '桌面版配置无法读取：' + path.join(appHome, 'desktop.json'));
+  throw error;
+}
 const { data, packageRoot, node, accountHomes, egress = 10808 } = config;
 for (const dir of [data, packageRoot, node, ...[accountHomes].filter(Boolean)]) if (!path.isAbsolute(dir) || !fs.existsSync(dir)) throw new Error('Pi Web 桌面版配置路径不存在');
 if (!Number.isInteger(egress) || egress < 1 || egress > 65535) throw new Error('代理配置无效');

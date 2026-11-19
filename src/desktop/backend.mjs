@@ -11,6 +11,9 @@ const { data, packageRoot, pipe, secret, accountHomes, egress, appHome } = await
   process.once('disconnect', reject);
 });
 process.once('disconnect', () => process.exit(0));
+// Next resolves parts of its build manifests relative to cwd. Match the upstream CLI,
+// especially when the desktop shell lives on C: and the pinned Pi Web build is on D:.
+process.chdir(packageRoot);
 const agentDir = path.join(data, '.pi', 'agent');
 const cache = path.join(appHome, 'runtime-data');
 fs.mkdirSync(cache, { recursive: true });
