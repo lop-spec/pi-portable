@@ -19,6 +19,9 @@ function decodeLiteral(raw) {
 // Reverse only high-confidence runs, before filtering or extracting text.
 const suspect = /[銆锛鍙鐨鏍缁瀹绱杩浣鏂鍐鎴涔爜閰闅楠鍗鍒鍑鎵瀵嬪濂锟鈥闂绔]/gu;
 const hanChar = /\p{Script=Han}/gu;
+// Multi-character signatures also catch CP936 output with few of the classic markers.
+const brokenPair = /浼氳瘽|鐘舵€佹|枃浠舵|崯鍧忥|鎴愬姛|鏂囦欢|妫€鏌|闂/u;
+const lossMarker = /[?？\uFFFD]/u;
 let gbPairs;
 function windowsPairs() {
   if (gbPairs) return gbPairs;
@@ -39,32 +42,47 @@ function windowsPairs() {
   return pairs;
 }
 function repairWindowsText(text) {
-  return text.replace(/[^\x00-\x7f\s]{5,}/gu, run => {
-    const signals = run.match(suspect)?.length ?? 0;
-    const lossy = run.includes('\uFFFD');
-    const privateUse = /[\uE000-\uF8FF]/u.test(run);
-    if (signals < 2 && !(signals && (lossy || privateUse))) return run;
-    const pairs = windowsPairs();
-    const repair = part => {
-      const bytes = new Uint8Array(part.length * 2);
-      let i = 0;
-      for (const ch of part) {
-        const pair = pairs.get(ch);
-        if (pair === undefined) return null;
-        if (pair > 255) bytes[i++] = pair >> 8;
-        bytes[i++] = pair & 255;
+  return text.replace(/[^\r\n]+/gu, line => {
+    let damagedLine = false;
+    const repairedLine = line.replace(/[^\x00-\x7f\s？]{5,}[?？]?/gu, (match) => {
+      const marker = /[?？]$/u.test(match) ? match.at(-1) : '';
+      const run = marker ? match.slice(0, -1) : match;
+      const signals = run.match(suspect)?.length ?? 0;
+      const lossy = lossMarker.test(match);
+      const privateUse = /[\uE000-\uF8FF]/u.test(run);
+      const signature = brokenPair.test(run);
+      if (!signature && signals < 2 && !(signals && (lossy || privateUse))) return match;
+      const pairs = windowsPairs();
+      const repair = (part, allowPartial) => {
+        const bytes = new Uint8Array(part.length * 2);
+        let i = 0;
+        for (const ch of part) {
+          const pair = pairs.get(ch);
+          if (pair === undefined) return null;
+          if (pair > 255) bytes[i++] = pair >> 8;
+          bytes[i++] = pair & 255;
+        }
+        try {
+          const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+          // Keep only complete UTF-8 characters. '?' is also used as a replacement by Windows tools.
+          const decoded = decoder.decode(bytes.subarray(0, i), { stream: allowPartial });
+          const han = decoded.match(hanChar)?.length ?? 0;
+          if (han < 3 || han * 2 < decoded.length || /[\x00-\x1f\x7f\uE000-\uF8FF\uFFFD]/u.test(decoded)) return null;
+          return { decoded, partial: allowPartial && new TextEncoder().encode(decoded).length !== i };
+        } catch { return null; }
+      };
+      const replacement = run.includes('\uFFFD');
+      const parts = run.split(/\uFFFD+/u).filter(Boolean);
+      const repaired = parts.map((part, i) => repair(part, replacement || (Boolean(marker) && i === parts.length - 1)));
+      if (repaired.some(Boolean)) {
+        return repaired.filter(Boolean).map(part => part.decoded).join(' ') + (repaired.at(-1)?.partial ? '' : marker);
       }
-      try {
-        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-        // If Windows substituted a broken byte, keep the strictly decodable prefix only.
-        const decoded = decoder.decode(bytes.subarray(0,i), { stream: lossy });
-        const han = decoded.match(hanChar)?.length ?? 0;
-        return han >= 3 && han * 2 >= decoded.length && !/[\x00-\x1f\x7f]/u.test(decoded) ? decoded : null;
-      } catch { return null; }
-    };
-    if (!lossy) return repair(run) ?? (signals >= 3 && privateUse ? '' : run);
-    const repaired = run.split(/\uFFFD+/u).filter(Boolean).map(part => repair(part));
-    return repaired.some(Boolean) ? repaired.filter(Boolean).join(' ') : signals >= 2 ? '' : run;
+      // Known corruption with unrecoverable bytes is not a Chinese excerpt. Never strip individual
+      // characters and accidentally turn the remaining garble into a clickable summary.
+      if (signature || (signals >= 2 && (lossy || privateUse))) damagedLine = true;
+      return match;
+    });
+    return damagedLine ? '' : repairedLine;
   });
 }
 

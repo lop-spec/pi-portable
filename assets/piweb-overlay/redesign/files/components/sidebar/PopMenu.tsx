@@ -115,8 +115,7 @@ export function PopMenu({
       ? items.find((item) => item.getAttribute("aria-checked") === "true")
       : undefined;
     (auto ?? checked ?? items[0] ?? menu).focus({ preventScroll: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialFocus]);
 
   useLayoutEffect(() => {
     const inside = (target: EventTarget | null) => target instanceof Node && Boolean(ref.current?.contains(target));

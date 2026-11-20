@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SessionInfo } from '@/lib/types';
 import { listSessionFamilies } from '@/lib/session-family';
 import { workspaceKeyOf } from '@/lib/workspace-memory';
@@ -37,7 +37,18 @@ export function ProjectTree(props: Props) {
   const clearHover = () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); hoverTimer.current = null; };
   const clearClose = () => { if (closeTimer.current) clearTimeout(closeTimer.current); closeTimer.current = null; };
   const scheduleClose = () => { clearHover(); clearClose(); if (statusMenu?.focus !== 'checked') closeTimer.current = setTimeout(() => setStatusMenu(null), 250); };
-  const showStatusMenu = (element: HTMLElement, focus: 'none' | 'checked') => { clearHover(); clearClose(); setStatusMenu({ anchor: anchorFromElement(element), element, focus }); };
+  const closeStatusMenu = () => { clearHover(); clearClose(); setStatusMenu(null); };
+  const showStatusMenu = (element: HTMLElement, focus: 'none' | 'checked') => {
+    clearHover(); clearClose();
+    const anchor = anchorFromElement(element);
+    // A click upgrades a hover preview; it only toggles an explicitly opened menu.
+    setStatusMenu(current => current?.element === element ? { ...current, focus } : { anchor, element, focus });
+  };
+  const activateStatusMenu = (element: HTMLElement, toggle: boolean) => {
+    setMode('status');
+    if (toggle && mode === 'status' && statusMenu?.focus === 'checked') closeStatusMenu();
+    else showStatusMenu(element, 'checked');
+  };
   useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
   const [folds, setFolds] = useState(readFolds), [more, setMore] = useState<Set<string>>(() => new Set());
   const [children, setChildren] = useState<Set<string>>(() => new Set());
@@ -59,7 +70,13 @@ export function ProjectTree(props: Props) {
     return () => controller.abort();
   }, [clock]);
   const byId = useMemo(() => new Map([...recentArchive.sessions, ...sessions].map(s => [s.id, s])), [sessions, recentArchive]);
-  const workflowSessions = useMemo(() => archiveView ? sessions : [...byId.values()].filter(s => sessions.some(active => active.id === s.id) || recentArchive.resumedIds.includes(s.id)), [archiveView, sessions, byId, recentArchive.resumedIds]);
+  const workflowSessions = useMemo(() => {
+    if (archiveView || !recentArchive.resumedIds.length) return sessions;
+    const activeIds = new Set(sessions.map(session => session.id));
+    const resumedIds = new Set(recentArchive.resumedIds);
+    return [...byId.values()].filter(session => activeIds.has(session.id) || resumedIds.has(session.id));
+  }, [archiveView, sessions, byId, recentArchive.resumedIds]);
+  const archivedIds = useMemo(() => new Set(recentArchive.sessions.map(session => session.id)), [recentArchive.sessions]);
   const allFamilies = useMemo(() => listSessionFamilies([...byId.values()]), [byId]);
   const allReplies = useMemo(() => ({ ...recentArchive.replies, ...replyTimes }), [recentArchive, replyTimes]);
   const testIds = useMemo(() => new Set(recentArchive.testIds ?? []), [recentArchive.testIds]);
@@ -107,12 +124,12 @@ export function ProjectTree(props: Props) {
     return () => observer.disconnect();
   }, [groups, props.loading, props.error]);
   const toggle = (key: string) => setFolds(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); try { localStorage.setItem(foldKey, JSON.stringify([...next])); } catch {} return next; });
-  const openMenu = (id: string, point: { x: number; y: number } | null) => {
+  const openMenu = useCallback((id: string, point: { x: number; y: number } | null) => {
     const session = byId.get(id); if (!session) return;
     const row = root.current?.querySelector(`[data-pi-session-id="${CSS.escape(id)}"]`), rect = row?.getBoundingClientRect();
     dispatchSessionRowContextMenu({ id, path: session.path, cwd: session.cwd, name: session.name,
       clientX: point?.x ?? (rect?.left ?? 0) + 20, clientY: point?.y ?? rect?.bottom ?? 0, refresh: props.onRenamed });
-  };
+  }, [byId, props.onRenamed]);
   const rename = async (id: string, value: string | null) => {
     setRenaming(null); if (value === null) return;
     try {
@@ -134,7 +151,7 @@ export function ProjectTree(props: Props) {
     if (!control) { setNotice('归档组件未就绪，请刷新后重试'); return; }
     control.click();
   };
-  const changeArchive = async (id: string, archived: boolean) => {
+  const changeArchive = useCallback(async (id: string, archived: boolean) => {
     try {
       const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/${archived ? 'restore' : 'archive'}`, { method: 'POST' });
       const data = await response.json();
@@ -142,7 +159,7 @@ export function ProjectTree(props: Props) {
       document.dispatchEvent(new Event('pi-web:refresh-sessions'));
       setClock(Date.now());
     } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
-  };
+  }, []);
   const row = (session: SessionInfo, sub: boolean, family: ReturnType<typeof listSessionFamilies>[number], recent = false) => <div className="pw-project-session" key={session.id} data-session-id={session.id}>{!sub && <StatusButton id={session.id} records={workflow.records} onSave={workflow.save} archived={archiveView || recentArchive.sessions.some(s => s.id === session.id)} onArchive={(id, archived) => void changeArchive(id, archived)} disabled={session.transient} />}<SessionRow
     session={session} depth={sub ? 1 : 0} timeLabel={formatSessionTime(recent ? allReplies[session.id] ?? session.modified : session.modified, new Date())} tooltipTime={formatSessionDateTime(recent ? allReplies[session.id] ?? session.modified : session.modified, new Date())}
     isSelected={session.id === selectedSessionId} isRunning={[session, ...(!sub ? family.subagents : [])].some(s => runningSessionIds.has(s.id))}
@@ -151,13 +168,16 @@ export function ProjectTree(props: Props) {
     onSelect={id => { const s = byId.get(id); if (s) props.onSelect(s); }} onToggleFamily={id => setChildren(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; })}
     onOpenMenu={openMenu} onRenameCommit={(id, value) => void rename(id, value)} /></div>;
   return <div className={`pw-tree${mode === 'status' ? ' pw-tree-status' : ''}`} ref={root}>
-    <div className="pw-tree-head"><div className="pw-craft-modes" role="group" aria-label="会话视图"><button type="button" aria-pressed={mode === 'status'} aria-haspopup="menu" aria-expanded={Boolean(statusMenu)} title="悬停或点击筛选状态" onPointerEnter={event => { if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return; clearClose(); clearHover(); const element = event.currentTarget; if (!statusMenu) hoverTimer.current = setTimeout(() => { if (element.isConnected) showStatusMenu(element, 'none'); }, 200); }} onPointerLeave={scheduleClose} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setMode('status'); showStatusMenu(event.currentTarget, 'checked'); } }} onClick={event => { if (mode !== 'status') { setMode('status'); showStatusMenu(event.currentTarget, 'checked'); } else if (statusMenu) { clearHover(); clearClose(); setStatusMenu(null); } else showStatusMenu(event.currentTarget, 'checked'); }}>状态</button><button type="button" aria-pressed={mode === 'project'} onClick={() => { clearHover(); clearClose(); setStatusMenu(null); setMode('project'); }}>项目 <small>{registry.projects.length}/8</small></button></div><span data-pi-archive-slot="" /><button type="button" className="pw-icon-btn pw-icon-btn--sm" title={registry.projects.length >= 8 ? '已满8个，按新名称自动合并并重命名' : '新建项目'} aria-label="新建项目" onClick={() => { clearHover(); clearClose(); setStatusMenu(null); setMode('project'); setCreating(v => !v); }}><Icon name="plus" /></button></div>
-    {statusMenu && <PopMenu anchor={statusMenu.anchor} returnFocus={statusMenu.element} ariaLabel="会话状态分类" width={156} initialFocus={statusMenu.focus} ignoreOutside={target => statusMenu.element.contains(target)} onClose={() => { clearHover(); clearClose(); setStatusMenu(null); }} className="pw-craft-filters-menu"><WorkflowFilters sessions={workflowSessions} records={workflow.records} filter={filter} archived={archiveView} onPointerEnter={clearClose} onPointerLeave={scheduleClose} onSelect={value => { clearHover(); clearClose(); setFilter(value); setMode('status'); changeArchiveView(value === 'archived'); setStatusMenu(null); }} /></PopMenu>}
+    <div className="pw-tree-head"><div className="pw-craft-modes" role="group" aria-label="会话视图"><button type="button" aria-pressed={mode === 'status'} aria-haspopup="menu" aria-expanded={Boolean(statusMenu)} title="悬停或点击筛选状态" onPointerEnter={event => { if (event.pointerType !== 'mouse' && event.pointerType !== 'pen') return; clearClose(); clearHover(); const element = event.currentTarget; if (!statusMenu) hoverTimer.current = setTimeout(() => { if (element.isConnected) showStatusMenu(element, 'none'); }, 200); }} onPointerLeave={scheduleClose} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); activateStatusMenu(event.currentTarget, false); } }} onClick={event => activateStatusMenu(event.currentTarget, true)}>状态</button><button type="button" aria-pressed={mode === 'project'} onClick={() => { clearHover(); clearClose(); setStatusMenu(null); setMode('project'); }}>项目 <small>{registry.projects.length}/8</small></button></div><span data-pi-archive-slot="" /><button type="button" className="pw-icon-btn pw-icon-btn--sm" title={registry.projects.length >= 8 ? '已满8个，按新名称自动合并并重命名' : '新建项目'} aria-label="新建项目" onClick={() => { clearHover(); clearClose(); setStatusMenu(null); setMode('project'); setCreating(v => !v); }}><Icon name="plus" /></button></div>
+    {statusMenu && <PopMenu anchor={statusMenu.anchor} returnFocus={statusMenu.element} ariaLabel="会话状态分类" width={156} initialFocus={statusMenu.focus} ignoreOutside={target => statusMenu.element.contains(target)} onClose={() => { clearHover(); clearClose(); setStatusMenu(null); }} className="pw-craft-filters-menu"><WorkflowFilters sessions={workflowSessions} records={workflow.records} filter={filter} archived={archiveView} onPointerEnter={clearClose} onPointerLeave={scheduleClose} onSelect={value => {
+        if (props.searchOpen && props.searchQuery.trim()) props.onSearchClose();
+        setFilter(value); setMode('status'); changeArchiveView(value === 'archived'); closeStatusMenu();
+      }} /></PopMenu>}
     {workflow.error && <div role="alert" className="pw-craft-error">{workflow.error} <button type="button" onClick={() => void workflow.reload()}>重试</button></div>}
     {creating && <form className="pw-tree-create" onSubmit={e => { e.preventDefault(); void create(); }}><input className="pw-input" autoFocus aria-label="项目名称" placeholder={registry.projects.length >= 8 ? '合并后的准确名称' : '准确的项目名称'} maxLength={40} value={newName} onChange={e => setNewName(e.target.value)} /><button className="pw-btn pw-btn--sm" disabled={busy || !newName.trim()}>创建</button></form>}
     {props.searchOpen && <div className="pw-tree-search"><input ref={search} id="session-search-input" className="pw-input" type="search" placeholder="搜索所有会话…" aria-label="搜索所有会话" value={props.searchQuery} onChange={e => props.onSearchQueryChange(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') props.onSearchClose(); }} /><button className="pw-icon-btn" aria-label="关闭搜索" onClick={props.onSearchClose}><Icon name="close" /></button></div>}
     <SessionSearch open={props.searchOpen} query={props.searchQuery} selectedSessionId={selectedSessionId} onSelectSession={props.onSelect} labelForSession={props.labelForSession} renderStatus={session => <StatusButton id={session.id} records={workflow.records} onSave={workflow.save} disabled={session.transient} />} />
-    {mode === 'status' && !(props.searchOpen && Boolean(props.searchQuery.trim())) && <CraftSessionView sessions={workflowSessions} records={workflow.records} selectedSessionId={selectedSessionId} running={runningSessionIds} unread={unreadSessionIds} archived={archiveView} archivedIds={new Set(recentArchive.sessions.map(s => s.id))} filter={filter} onSelect={props.onSelect} onSave={workflow.save} onArchive={(id, archived) => void changeArchive(id, archived)} onMenu={openMenu} />}
+    {mode === 'status' && !(props.searchOpen && Boolean(props.searchQuery.trim())) && <CraftSessionView sessions={workflowSessions} records={workflow.records} selectedSessionId={selectedSessionId} running={runningSessionIds} unread={unreadSessionIds} archived={archiveView} archivedIds={archivedIds} filter={filter} onSelect={props.onSelect} onSave={workflow.save} onArchive={changeArchive} onMenu={openMenu} />}
     <nav className="pw-tree-scroll scrollbar-subtle" aria-label="项目与对话" hidden={mode !== 'project' || (props.searchOpen && Boolean(props.searchQuery.trim()))} onKeyDown={e => {
       if (e.key === 'F2') {
         const id = (e.target as HTMLElement).closest<HTMLElement>('[data-pi-session-id]')?.dataset.piSessionId;

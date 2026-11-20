@@ -67,7 +67,7 @@
     },
     "components/AppShell.tsx": {
       "baseSha": "0591b0c1cb97d1520a12cc426200f4e8774300ab9167e301d460c10efd60a9ff",
-      "sha": "40e2c1eb85943a010ea1c6b226c4072aad3412cf57ef870d6d6c1159b46d5b0a"
+      "sha": "2946c11c3aa6ecd0b67c3009dd1150af29158d7788fa55645267989db032fc32"
     },
     "components/AppShell.workspace-memory.test.mjs": {
       "baseSha": "747779462f2d235ead23e8ea32bcc97d4f93c51c86ea377a17be678535b58174",
@@ -303,7 +303,7 @@
     },
     "components/sidebar/PopMenu.tsx": {
       "baseSha": null,
-      "sha": "22339aefacea292bc74ca72afafa3263ad3e171f5e920f4be6f3fd6db5f4ba8a"
+      "sha": "2abf7804c169dd0221a3cf36355db7e4a028378898506527fcb2c8334f067c74"
     },
     "components/sidebar/project-label.ts": {
       "baseSha": null,

@@ -1,7 +1,7 @@
 {
   "stage": "project-tree-after-excerpts",
   "files": {
-    "components/ProjectTree.tsx": "4d81430d7fcb5b560b7c9b225b46dfedace58070b6e0e0f717b4e87c7cc62b06",
+    "components/ProjectTree.tsx": "5962802de58ac20dcf166d2b90c6c9f1f8f34ba553603776def67f517a87e42d",
     "components/CraftSessions.tsx": "42b62da0dd4fedca0a13a88e3622df9b07a6112985e120fee72bae7bd7da0756",
     "lib/craft-session/model.mjs": "29738de4a76dcca40931ea5f41058004be35b1ea90b3d749e516db8b2734e833",
     "lib/craft-session/store.mjs": "b5d06f69d2725bcc36879d70c126b91c658e69fd73914da256ad8d64acd0f73f",

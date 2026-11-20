@@ -29,6 +29,17 @@ test('recovers Windows UTF-8 mojibake in live results and saved excerpts without
   assert.deepEqual(toolChineseExcerpts(result('銆锛鍙鐨鏍\uE111�')), []);
   assert.deepEqual(toolChineseExcerpts(result(damaged('密码不要展示。'))), []);
 });
+test('repairs CP936 output where PowerShell replaced a partial UTF-8 character with a question mark', () => {
+  const damaged = '浼氳瘽鐘舵€佹枃浠舵崯鍧忥紝宸插仠姝㈠啓鍏?';
+  const recovered = '会话状态文件损坏，已停止写';
+  const text = "if (!valid) throw new Error('" + damaged + ');\r\n后续正常日志仍可读取。';
+  const live = toolChineseExcerpts(result(JSON.stringify({ output: text })));
+  assert.match(live.join('\n'), new RegExp(recovered, 'u'));
+  assert.doesNotMatch(live.join('\n'), /浼氳瘽|鐘舵|[€㈠\uFFFD]/u);
+  assert.deepEqual(toolChineseExcerpts({ ...result(''), chatView: { chineseExcerpts: [damaged] } }), [recovered]);
+  assert.deepEqual(extractChineseSource('浼氳瘽銆锛髙€??\n后续正常日志仍可读取。'), ['后续正常日志仍可读取。']);
+  assert.deepEqual(extractChineseSource('繁體字的鐘與舵分別是不同字，價格為 €3。這是問題嗎？'), ['繁體字的鐘與舵分別是不同字，價格為 €3。這是問題嗎？']);
+});
 test('JSON keys/quotes delimit complete values, including escaped quotes and newlines', () => {
   const message = '已检查 API 的 3 个分支，结果为“正常”。\n下一行保留 index.ts 和 502。';
   assert.deepEqual(extractChineseSource(JSON.stringify({ message, status: 'success', nested: { text: '继续核对 foo.ts：耗时 12 ms。' } })), [message, '继续核对 foo.ts：耗时 12 ms。']);
@@ -173,15 +184,16 @@ test('shipping timeline renders only calls with Chinese results, live and in his
     '@/lib/craft-transcript-model.mjs': await import('../assets/piweb-overlay/craft-transcript/model.mjs'),
     'lucide-react': new Proxy({}, {get:()=>()=>null}),
   }, 'PortableProcessTimeline.tsx');
-  const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:['first','second','english','filtered','pending'].map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status'],_intent:'这段调用说明不是结果'}}))}}];
+  const ids=['first','second','english','filtered','windows','unrecoverable','pending'];
+  const entries=[{kind:'assistant',key:'a',entryId:'a',message:{content:ids.map(id=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{commands:['git status'],_intent:'这段调用说明不是结果'}}))}}];
   const a='核对工作区的修改记录。', b='构建产物已通过完整性校验。', c='第二次检查也已完成。';
   for (const live of [true,false]) {
     const corrupted = new TextDecoder('gb18030').decode(new TextEncoder().encode(b));
-    const msgs=[result(a+'\n\n'+b),result(corrupted+'\n\n第二次\t检查\u3000也已完成。'),result('nothing to commit'),result('所在位置：这里不是中文摘录')];
-    const toolResults=new Map(['first','second','english','filtered'].map((id,i)=>[id,live?msgs[i]:{...msgs[i],chatView:{chineseExcerpts:toolChineseExcerpts(msgs[i])},content:[]} ]));
+    const msgs=[result(a+'\n\n'+b),result(corrupted+'\n\n第二次\t检查\u3000也已完成。'),result('nothing to commit'),result('所在位置：这里不是中文摘录'),result('浼氳瘽鐘舵€佹枃浠舵崯鍧忥紝宸插仠姝㈠啓鍏?'),result('浼氳瘽銆锛髙€??')];
+    const toolResults=new Map(msgs.map((msg,i)=>[ids[i],live?msg:{...msg,chatView:{chineseExcerpts:toolChineseExcerpts(msg)},content:[]} ]));
     const html=renderToStaticMarkup(React.createElement(view,{entries,toolResults,live}));
-    assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1)]);
-    assert.doesNotMatch(html,/执行工具|nothing to commit|展开摘录|收起摘录|这段调用说明不是结果|这里不是中文摘录/);
+    assert.deepEqual([...html.matchAll(/data-call-excerpt="true">([^<]*)</gu)].map(m=>m[1]),[a.slice(0,-1),b.slice(0,-1),'会话状态文件损坏']);
+    assert.doesNotMatch(html,/执行工具|nothing to commit|展开摘录|收起摘录|这段调用说明不是结果|这里不是中文摘录|浼氳瘽|鐘舵/);
     const {projectCraftTurn}=await import('../assets/piweb-overlay/craft-transcript/model.mjs');
     const selected=projectCraftTurn(entries,toolResults,live).activities[1];
     const details=renderToStaticMarkup(React.createElement(Details,{activity:selected,onClose(){}}));

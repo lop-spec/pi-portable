@@ -552,9 +552,11 @@ export function AppShell() {
   // Guards the async workspace restore so a slow response from an earlier
   // switch cannot resurrect a session into a project the user already left.
   const workspaceRestoreTokenRef = useRef(0);
+  const [sessionOpen, setSessionOpen] = useState<{ id: string; failed: boolean } | null>(null);
 
   const invalidateWorkspaceRestore = useCallback(() => {
     workspaceRestoreTokenRef.current += 1;
+    setSessionOpen(null);
   }, []);
 
   // Persist every active-session transition, including new and forked sessions
@@ -850,13 +852,20 @@ export function AppShell() {
       handleSelectSession(catalogued);
       return;
     }
+    const token = ++workspaceRestoreTokenRef.current;
+    setSessionOpen({ id: sessionId, failed: false });
     try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" });
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        cache: "no-store", signal: AbortSignal.timeout(10000),
+      });
       const data = await response.json() as { info?: SessionInfo; error?: string };
+      if (token !== workspaceRestoreTokenRef.current) return;
       if (!response.ok || !data.info) throw new Error(data.error ?? `HTTP ${response.status}`);
       handleSelectSession(data.info);
     } catch (error) {
+      if (token !== workspaceRestoreTokenRef.current) return;
       console.error("[pi-web] failed to open session:", error instanceof Error ? error.message : error);
+      setSessionOpen({ id: sessionId, failed: true });
       setImageTask((current) => current.sessionId === sessionId
         ? { ...current, error: translate("chat.imageTask.openFailed") } : current);
     }
@@ -2085,6 +2094,14 @@ export function AppShell() {
         {isMobile && renderProjectTrustWarning(true)}
         </div>
 
+        {sessionOpen && (sessionOpen.failed ? (
+          <div role="alert" className="pw-craft-error">
+            {locale === "zh-CN" ? "会话打开失败" : locale === "zh-TW" ? "無法開啟對話" : "Could not open the session"}{" "}
+            <button type="button" onClick={() => void handleOpenSession(sessionOpen.id)}>
+              {locale === "zh-CN" ? "重试" : locale === "zh-TW" ? "重試" : "Retry"}
+            </button>
+          </div>
+        ) : <div role="status" className="pw-craft-error" style={{ color: "var(--text-muted)" }}>{translate("chat.loadingSession")}</div>)}
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
