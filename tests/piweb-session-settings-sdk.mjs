@@ -68,7 +68,7 @@ test('actual cold-session API route admits explicit replacement before restoring
    if(!options.replacementModel)throw Error('Saved session model is unavailable: pi-free/kimi-k3.1-pro');
    return {session:{send:async(command)=>{calls.push({command});return {id:command.modelId,provider:command.provider};}}};
   }};
-  const require=name=>name==='next/server'?{NextResponse:{json:(data,opts)=>({data,status:opts?.status??200})}}:name==='@/lib/session-reader'?{resolveSessionPath:async()=>'/fake/session.jsonl'}:name==='@/lib/rpc-manager'?runtime:(()=>{throw Error(name);})();
+  const require=name=>name==='next/server'?{NextResponse:{json:(data,opts)=>({data,status:opts?.status??200})}}:name==='@earendil-works/pi-coding-agent'?{getAgentDir:()=>'/fake/agent'}:name==='@/lib/session-defaults-store.mjs'?{readSessionDefaults:()=>null,planSessionDefaults:()=>({})}:name==='@/lib/session-reader'?{resolveSessionPath:async()=>'/fake/session.jsonl',openSessionManager:()=>({getBranch:()=>[]})}:name==='@/lib/rpc-manager'?runtime:(()=>{throw Error(name);})();
   vm.runInNewContext(ts.transpileModule(route,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{exports,require});
   const response=await exports.POST({json:async()=>body},{params:Promise.resolve({id:'fixture-old-session'})});
   return {response,calls};

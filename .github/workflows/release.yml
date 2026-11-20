@@ -108,7 +108,7 @@ jobs:
           node --test tests/patch-piweb-worktree-sessions-contract.mjs
           node --test tests/patch-piweb-live-models-contract.mjs
           node --test tests/piweb-service-tier-contract.mjs
-          node --test tests/piweb-thinking-preference.mjs
+          node --test tests/piweb-thinking-preference.mjs tests/piweb-session-experience.mjs
           node --test tests/codex-overload-retry.mjs
           node tests/bridge-5xx-retry-e2e.mjs
           node tests/pi-pretool-contract.mjs --static
@@ -197,7 +197,7 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "upstream dependency install failed" }
           Pop-Location
-          node --test tests/piweb-thinking-session.mjs tests/patch-piweb-source-contract.mjs tests/piweb-projects.mjs tests/piweb-context-actions.mjs tests/piweb-model-menu.mjs tests/patch-piweb-redesign-contract.mjs tests/piweb-tool-excerpts.mjs tests/piweb-project-tree.mjs tests/piweb-project-capacity.mjs tests/piweb-project-monthly.mjs tests/piweb-desktop-transcript.mjs tests/patch-piweb-merge-contract.mjs
+          node --test tests/piweb-thinking-session.mjs tests/patch-piweb-source-contract.mjs tests/piweb-projects.mjs tests/piweb-context-actions.mjs tests/piweb-model-menu.mjs tests/patch-piweb-redesign-contract.mjs tests/piweb-tool-excerpts.mjs tests/piweb-project-tree.mjs tests/piweb-project-capacity.mjs tests/piweb-project-monthly.mjs tests/piweb-desktop-transcript.mjs tests/patch-piweb-merge-contract.mjs tests/piweb-session-experience.mjs tests/piweb-session-settings.mjs tests/piweb-session-settings-sdk.mjs
           if ($LASTEXITCODE -ne 0) { throw "source integration contracts failed" }
           node --experimental-strip-types --test tests/piweb-search-index.mjs
           if ($LASTEXITCODE -ne 0) { throw "search index regression" }
