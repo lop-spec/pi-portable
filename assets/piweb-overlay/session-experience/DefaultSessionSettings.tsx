@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { ModelSelector } from "./ModelSelector";
+import { ConfigSwitch } from "./SettingsUi";
 import { writeThinkingPreference } from "@/lib/thinking-preference.mjs";
 
 type Model = { provider: string; id: string; name: string };
@@ -39,7 +40,7 @@ export function DefaultSessionSettings({ cwd }: { cwd: string | null }) {
     <p className="settings-general-description">新会话使用默认值；运行中的任务不会中断。</p>
     <div className="pw-default-field"><span>默认模型</span><ModelSelector variant="field" ariaLabel="默认模型" disabled={!data||busy} options={(data?.models??[]).map(m=>({provider:m.provider,modelId:m.id,name:m.name}))} value={selected?{provider:selected.provider,modelId:selected.id}:null} onChange={(provider,modelId)=>{const next=`${provider}/${modelId}`;setKey(next);const allowed=data?.thinkingLevels[`${provider}:${modelId}`]??[];setLevel(old=>allowed.includes(old)?old:allowed.at(-1)??"");setNotice("");}} /></div>
     <label className="pw-default-field" htmlFor="pw-default-thinking"><span>推理强度</span><select id="pw-default-thinking" value={levels.includes(level)?level:""} disabled={!levels.length||busy} onChange={e=>{setLevel(e.target.value);setNotice("");}}><option value="" disabled>请选择</option>{levels.map(value=><option value={value} key={value}>{labels[value]??value}</option>)}</select></label>
-    <label className="pw-default-apply"><input type="checkbox" checked={existing} disabled={busy} onChange={e=>setExisting(e.target.checked)} /> 已有会话跟随</label>
+    <div className="pw-default-apply"><span>已有会话跟随</span><ConfigSwitch checked={existing} disabled={busy} label="已有会话跟随" onChange={setExisting} /></div>
     <p className="settings-general-description">空闲后下次发送生效；之后单独切换的会话，以单独设置为准。</p>
     <div className="pw-default-actions"><button type="button" className="config-button config-button-small config-button-secondary" disabled={busy||!selected||!levels.includes(level)} onClick={()=>void save()}>{busy?"保存中":"保存默认"}</button>{notice&&<span role={failed?"alert":"status"}>{notice}</span>}</div>
   </section>;

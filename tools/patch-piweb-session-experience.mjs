@@ -48,11 +48,15 @@ export function integrateSessionExperience({get,set,change,prepend,template}) {
 // POST /api/agent/[id] - Send a command to an existing session`);
   change(route,'    if (existing?.isAlive()) {\n      const result = await existing.send(body);',`    if (existing?.isAlive()) {
       if (body.type === "prompt" && !existing.isRunning()) {
-        const plan = planSessionDefaults(existing.inner.sessionManager.getBranch(),readSessionDefaults(getAgentDir()));
-        await applySessionDefaults(existing, plan);
+        const defaults = readSessionDefaults(getAgentDir());
+        if (defaults?.applyExisting) {
+          const plan = planSessionDefaults(existing.inner.sessionManager.getBranch(), defaults);
+          await applySessionDefaults(existing, plan);
+        }
       }
       const result = await existing.send(body);`);
-  change(route,'    const { session } = await startRpcSession(id, filePath, undefined, {',`    const plan = body.type === "prompt" ? planSessionDefaults(openSessionManager(filePath).getBranch(),readSessionDefaults(getAgentDir())) : {};
+  change(route,'    const { session } = await startRpcSession(id, filePath, undefined, {',`    const defaults = body.type === "prompt" ? readSessionDefaults(getAgentDir()) : null;
+    const plan = defaults?.applyExisting ? planSessionDefaults(openSessionManager(filePath).getBranch(),defaults) : {};
     const { session } = await startRpcSession(id, filePath, undefined, {`);
   change(route,'      ...(body.type === "set_model"\n        ? { replacementModel: { provider: body.provider as string, modelId: body.modelId as string } }\n        : {}),',`      ...(body.type === "set_model"
         ? { replacementModel: { provider: body.provider as string, modelId: body.modelId as string } }
