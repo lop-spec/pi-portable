@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, Menu } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localFetch } from './local-http.mjs';
+import { installDesktopLinks } from './links.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const smoke = process.argv.includes('--desktop-smoke');
@@ -70,7 +71,7 @@ else {
     const pid = await startWorker();
     Menu.setApplicationMenu(null); // remove the native File/Edit/View row, not the window title bar
     win = new BrowserWindow({ title: 'Pi Web', width: 1160, height: 800, show: false,
-      webPreferences: { partition: 'persist:piweb', sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false } });
+      webPreferences: { partition: 'persist:piweb', sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false, ...(smoke ? { offscreen: true } : {}) } });
     const contents = win.webContents;
     const session = contents.session;
     session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -81,8 +82,30 @@ else {
       try { return await localFetch(request, undefined, { socketPath: pipe }, { extraHeaders: { 'x-pi-desktop-key': secret } }); }
       catch { return new Response('本地 Pi 内核连接失败', { status: 502 }); }
     });
-    contents.on('will-navigate', (event, url) => { if (!allowedUrl(url)) event.preventDefault(); });
-    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    const reportLinkError = error => {
+      audit(`link open failed: ${error?.code || error?.name || 'error'}`);
+      if (!smoke && !win.isDestroyed()) void dialog.showMessageBox(win, { type: 'warning', message: '无法打开链接', detail: '请检查系统默认浏览器或对应的查看程序。' });
+    };
+    const linkCheck = [];
+    const openExternal = smoke ? async url => { linkCheck.push(url); } : url => shell.openExternal(url);
+    const previews = new Set();
+    const openLocal = async url => {
+      const target = new URL(url);
+      const pdf = /^\/api\/files\/.*\.pdf$/iu.test(target.pathname) && target.searchParams.get('type') === 'read';
+      const preview = new BrowserWindow({ parent: win, title: 'Pi Web', width: 1040, height: 760, show: false,
+        webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false, plugins: pdf } });
+      previews.add(preview);
+      preview.once('closed', () => previews.delete(preview));
+      installDesktopLinks(preview.webContents, { origin, openExternal, openLocal, onError: reportLinkError });
+      try {
+        await preview.loadURL(url);
+        if (!smoke && !preview.isDestroyed()) preview.show();
+      } catch (error) {
+        if (!preview.isDestroyed()) preview.destroy();
+        if (error.code !== 'ERR_ABORTED') throw error; // Chromium may hand off downloads instead of rendering
+      }
+    };
+    installDesktopLinks(contents, { origin, openExternal, openLocal, onError: reportLinkError });
     win.once('ready-to-show', () => { if (!smoke && !win.isDestroyed()) win.show(); });
     await win.loadURL(`${origin}/`);
     audit(`ready main=${process.pid} worker=${pid}${smoke ? ' smoke' : ''}`);
@@ -98,6 +121,8 @@ else {
       const menuRemoved = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
       audit(`smoke ${JSON.stringify({ ...result, menuRemoved })}`);
       if (result.sessionsStatus !== 200 || result.projectsStatus !== 200 || !result.json || !result.document || result.scripts < 2 || !menuRemoved || result.quotaStatus !== 200 || !result.quotaShape || !result.quotaUi) throw new Error('desktop smoke: page, local API, quota or native menu failed');
+      const { smokeDesktopLinks } = await import('./links-smoke.mjs');
+      audit(`links smoke ${JSON.stringify(await smokeDesktopLinks(contents, origin, linkCheck, previews))}`);
       app.quit();
     }
   }).catch(error => {
