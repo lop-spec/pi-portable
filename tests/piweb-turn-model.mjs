@@ -44,7 +44,8 @@ test('integrated Craft component renders model above steps, with exact ID toolti
  assert.ok(output.includes('data-call-excerpt="true"')&&output.includes(text.slice(0,-1)));
  const live=render({...props,streamingMessage:b});
  assert.match(live,/class="craft-model-label" title="actual\/model-b" data-model="actual\/model-b" aria-live="polite">Model B<\/div>/);
- assert.ok(live.indexOf('craft-model-label')<live.indexOf('class="craft-work-log'));
+ assert.doesNotMatch(live,/class="craft-work-log"/);
+ assert.match(output,/class="craft-model-label"[\s\S]*class="craft-work-log"/);
  const historical=render({...props,live:false});assert.match(historical,/data-model="actual\/model-a">Model A/);
  assert.doesNotMatch(historical,/class="craft-model-label"[^>]*aria-live/);
  const pre=render({...props,entries:[]});assert.match(pre,/data-model="confirmed\/runtime"/);
