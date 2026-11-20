@@ -1227,14 +1227,14 @@
 (() => {
   "use strict";
 
-  const VERSION = "piweb-account-usage-v3";
+  const VERSION = "piweb-account-usage-v4";
   const ENDPOINT = "/__pi_account_usage";
   const SELECT_ENDPOINT = "/__pi_account_select";
   const LOGIN_ENDPOINT = "/__pi_account_login";
-  // The bridge refreshes upstream data every four minutes. Reading its local
-  // snapshot every 45 seconds keeps the rendered value safely below five
-  // minutes old even with timer jitter; this never calls a model endpoint.
+  // Desktop reads the local snapshot only; the bridge schedules and deduplicates upstream reads.
   const BROWSER_REFRESH_MS = 45_000;
+  const LIVE_SNAPSHOT_MS = 2_000;
+  const refreshDelay = () => state.data?.live ? LIVE_SNAPSHOT_MS : BROWSER_REFRESH_MS;
   // A failed read retries sooner (5 s, 15 s, then the normal 45 s), with ±20 % jitter so tabs spread out.
   const RETRY_MS = [5_000, 15_000, 45_000];
   // The proxy waits up to 2.5 s for a busy bridge before answering from its snapshot.
@@ -1797,7 +1797,7 @@
     state.badge.hidden = abnormal === 0;
     state.badge.textContent = String(abnormal);
     const lines = [used != null ? text.buttonUsed(used)
-      : !state.data && state.error ? `${text.unavailable} · ${text.retrying}` : text.button];
+      : state.error || active?.error || active?.stale ? `${text.unavailable} · ${text.retrying}` : text.button];
     if (abnormal) lines.push(text.accountsAbnormal(abnormal));
     state.button.title = lines.join("\n");
     state.button.setAttribute("aria-label", lines.join("，"));
@@ -1810,7 +1810,7 @@
     state.renderedLocale = locale();
     state.title.textContent = text.title;
     state.panel.setAttribute("aria-label", text.title);
-    state.panel.setAttribute("aria-busy", String(state.loading));
+    state.panel.setAttribute("aria-busy", String(state.loading && (!state.data || !state.data.live)));
     renderLogin();
     if (state.autoResetButton) {
       const setting = state.data?.autoReset;
@@ -1822,9 +1822,10 @@
       state.autoResetNote.textContent = state.autoResetError || (setting?.settingsError ? text.autoResetFailed : "");
     }
 
+    const liveUnavailable = state.data?.live && (state.error || state.data.proxyStale);
     const accounts = (Array.isArray(state.data?.accounts) ? state.data.accounts : []).map(account => {
       const fetched = Date.parse(account.fetchedAt || "");
-      return { ...account, stale: account.stale || !Number.isFinite(fetched)
+      return { ...account, stale: Boolean(liveUnavailable) || account.stale || !Number.isFinite(fetched)
         || Date.now() - fetched > (state.data.accuracyMaxAgeMs || 300_000) };
     });
     // Keep cached rows (and keyboard focus) through loading transitions. Closed
@@ -1851,7 +1852,9 @@
       }
     }
 
-    const checkedAt = Date.parse(state.data?.lastCompletedAt || "");
+    const checkedAt = state.data?.live
+      ? Math.max(-Infinity, ...accounts.filter(account => !account.error && !account.stale).map(account => Date.parse(account.fetchedAt)))
+      : Date.parse(state.data?.lastCompletedAt || "");
     const minutes = Math.max(0, Math.floor((Date.now() - checkedAt) / 60_000));
     const abnormal = accounts.filter(account => account.stale || account.error).length;
     const checkStatus = Number.isFinite(checkedAt) ? (minutes < 1 ? text.updatedNow : text.updatedMinutes(minutes)) : '—';
@@ -1901,7 +1904,7 @@
       clearTimeout(timeout);
       state.loading = false;
       render();
-      const base = state.error ? RETRY_MS[Math.min(state.failures, RETRY_MS.length) - 1] : BROWSER_REFRESH_MS;
+      const base = state.error ? RETRY_MS[Math.min(state.failures, RETRY_MS.length) - 1] : refreshDelay();
       scheduleRefresh(state.error ? Math.round(base * (0.8 + Math.random() * 0.4)) : base);
     }
   }
@@ -1918,7 +1921,7 @@
     render();
     if (focusFirst) state.panel.querySelector("button:not(:disabled):not([hidden]),a[href],input")?.focus({ preventScroll: true });
     document.documentElement.dataset.piAccountUsageOpenLatencyMs = (performance.now() - startedAt).toFixed(2);
-    if (state.error || !state.lastFetchAt || Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
+    if (state.data?.live || state.error || !state.lastFetchAt || Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
   }
 
   function createUi() {
@@ -2022,7 +2025,7 @@
   const start = () => {
     createUi();
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS) void refresh(false);
+      if (document.visibilityState === "visible" && (state.data?.live || Date.now() - state.lastFetchAt >= BROWSER_REFRESH_MS)) void refresh(false);
     });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });

@@ -311,5 +311,7 @@ test("a bridge slower than the page budget is not aborted: its answer lands in t
 test("the browser backs off 5 s / 15 s / 45 s with jitter and retries at once when the panel opens on an error", () => {
   assert.match(quotaUi, /const RETRY_MS = \[5_000, 15_000, 45_000\]/u);
   assert.match(quotaUi, /0\.8 \+ Math\.random\(\) \* 0\.4/u);
-  assert.match(quotaUi, /if \(state\.error \|\| !state\.lastFetchAt/u);
+  assert.match(quotaUi, /if \(state\.data\?\.live \|\| state\.error \|\| !state\.lastFetchAt/u);
+  assert.match(quotaUi, /const LIVE_SNAPSHOT_MS = 2_000/u);
+  assert.match(quotaUi, /state\.data\?\.live && \(state\.error \|\| state\.data\.proxyStale\)/u);
 });

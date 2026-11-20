@@ -63,7 +63,9 @@ function resetCreditCount(value) {
 
 export function parseAccountUsagePayload(value) {
   const primary = value?.rate_limit?.primary_window || {};
-  const usedValue = Number(primary.used_percent);
+  const rawUsed = primary.used_percent;
+  const usedValue = typeof rawUsed === "number" || (typeof rawUsed === "string" && rawUsed.trim())
+    ? Number(rawUsed) : NaN;
   if (!Number.isFinite(usedValue)) throw new Error("usage response has no primary quota");
   const usedPercent = Math.min(100, Math.max(0, Math.round(usedValue)));
   // available_count is the banked card balance. applicable_available_count can
@@ -144,6 +146,9 @@ export function createAccountUsageMonitor(options) {
     now = Date.now,
     refreshMs = ACCOUNT_USAGE_REFRESH_MS,
     freshMs = ACCOUNT_USAGE_FRESH_MS,
+    live = false,
+    modelRefreshDelayMs = 2_000,
+    modelRefreshMinGapMs = 5_000,
   } = options;
   if (typeof members !== "function" || typeof requestUsage !== "function") {
     throw new Error("account usage monitor requires members and requestUsage");
@@ -154,6 +159,9 @@ export function createAccountUsageMonitor(options) {
   let timer = null;
   let lastAttemptAt = 0;
   let lastCompletedAt = 0;
+  const memberInFlight = new Map();
+  const followUps = new Map();
+  const lastMemberAttemptAt = new Map();
 
   function resolveIdentity(member) {
     let fromFile = { token: "", accountId: "", email: "" };
@@ -187,65 +195,70 @@ export function createAccountUsageMonitor(options) {
     }
   }
 
+  function refreshMemberUsage(member) {
+    const { id } = member;
+    if (memberInFlight.has(id)) return memberInFlight.get(id);
+    if (live) lastMemberAttemptAt.set(id, now());
+    const work = (async () => {
+      const previous = records.get(id);
+      try {
+        const { identity, usage } = await refreshOne(member);
+        if (usage.resetCredits === null && previous?.resetCredits !== null) log(`账号重置卡余额不可用：${id} available_count 缺失或无效，显示未知而非 0`);
+        records.set(id, { id, email: identity.email || previous?.email || "", ...usage,
+          fetchedAt: new Date(now()).toISOString(), error: null });
+        if (previous?.error) log(`账号额度恢复：${id}`);
+        return true;
+      } catch (reason) {
+        const error = safeMessage(reason);
+        let email = previous?.email || "";
+        try { email ||= resolveIdentity(member).email; } catch { /* original error is logged below */ }
+        records.set(id, { id, ...previous, email, error });
+        if (!live || previous?.error !== error) log(`账号额度刷新失败：${id} ${error}`);
+        return false;
+      }
+    })().finally(() => { memberInFlight.delete(id); });
+    memberInFlight.set(id, work);
+    return work;
+  }
+
   function refresh(reason = "scheduled") {
     if (refreshInFlight) return refreshInFlight;
     lastAttemptAt = now();
-    refreshInFlight = (async () => {
+    refreshInFlight = Promise.resolve().then(async () => {
       const currentMembers = members();
-      const settled = await Promise.all(currentMembers.map(async (member) => {
-        try {
-          const result = await refreshOne(member);
-          return { member, ...result, error: null };
-        } catch (error) {
-          return { member, identity: null, usage: null, error };
-        }
-      }));
-      const fetchedAt = new Date(now()).toISOString();
-      let successes = 0;
-      for (const item of settled) {
-        const previous = records.get(item.member.id) || null;
-        if (!item.error) {
-          successes += 1;
-          if (item.usage.resetCredits === null) log(`账号重置卡余额不可用：${item.member.id} available_count 缺失或无效，显示未知而非 0`);
-          records.set(item.member.id, {
-            id: item.member.id,
-            email: item.identity.email || previous?.email || "",
-            ...item.usage,
-            fetchedAt,
-            error: null,
-            failedAt: null,
-          });
-          if (previous?.error) log(`账号额度恢复：${item.member.id}`);
-          continue;
-        }
-        const error = safeMessage(item.error);
-        let fallbackEmail = previous?.email || "";
-        try { fallbackEmail ||= resolveIdentity(item.member).email; } catch { /* original error is logged below */ }
-        records.set(item.member.id, {
-          ...(previous || {
-            id: item.member.id,
-            email: fallbackEmail,
-            usedPercent: null,
-            remainingPercent: null,
-            resetAt: null,
-            resetCredits: null,
-            allowed: false,
-            planType: "",
-            fetchedAt: null,
-          }),
-          email: fallbackEmail,
-          error,
-          failedAt: fetchedAt,
-        });
-        // Failure and stale paths are always observable; no debug flag gates this line.
-        log(`账号额度刷新失败：${item.member.id} ${error}`);
-      }
+      const settled = await Promise.all(currentMembers.map(refreshMemberUsage));
+      const successes = settled.filter(Boolean).length;
       lastCompletedAt = now();
       if (successes > 0) writeCache(cacheFile, records, log);
-      if (reason === "startup") log(`账号额度监控就绪：${successes}/${currentMembers.length}，每 ${Math.round(refreshMs / 60_000)} 分钟刷新（零模型 token）`);
-      return snapshot();
-    })().finally(() => { refreshInFlight = null; });
+      if (reason === "startup") log(`账号额度监控就绪：${successes}/${currentMembers.length}，每 ${refreshMs / 1000} 秒刷新（零模型 token）`);
+    }).catch(error => log(`账号额度刷新失败：${safeMessage(error)}`))
+      .finally(() => { refreshInFlight = null; }).then(snapshot);
     return refreshInFlight;
+  }
+
+  // A read already in flight can predate the charge. Keep one trailing read per
+  // account; a later model completion while it runs can enqueue another.
+  function notifyModelUse(id) {
+    if (!live || !id || followUps.has(id)) return;
+    const earliest = now() + modelRefreshDelayMs;
+    const run = () => {
+      const inFlight = memberInFlight.get(id);
+      if (inFlight) { void inFlight.then(() => { if (followUps.has(id)) schedule(); }); return; }
+      followUps.delete(id);
+      let member;
+      try { member = members().find(item => item.id === id); }
+      catch (error) { log(`账号额度成员读取失败：${safeMessage(error)}`); }
+      if (!member) return;
+      void refreshMemberUsage(member).then(ok => {
+        if (ok) writeCache(cacheFile, records, log);
+      });
+    };
+    const schedule = () => {
+      const gapUntil = (lastMemberAttemptAt.get(id) ?? -Infinity) + modelRefreshMinGapMs;
+      followUps.set(id, setTimeout(run, Math.max(0, Math.max(earliest, gapUntil) - now())));
+      followUps.get(id).unref?.();
+    };
+    schedule();
   }
 
   function refreshIfDue(force = false) {
@@ -294,7 +307,8 @@ export function createAccountUsageMonitor(options) {
     return {
       ok: true,
       enabled: currentMembers.length > 0,
-      refreshing: Boolean(refreshInFlight),
+      refreshing: Boolean(refreshInFlight || memberInFlight.size || followUps.size),
+      ...(live ? { live: true } : {}),
       generatedAt: new Date(now()).toISOString(),
       refreshIntervalMs: refreshMs,
       accuracyMaxAgeMs: freshMs,
@@ -315,7 +329,10 @@ export function createAccountUsageMonitor(options) {
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    for (const pending of followUps.values()) clearTimeout(pending);
+    followUps.clear();
+    lastMemberAttemptAt.clear();
   }
 
-  return { refresh, refreshIfDue, snapshot, start, stop };
+  return { refresh, refreshIfDue, notifyModelUse, snapshot, start, stop };
 }

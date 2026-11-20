@@ -513,7 +513,9 @@ function requestAccountJson(identity, endpoint, body) {
   });
 }
 
+const desktopBridge = process.env.PI_DESKTOP_INTERNAL_BRIDGE === '1';
 const accountUsageMonitor = accountPool ? createAccountUsageMonitor({
+  ...(desktopBridge ? { live: true, refreshMs: 30_000, freshMs: 60_000 } : {}),
   members: () => accountPool.members(),
   accountState: () => accountPool.snapshot(),
   requestUsage: requestAccountUsage,
@@ -833,6 +835,13 @@ async function handleResponses(req, res) {
   const chunks = [];
   const tail = createTailRing();
   let finished = false;
+  let quotaNotified = false;
+  const notifyQuota = () => {
+    if (quotaNotified || (upRes.statusCode !== 200 && upRes.statusCode !== 429)) return;
+    quotaNotified = true;
+    accountUsageMonitor?.notifyModelUse(finalMeta.upstreamAccount);
+  };
+  res.once("close", notifyQuota); // aborted model calls can still have incurred usage
   const writeChunk = (chunk) => {
     const data = Buffer.from(chunk);
     chunks.push(data);
@@ -843,6 +852,7 @@ async function handleResponses(req, res) {
     if (finished) return;
     finished = true;
     res.end();
+    notifyQuota();
     // 流吞吐观测：真实 usage 来自 SSE 尾部的 response.completed，观测失败不影响转发。
     try {
       const meta = finalMeta;
@@ -1075,7 +1085,8 @@ const server = http.createServer(async (req, res) => {
 
 export { server as codexHttpServer };
 
-if (process.env.PI_DESKTOP_INTERNAL_BRIDGE !== '1') server.listen(PORT, HOST, () => {
+if (desktopBridge) accountUsageMonitor?.start();
+else server.listen(PORT, HOST, () => {
   log(`listening http://${HOST}:${PORT}`);
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
   log(`推理强度：透传会话请求值（桥不改写）`);

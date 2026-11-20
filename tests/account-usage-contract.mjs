@@ -203,3 +203,46 @@ test("failed refresh keeps the last successful values, marks them stale, and alw
   assert.doesNotMatch(logs.join("\n"), /secret-value|eyJ/iu);
   fs.rmSync(fixture.root, { recursive: true, force: true });
 });
+
+test("missing or blank upstream quota is not reported as 100% remaining", () => {
+  for (const used_percent of [null, undefined, "", " ", false]) {
+    assert.throws(() => parseAccountUsagePayload({ rate_limit: { primary_window: { used_percent } } }), /no primary quota/u);
+  }
+});
+
+test("desktop publishes a healthy account without waiting for a slow peer and coalesces post-model reads", async (t) => {
+  const fixture = temporaryMembers(Date.now());
+  const calls = [];
+  let release, firstAccountReady, refreshed;
+  const slow = new Promise(resolve => { release = resolve; });
+  const firstAccount = new Promise(resolve => { firstAccountReady = resolve; });
+  const updated = new Promise(resolve => { refreshed = resolve; });
+  let activeReads = 0;
+  const monitor = createAccountUsageMonitor({
+    live: true, refreshMs: 30_000, freshMs: 60_000, modelRefreshDelayMs: 2, modelRefreshMinGapMs: 0,
+    members: () => fixture.members,
+    requestUsage: async (_identity, member) => {
+      calls.push(member.id);
+      if (member.id === "acct2") { await slow; throw new Error("timeout"); }
+      const n = ++activeReads;
+      setImmediate(n === 1 ? firstAccountReady : refreshed);
+      return { rate_limit: { primary_window: { used_percent: n === 1 ? 10 : 27 } }, rate_limit_reset_credits: { available_count: 1 } };
+    },
+  });
+  t.after(() => { release(); monitor.stop(); fs.rmSync(fixture.root, { recursive: true, force: true }); });
+  const first = monitor.refresh();
+  await firstAccount;
+  assert.equal(monitor.snapshot().accounts[0].usedPercent, 10);
+  assert.equal(monitor.snapshot().refreshing, true, "other account is still pending");
+  monitor.notifyModelUse("primary");
+  monitor.notifyModelUse("primary");
+  const deadline = setTimeout(() => refreshed(), 800);
+  try { await updated; } finally { clearTimeout(deadline); }
+  assert.equal(monitor.snapshot().accounts[0].usedPercent, 27);
+  assert.deepEqual(calls, ["primary", "acct2", "primary"]);
+  release();
+  const final = await first;
+  assert.equal(final.live, true);
+  assert.equal(final.refreshing, false);
+  assert.equal(final.accounts[1].error, "timeout");
+});

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, Menu } from 'electron';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -68,6 +68,7 @@ else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   void app.whenReady().then(async () => {
     const pid = await startWorker();
+    Menu.setApplicationMenu(null); // remove the native File/Edit/View row, not the window title bar
     win = new BrowserWindow({ title: 'Pi Web', width: 1160, height: 800, show: false,
       webPreferences: { partition: 'persist:piweb', sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false } });
     const contents = win.webContents;
@@ -89,11 +90,14 @@ else {
       const result = await contents.executeJavaScript(`(async () => {
         const r = await fetch('/api/sessions');
         const p = await fetch('/api/projects');
-        const j = await r.json();
-        return { sessionsStatus:r.status, projectsStatus:p.status, json:typeof j === 'object', document:document.body?.innerText.length > 30, scripts:document.scripts.length };
+        const q = await fetch('/__pi_account_usage', { cache: 'no-store' });
+        const j = await r.json(), quota = await q.json();
+        return { sessionsStatus:r.status, projectsStatus:p.status, json:typeof j === 'object', document:document.body?.innerText.length > 30, scripts:document.scripts.length,
+          quotaStatus:q.status, quotaShape:Array.isArray(quota.accounts), quotaUi:window.__piAccountUsageUiVersion };
       })()`);
-      audit(`smoke ${JSON.stringify(result)}`);
-      if (result.sessionsStatus !== 200 || result.projectsStatus !== 200 || !result.json || !result.document || result.scripts < 2) throw new Error('desktop smoke: page or local API failed');
+      const menuRemoved = Menu.getApplicationMenu() === null && !win.isMenuBarVisible();
+      audit(`smoke ${JSON.stringify({ ...result, menuRemoved })}`);
+      if (result.sessionsStatus !== 200 || result.projectsStatus !== 200 || !result.json || !result.document || result.scripts < 2 || !menuRemoved || result.quotaStatus !== 200 || !result.quotaShape || !result.quotaUi) throw new Error('desktop smoke: page, local API, quota or native menu failed');
       app.quit();
     }
   }).catch(error => {
