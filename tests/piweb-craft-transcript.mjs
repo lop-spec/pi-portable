@@ -1,40 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { projectCraftTurn, toolState, toolSummary } from '../assets/piweb-overlay/craft-transcript/model.mjs';
+import { callExcerpt, projectCraftTurn, toolState } from '../assets/piweb-overlay/craft-transcript/model.mjs';
 const call={type:'toolCall',toolCallId:'t1',toolName:'bash',input:{command:'echo ok',_displayName:'检查工具',_intent:'验证结果'}};
 const entries=[{kind:'assistant',key:'a',entryId:'a',message:{timestamp:1,content:[{type:'thinking',thinking:'private reasoning'},{type:'text',text:'准备检查'},call,{type:'text',text:'完成回复'}]}}];
 test('Craft model hides reasoning without modifying stored messages',()=>{const before=JSON.stringify(entries);const model=projectCraftTurn(entries,new Map(),true);assert.equal(model.activities.length,2);assert.equal(model.responses[0].name,'完成回复');assert.ok(!JSON.stringify(model).includes('private reasoning'));assert.equal(JSON.stringify(entries),before);});
 test('tool outcomes preserve failed, missing and stopped distinctions',()=>{assert.equal(toolState({isError:true},false),'error');assert.equal(toolState({details:{exitCode:2}},false),'error');assert.equal(toolState({details:{exitCode:0}},false),'completed');assert.equal(toolState(undefined,true),'running');assert.equal(toolState(undefined,false),'unknown');assert.equal(toolState(undefined,false,{status:'stopped'}),'stopped');});
 test('one list keeps all tools in order; failed count matches real outcomes',()=>{const input=[{kind:'assistant',key:'b',message:{content:[call,{...call,toolCallId:'t2'},{...call,toolCallId:'t3'}]}}];const model=projectCraftTurn(input,new Map([['t1',{content:[],details:{exitCode:1}}],['t2',{content:[]}]]),true);assert.deepEqual(model.activities.map(a=>a.status),['error','completed','running']);assert.equal(model.failedCount,1);assert.equal(model.activities.length,3);});
 test('rows excerpt public Chinese call text without generating a fallback label',()=>{
-  const summarize=input=>toolSummary({...call,toolName:'run_commands',input}).name;
+  const summarize=callExcerpt;
   const commands=['echo "核对 API 返回结果"', 'git status # 查看工作区改动', 'echo "核对 API 返回结果"'];
   assert.equal(summarize({commands}), '核对 API 返回结果 · 查看工作区改动');
   assert.equal(summarize({command:'git status', description:'正在核对修改后的效果'}), '正在核对修改后的效果');
   assert.equal(summarize({commands:['git status','echo "检查这个密码字段"'],thinking:'不该显示的私有内容',path:'C:/工作区下面的目录'}),'');
-  assert.equal(toolSummary({...call,input:{},chatView:{callExcerpt:summarize({commands})}}).name,summarize({commands}));
 });
 test('phase rows are expanded by default; clicking a tool row opens its Chinese result only',()=>{const source=fs.readFileSync(new URL('../assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx',import.meta.url),'utf8');assert.match(source,/phases.map\(phase=>/);assert.match(source,/closedPhases.has\(phase.id\)&&/);assert.match(source,/setClosedPhases/);assert.match(source,/const expanded=choice\?\?true/);assert.match(source,/data-call-result-excerpt/);assert.doesNotMatch(source,/JSON.stringify\(input,null,2\)|activity.intent&&<p>/);assert.doesNotMatch(source,/projection.failedCount|current\?\.intent|craft-object|<code/);});
-test('one short Han label per invocation including parallel duplicates, noisy logs and pending calls',()=>{
+test('only result excerpts supply a short Han label; parallel results with identical excerpts stay distinct',()=>{
   const names=['read_files','read_files','run_commands','search_codebase','browser'];
   const content=names.map((toolName,i)=>({type:'toolCall',toolCallId:String(i),toolName,input:{}}));
   const output=['核对文件修改记录。\n\n下一段不应显示。','核对文件修改记录。','OK C:\\项目目录\\备份文件 SHA=7d12e\n所在位置 行:1 字符:537','{"sessionListVersion":8}'];
   const results=new Map(output.map((text,i)=>[String(i),{role:'toolResult',content:[{type:'text',text}]}]));
   const labels=projectCraftTurn([{kind:'assistant',key:'x',message:{content}}],results,true).activities.map(a=>a.name);
-  assert.deepEqual(labels,['核对文件修改记录','核对文件修改记录','运行命令','检索内容','查阅网页']);
-  assert.ok(labels.every(x=>/^\p{Script=Han}{2,32}$/u.test(x)));
+  assert.deepEqual(labels,['核对文件修改记录','核对文件修改记录','','','']);
+  assert.ok(labels.filter(Boolean).every(x=>/^\p{Script=Han}{2,32}$/u.test(x)));
 });
 test('stage title is not echoed by tool rows, even in saved previews or returned Chinese text',()=>{
   const stage='核对工作区修改记录';
   const mk=(id,input,chatView)=>({...call,toolName:'read_files',toolCallId:id,input,chatView});
   const content=[mk('first',{_phase:stage}),mk('second',{}, {callExcerpt:stage+'。'}),mk('third',{_intent:stage+'。'})];
-  assert.equal(toolSummary(content[0]).name,'');
+  assert.equal(callExcerpt(content[0].input),'');
   const toolResults=new Map([['first',{role:'toolResult',content:[{type:'text',text:stage+'。\n文件校验已经完成。'}]}]]);
   for(const live of [true,false]){
     const {phases,activities}=projectCraftTurn([{kind:'assistant',key:'phase-test',message:{content}}],toolResults,live);
     assert.equal(phases[0].name,stage);
-    assert.deepEqual(phases[0].items.map(a=>a.name),['文件校验已经完成','读取文件','读取文件']);
+    assert.deepEqual(phases[0].items.map(a=>a.name),['文件校验已经完成','','']);
     assert.equal(activities[0].excerpt,stage+'。\n文件校验已经完成。');
     assert.ok(phases[0].items.every(item=>!/[\t \u3000]/u.test(item.name)));
   }

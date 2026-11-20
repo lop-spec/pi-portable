@@ -99,6 +99,13 @@ export function extractChineseSource(text) {
     if (Array.isArray(value)) { for (const item of value) walk(item); return; }
     if (value && typeof value === 'object') {
       if (['thinking', 'reasoning', 'analysis'].includes(value.type)) return;
+      // Batch tool receipts echo the command, file or search expression in `query`.
+      // Only their returned output/diagnostics can supply an excerpt.
+      if (typeof value.query === 'string' && typeof value.success === 'boolean' && (Object.hasOwn(value, 'result') || Object.hasOwn(value, 'error'))) {
+        walk(value.result);
+        walk(value.error);
+        return;
+      }
       for (const [key, item] of Object.entries(value)) if (!privateKey.test(key) && !sensitive.test(key)) walk(item);
     }
   };

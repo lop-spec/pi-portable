@@ -13,12 +13,6 @@ function chineseLine(text) {
   }
   return '';
 }
-const actions = [
-  [/read.*file|^read$/, '读取文件'], [/edit|apply_patch|write/, '修改文件'],
-  [/search|grep|find/, '检索内容'], [/bash|run_commands|terminal|shell|exec/, '运行命令'],
-  [/browser|web|fetch/, '查阅网页'], [/question|ask/, '询问选择'], [/wait/, '等待结果'],
-  [/image/, '处理图片'], [/sql|mongo|redis|aliyun|k8s|sls|^es_/, '查询数据'], [/^ls$/, '查看目录'],
-];
 const resultExcerpts = new WeakMap();
 function chineseResult(result) {
   if (!result || typeof result !== 'object') return '';
@@ -34,8 +28,9 @@ function chineseResult(result) {
   return excerpt;
 }
 const labelKey = text => text.normalize('NFKC').replace(/[\p{P}\p{Z}\s]/gu,'');
-function rowLabel(block, description, excerpt, title) {
+function rowLabel(excerpt, title) {
   const distinct = label => label && labelKey(label) !== title;
+  let first = '';
   // Skip echoed stage titles, but only inspect as many Han characters as the
   // row can show. The full excerpt is still available in the detail dialog.
   for (const line of excerpt.split('\n')) {
@@ -48,15 +43,10 @@ function rowLabel(block, description, excerpt, title) {
         if (++count === 32) break;
       }
     }
+    first ||= preview;
     if (distinct(preview) && distinct(line)) return preview;
   }
-  for (const phrase of description.split(' · ')) {
-    if (!distinct(phrase)) continue;
-    const preview = chineseLine(phrase);
-    if (distinct(preview)) return preview;
-  }
-  const action = actions.find(([pattern])=>pattern.test(String(block.toolName).toLowerCase()))?.[1];
-  return [action,'处理请求','查看结果'].find(distinct);
+  return first;
 }
 
 // Read only public descriptions, command literals and comments. Never walk arbitrary
@@ -93,23 +83,9 @@ export function toolState(result, live, end) {
   if (result.isError || (typeof d?.exitCode === 'number' && d.exitCode !== 0) || d?.status === 'error' || d?.status === 'failed') return 'error';
   return 'completed';
 }
-export function toolSummary(block) {
-  const args = block.input ?? {};
-  const name = block.chatView?.callExcerpt ?? callExcerpt(args);
-  const intent = typeof args._intent === 'string' ? args._intent : typeof args.description === 'string' ? args.description : '';
-  const input = ['command', 'path', 'file_path', 'pattern', 'url', 'query', 'action'].map(key => typeof args[key] === 'string' ? args[key] : '').filter(Boolean).join(' ');
-  return { name, intent, input };
-}
-// React snapshots reuse immutable tool blocks and replace result objects when
-// output changes. Keep only the most recent label per call; a change of phase or
-// result must not reuse an old label. Pending streaming tool arguments aren't used.
-const callSummaries = new WeakMap();
+// Tool blocks are immutable snapshots. Reuse a preview only for the same
+// result and phase, since either can change during a live reply.
 const labels = new WeakMap();
-function cachedToolSummary(block) {
-  let summary = callSummaries.get(block);
-  if (!summary) { summary = toolSummary(block); callSummaries.set(block, summary); }
-  return summary;
-}
 
 export function projectCraftTurn(entries, toolResults, live = false, end) {
   const activities = [], responses = [], nodes = [];
@@ -120,10 +96,9 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
       const base = { id: `${entry.entryId ?? entry.key}:${index}`, entryId: entry.entryId, block, timestamp: entry.message.timestamp };
       if (block.type === 'toolCall') {
         const result = toolResults.get(block.toolCallId);
-        const summary = entry.streaming ? toolSummary(block) : cachedToolSummary(block);
         const excerpt = chineseResult(result);
-        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, status: toolState(result, live, end), streaming: entry.streaming, ...summary });
-      } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' '), intent: '', input: '' });
+        activities.push({ ...base, id: block.toolCallId, type: 'tool', result, excerpt, name: '', status: toolState(result, live, end), streaming: entry.streaming });
+      } else if (block.type === 'text' && block.text.trim()) activities.push({ ...base, type: 'intermediate', status: 'completed', name: block.text.replace(/\s+/g, ' ') });
     });
   }
   // Like Craft, the trailing streamed answer is outside the work log. Earlier
@@ -135,20 +110,28 @@ export function projectCraftTurn(entries, toolResults, live = false, end) {
     activities.length = i;
   }
   const phases = groupPhases(activities, live, end);
+  // Preserve phase boundaries/status and raw outputs, but project a single allowlist
+  // for the visible list, its count, search targets and detail selections.
+  const visiblePhases = [], visibleActivities = [];
   for (const phase of phases) {
-    const title = labelKey(phase.name);
+    const title = labelKey(phase.name), items = [];
     for (const item of phase.items) {
-      if (item.type !== 'tool') continue;
-      const cached = item.streaming ? undefined : labels.get(item.block);
-      if (cached && cached.title === title && cached.result === item.result) {
-        item.name = cached.name;
-      } else {
-        item.name = rowLabel(item.block, item.name, item.excerpt, title);
-        if (!item.streaming) labels.set(item.block, { title, result: item.result, name: item.name });
+      if (item.type === 'tool') {
+        if (!item.excerpt) continue;
+        const cached = item.streaming ? undefined : labels.get(item.block);
+        if (cached && cached.title === title && cached.result === item.result) {
+          item.name = cached.name;
+        } else {
+          item.name = rowLabel(item.excerpt, title);
+          if (!item.streaming) labels.set(item.block, { title, result: item.result, name: item.name });
+        }
       }
+      items.push(item);
+      visibleActivities.push(item);
     }
+    if (items.length) visiblePhases.push({ id: phase.id, name: phase.name, status: phase.status, items });
   }
-  return { activities, phases, responses, nodes, failedCount: activities.filter(a => a.status === 'error').length };
+  return { activities, phases, visiblePhases, visibleActivities, responses, nodes, failedCount: activities.filter(a => a.status === 'error').length };
 }
 
 // Phase markers are supplied only at a change of work, not inferred from commands.
