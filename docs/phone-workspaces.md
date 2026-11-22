@@ -23,13 +23,17 @@ phone workspace stop
 
 `observe a b` returns independent timestamps, display IDs and snapshots; it is concurrent observation, not an atomic same-instant snapshot across apps. Every action consumes its snapshot and also compares a freshly read UI fingerprint. Snapshot lifetime is 10 seconds. Observe again after every action; do not replay actions after transport timeouts. Launch/page-transition animations can legitimately reject a fresh-looking snapshot: wait for stable observations before deciding on the next action. Continuously changing UI may remain unsupported by this strict first-version guard.
 
-Up to **10 UI slots** are available. `start` creates no displays; each `open` allocates one, `close` releases it, and `stop` releases all owned displays. `observe` accepts 1–10 distinct names. Eleven live workspaces are refused; completed tasks must close their workspace instead of leaving ten unused Apps resident.
+Up to **10 UI slots** are available. `start` creates no displays; each `open` allocates one, `close` releases it, and `stop` releases all owned displays. `observe` accepts 1–10 distinct names. Eleven live workspaces are refused.
+
+The **phone itself automatically releases each workspace after 120 seconds of inactivity**, with a one-second sweep while the phone is executing. This does not depend on a PC cleanup process, an ADB connection staying open, or another model turn. A successful explicit `open`, snapshot/observe, screenshot or input renews only that workspace. Rendered frames, `list`, `ping`, main-screen reads and failed requests do not renew it. The sweep shares the operation lock and rechecks expiry after any in-flight read/input completes. Leases use Android's monotonic elapsed time, so wall-clock corrections do not change them; if the device is suspended, cleanup runs when it resumes.
+
+`list` exposes `lifecyclePolicy: idle-120s-v1`, `idleTimeoutMs`, the total `autoReleased` count, and each workspace's `idleRemainingMs`. After expiry, content/input returns `WORKSPACE_NOT_FOUND`; explicitly reopen and observe before acting. Never silently reopen and replay old input. Completed tasks should still close promptly rather than wait two minutes.
 
 Actions within a workspace remain serialized; independent workspaces can read and perform node actions concurrently. Ten read workers, a bounded 20-read queue and 12 request workers support the larger limit without unbounded fanout. A batch has one 15-second deadline, not 15 seconds per App. Complete low-level gestures still serialize only around the shared injector. These are admission limits, not a guarantee that every ten-App workload is fast.
 
 Every workspace uses the phone's current **native pixel dimensions and logical density**, not a fixed 720×1280/240dpi canvas. Its identity includes `width`, `height`, `dpi` and `displayPolicy: native-v1`. Matching both pixels and density prevents mixing default-display metrics with different Activity resources; there are no per-App size exceptions or global `wm size/density` changes. If phone or workspace geometry changes, content/actions pause until close/reopen; old coordinates are never silently scaled.
 
-After upgrading, `start` and content/actions require capacity 10 and `native-v1`. Legacy brokers are not silently reused or replaced: finish their tasks, run `stop`, install the matching CI artifact, then `start`. `list` and cleanup remain available for migration.
+After upgrading, `start` and content/actions require capacity 10, `native-v1` and `idle-120s-v1`. Legacy brokers are not silently reused or replaced: finish their tasks, run `stop`, install the matching CI artifact, then `start`. `list` and cleanup remain available for migration.
 
 ## Isolation and safety
 
@@ -42,7 +46,8 @@ After upgrading, `start` and content/actions require capacity 10 and `native-v1`
 - Physical-screen use of a *different* App is supported; manually opening the App under automation may move its task. Payment/protected pages and fully opaque node trees are not guaranteed. Screenshots can observe opaque trees; coordinate actions still require a valid UI fingerprint in this first version.
 - A virtual display is not an Android VM: apps retain their ordinary user/account data, permissions and shared OS resources. No promises of complete resource isolation or arbitrary concurrency.
 - The server listens only on an abstract local socket and verifies peer UID is shell/root. No Android TCP listener or unauthenticated app-accessible controller port. Host access uses an owned loopback ADB forward. No connection or credential data is committed/synchronized.
-- Cleanup releases owned displays first. Only when the App was exclusively visible on that display does it ask Android to recycle eligible cached processes (`am kill`); foreground services are protected by Android. Neither launch nor cleanup uses `force-stop`/`-S`, which could cancel reminders or jobs. Apps taken back onto another display are not targeted. No app data, login state or global Android logs are cleared. Close/stop when finished; idle workspaces are not automatically destroyed.
+- Cleanup releases owned displays first. Only when the App was exclusively visible on that display does it ask Android to recycle eligible cached processes (`am kill`); foreground services are protected by Android. Neither launch nor cleanup uses `force-stop`/`-S`, which could cancel reminders or jobs. Apps taken back onto another display are not targeted. No app data, login state or global Android logs are cleared. Close/stop when finished; the same safe close path also runs automatically for expired idle workspaces. The broker remains available with zero screens, so main-screen reads and a later explicit open still work.
+- Some financial apps (confirmed on this phone with UnionPay 10.3.3) block whenever even one virtual display exists, including an own-content-only display not mirroring the physical screen. Idle cleanup prevents abandoned displays persisting; it does not guarantee coexistence during an active automation task or the two-minute grace period. Do not bypass the app's risk check: close all workspaces promptly when finished, or wait for automatic expiry and reopen the financial app normally.
 
 ## Delivery and verification
 
@@ -79,7 +84,7 @@ The final acceptance run used three joint-read samples at each stage:
 - The physical-screen App remained unchanged within each run (the launcher in the first run, a browser App in the final run); sampled `mTopFocusedDisplayId` stayed 0, and `phone ui` worked while ten displays were resident. Simultaneous human typing and user-triggered migration of a leased App remain unverified.
 - Calculator expression and clock alarm tab were restored. All test displays and the broker were stopped. WindowManager teardown is asynchronous: the first cleanup test checked too early; the corrected test only observed removal, without replaying stop. Final readback found one closing display at 277 ms and no owned displays at 765 ms, within the unchanged requirement to release every test display (an explicit 8-second observation deadline). No runtime input or isolation gate was relaxed.
 
-There is still no automatic thermal controller or idle auto-stop. Close completed workspaces; ten is a tested admission ceiling for this utility-App sample, not ten independent Android systems or a promise for ten heavy Apps.
+There is still no automatic thermal controller or idle broker-process stop. Idle virtual screens now expire automatically after 120 seconds; close completed workspaces promptly. Ten is a tested admission ceiling for this utility-App sample, not ten independent Android systems or a promise for ten heavy Apps.
 
 ## Historical two-slot baseline (2026-09-12, local time)
 

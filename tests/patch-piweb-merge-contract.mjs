@@ -144,7 +144,7 @@ test('the merge step is a pure function of the state before it, and refuses when
   };
   assert.throws(() => integrateMerge(withEdit('components/AppShell.tsx', '{isMobile && renderProjectTrustWarning(true)}', '{isMobile && renderTrustBanner(true)}')), /AppShell\.tsx: anchor .* matched 0, expected 1; zero writes/u);
   assert.throws(() => integrateMerge(withEdit('lib/markdown.ts', 'const chatRemarkPlugins: PluginList = [[remarkGfm, remarkGfmOptions], remarkMath];', 'const chatRemarkPlugins: PluginList = [];')), /markdown\.ts: anchor .* zero writes/u);
-  assert.throws(() => integrateMerge(withEdit('components/PortableProcessTimeline.tsx', 'const active=activities.find(a=>a.id===selected);', 'const active=undefined;')), /PortableProcessTimeline\.tsx: anchor .* zero writes/u);
+  assert.throws(() => integrateMerge(withEdit('components/PortableProcessTimeline.tsx', 'const active=visibleActivities.find(a=>a.id===selected);', 'const active=undefined;')), /PortableProcessTimeline\.tsx: anchor .* zero writes/u);
   assert.throws(() => integrateMerge(withEdit('components/ChatWindow.tsx', '<ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />', '<ExtensionStatusBar />')), /ChatWindow\.tsx: anchor .* zero writes/u);
   assert.throws(() => integrateMerge(withEdit('components/CraftSessions.tsx', "{props.unread.has(session.id) ? '有新回复 · ' : ''}", "{'新回复'}")), /CraftSessions\.tsx: anchor .* zero writes/u);
   assert.throws(() => integrateMerge(withEdit('lib/theme.ts', '  { id: "dark", label: "settings.themeDark" },', '')), /theme\.ts: anchor .* zero writes/u);

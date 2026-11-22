@@ -5,8 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { exclusive } from '../tools/phone.mjs';
-import { MAX_WORKSPACES, DISPLAY_POLICY, requireWorkspaceCapacity, parseWorkspaceCommand, validateReply, workspaceLease, rpc, reconcileWorkspaceState, readWorkspaceState } from '../tools/phone-workspaces.mjs';
+import { MAX_WORKSPACES, DISPLAY_POLICY, LIFECYCLE_POLICY, requireWorkspaceCapacity, parseWorkspaceCommand, validateReply, workspaceLease, rpc, reconcileWorkspaceState, readWorkspaceState } from '../tools/phone-workspaces.mjs';
 
 test('workspace names and packages cannot become shell syntax', () => {
   assert.deepEqual(parseWorkspaceCommand(['open', 'a', 'com.miui.calculator']), { op: 'open', workspace: 'a', package: 'com.miui.calculator' });
@@ -31,7 +33,7 @@ test('ten-slot client cannot report success while reusing a legacy two-slot brok
   assert.equal(MAX_WORKSPACES, 10);
   assert.throws(() => requireWorkspaceCapacity({ maxWorkspaces: 2 }), /BROKER_CAPACITY_MISMATCH/);
   assert.throws(() => requireWorkspaceCapacity({}), /legacy\/unknown/);
-  const ping = { maxWorkspaces: 10, displayPolicy: DISPLAY_POLICY, version: 'matching' };
+  const ping = { maxWorkspaces: 10, displayPolicy: DISPLAY_POLICY, lifecyclePolicy: LIFECYCLE_POLICY, idleTimeoutMs: 120000, version: 'matching' };
   assert.equal(requireWorkspaceCapacity(ping), ping);
 });
 test('legacy fixed-resolution brokers are rejected without disabling cleanup or silently upgrading', () => {
@@ -57,6 +59,45 @@ test('all apps use exact native pixels and density, with safe cache cleanup and 
   assert.ok(java.indexOf('display.release(); reader.close();') < java.indexOf('if (owned) try { retireCachedApp(pkg); }'));
   assert.ok(!java.includes('"force-stop"') && !java.includes('"-S"'));
   for (const forbidden of ['setForcedDisplayDensity', 'setForcedDisplaySize', '"wm", "size"', '"wm", "density"', '"pm", "clear"']) assert.ok(!java.includes(forbidden), forbidden);
+});
+test('legacy non-expiring brokers cannot silently defeat phone-side auto release', () => {
+  assert.equal(LIFECYCLE_POLICY, 'idle-120s-v1');
+  const base = { maxWorkspaces: 10, displayPolicy: DISPLAY_POLICY };
+  for (const policy of [{}, { lifecyclePolicy: 'manual' }, { lifecyclePolicy: LIFECYCLE_POLICY, idleTimeoutMs: 0 }]) {
+    assert.throws(() => requireWorkspaceCapacity({ ...base, ...policy }), /BROKER_LIFECYCLE_POLICY_MISMATCH/);
+  }
+  assert.ok(requireWorkspaceCapacity({ ...base, lifecyclePolicy: LIFECYCLE_POLICY, idleTimeoutMs: 120000 }));
+});
+test('actual Java idle lease expires independently, renews on activity and ignores status reads', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-idle-java-'));
+  const bin = name => process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', name + (process.platform === 'win32' ? '.exe' : '')) : name;
+  try {
+    const compiled = spawnSync(bin('javac'), ['-d', dir, fileURLToPath(new URL('../src/phone/IdleLease.java', import.meta.url)), fileURLToPath(new URL('./phone-idle-lease.java', import.meta.url))], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+    const run = spawnSync(bin('java'), ['-cp', dir, 'com.lop.phone.PhoneIdleLeaseTest'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    assert.equal(run.status, 0, run.error?.message || run.stderr);
+    assert.match(run.stdout, /idle lease behavior: PASS/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+test('phone reaper is autonomous and serialized with content/input, not frame or host liveness', () => {
+  const java = fs.readFileSync(new URL('../src/phone/WorkspaceServer.java', import.meta.url), 'utf8');
+  assert.match(java, /LIFECYCLE_POLICY = "idle-120s-v1"/);
+  assert.match(java, /idleReaper\.scheduleWithFixedDelay/);
+  const reaper = java.slice(java.indexOf('synchronized void releaseIdleWorkspaces()'), java.indexOf('synchronized JSONObject list()'));
+  assert.match(reaper, /synchronized \(w\)/);
+  assert.ok(reaper.indexOf('synchronized (w)') < reaper.indexOf('w.lease.expired(SystemClock.elapsedRealtime())'));
+  assert.ok(reaper.includes('iterator.remove()') && reaper.includes('w.close()'));
+  const frames = java.slice(java.indexOf('reader.setOnImageAvailableListener(r ->'), java.indexOf('VirtualDisplay created = null'));
+  assert.ok(!frames.includes('lease.touch'));
+  for (const [start, end] of [['synchronized JSONObject list()', 'synchronized JSONObject close('], ['JSONObject mainUi()', 'JSONObject dispatch(']]) {
+    assert.ok(!java.slice(java.indexOf(start), java.indexOf(end)).includes('lease.touch'));
+  }
+  for (const [start, end] of [['JSONObject snapshot(', 'JSONObject observe('], ['JSONObject action(', 'JSONObject screenshot('], ['JSONObject screenshot(', 'static String xmlEscape(']]) {
+    const block = java.slice(java.indexOf(start), java.indexOf(end));
+    assert.match(block, /synchronized \(w\)/);
+    assert.match(block, /w\.lease\.touch\(SystemClock\.elapsedRealtime\(\)\)/);
+  }
+  assert.ok(!reaper.includes('System.currentTimeMillis') && !reaper.includes('socket'));
 });
 test('ten independent host workspaces can overlap without losing per-workspace serialization', async () => {
   let active = 0, peak = 0, release;

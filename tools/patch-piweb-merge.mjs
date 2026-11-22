@@ -39,7 +39,8 @@ export function integrateMerge({ get, set, change, prepend, template }) {
   set('lib/portable-timeline-summary.mjs', template('merge/lib/portable-timeline-summary.mjs'));
   const timeline = 'components/PortableProcessTimeline.tsx';
   prepend(timeline, 'import { timelineBreakdown } from "@/lib/portable-timeline-summary.mjs";\n');
-  change(timeline, "  const active=activities.find(a=>a.id===selected);", "  const breakdown=timelineBreakdown([],props.startedAt,end?.at);\n  const active=activities.find(a=>a.id===selected);");
+  const active = '  const active=visibleActivities.find(a=>a.id===selected);';
+  change(timeline, active, '  const breakdown=timelineBreakdown([],props.startedAt,end?.at);\n'+active);
   change(timeline, "<strong>{phases.length} 个阶段</strong>{summary&&<><span> · </span>{summary}</>}", "<strong>{phases.length} 个阶段</strong>{summary&&<><span> · </span>{summary}</>}{breakdown&&<><span> · </span>{breakdown}</>}");
 
   // 6. 主题「纸白」（取自 cc-haha 的奶油暖色）：加进主题列表、图标、三种语言词条，设置页每个主题带色块预览。

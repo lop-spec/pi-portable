@@ -35,6 +35,7 @@ public final class WorkspaceServer {
     static final int MAX_WORKSPACES = 10;
     static final String SOCKET = "pi_phone_workspaces_v1";
     static final String DISPLAY_POLICY = "native-v1";
+    static final String LIFECYCLE_POLICY = "idle-120s-v1";
     final ShellContext context;
     final UiAutomation ui;
     final DisplayManager displays;
@@ -46,6 +47,8 @@ public final class WorkspaceServer {
     final Object injectionLock = new Object(); // Complete touch gestures are atomic across the shared injector.
     final ExecutorService observations = new ThreadPoolExecutor(MAX_WORKSPACES, MAX_WORKSPACES, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(MAX_WORKSPACES * 2));
+    final ScheduledExecutorService idleReaper = Executors.newSingleThreadScheduledExecutor();
+    final AtomicLong autoReleased = new AtomicLong();
     final String version;
     final String instance = UUID.randomUUID().toString();
     volatile boolean running = true;
@@ -141,6 +144,7 @@ public final class WorkspaceServer {
         final VirtualDisplay display;
         final int displayId;
         final Object frameLock = new Object();
+        final IdleLease lease = new IdleLease(SystemClock.elapsedRealtime());
         Image image;
         long frameTime;
         final AtomicLong frameNumber = new AtomicLong();
@@ -186,6 +190,7 @@ public final class WorkspaceServer {
         JSONObject identity() throws JSONException {
             return new JSONObject().put("workspace", name).put("package", pkg).put("displayId", displayId)
                     .put("width", width).put("height", height).put("dpi", dpi).put("displayPolicy", DISPLAY_POLICY)
+                    .put("idleTimeoutMs", IdleLease.TIMEOUT_MS).put("idleRemainingMs", lease.remainingMs(SystemClock.elapsedRealtime()))
                     .put("frame", frameNumber.get()).put("frameTime", frameTime);
         }
         void close() {
@@ -231,7 +236,10 @@ public final class WorkspaceServer {
         require(name.matches("[a-zA-Z][a-zA-Z0-9_-]{0,31}"), "INVALID_WORKSPACE");
         require(pkg.matches("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+"), "INVALID_PACKAGE");
         Workspace old = workspaces.get(name);
-        if (old != null) { require(old.pkg.equals(pkg), "WORKSPACE_ALREADY_ASSIGNED"); assertTarget(old); return old; }
+        if (old != null) synchronized (old) {
+            require(old.pkg.equals(pkg), "WORKSPACE_ALREADY_ASSIGNED"); assertTarget(old);
+            old.lease.touch(SystemClock.elapsedRealtime()); return old;
+        }
         require(workspaces.size() < MAX_WORKSPACES, "WORKSPACE_CAPACITY: " + MAX_WORKSPACES + " UI slots; close completed workspaces or queue additional tasks");
         for (Workspace w : workspaces.values()) require(!w.pkg.equals(pkg), "APP_ALREADY_LEASED: " + pkg);
         String main = mainPackage(); require(!main.equals(pkg), "MAIN_DISPLAY_APP_BUSY: leave the app on main before allocating it");
@@ -266,17 +274,38 @@ public final class WorkspaceServer {
             }
             require(seen, "APP_NOT_ON_TARGET_DISPLAY: no main-screen fallback");
             require(main.equals(mainPackage()), "MAIN_DISPLAY_CHANGED_DURING_LAUNCH");
+            w.lease.touch(SystemClock.elapsedRealtime());
             workspaces.put(name, w); log("opened workspace=" + name + " display=" + w.displayId + " app=" + pkg);
             return w;
         } catch (Exception e) { w.close(); throw e; }
     }
     synchronized Workspace get(String name) {
-        Workspace w = workspaces.get(name); require(w != null && !w.closed, "WORKSPACE_NOT_FOUND: " + name); return w;
+        Workspace w = workspaces.get(name);
+        require(w != null && !w.closed, "WORKSPACE_NOT_FOUND: " + name + "; idle screens auto-release after 120s; explicitly open again, never replay input");
+        return w;
+    }
+    synchronized void releaseIdleWorkspaces() {
+        // Same server -> workspace lock order as explicit close/stop. Never tear
+        // down an in-flight observation/input; check again after it has renewed.
+        Iterator<Workspace> iterator = workspaces.values().iterator();
+        while (iterator.hasNext()) {
+            Workspace w = iterator.next();
+            synchronized (w) {
+                if (!w.lease.expired(SystemClock.elapsedRealtime())) continue;
+                iterator.remove();
+                log("auto-release reason=idle workspace=" + w.name + " display=" + w.displayId);
+                try { w.close(); }
+                catch (RuntimeException e) { log("auto-release cleanup=" + cause(e)); }
+                autoReleased.incrementAndGet();
+            }
+        }
     }
     synchronized JSONObject list() throws JSONException {
         JSONArray out = new JSONArray(); for (Workspace w : workspaces.values()) out.put(w.identity());
         return new JSONObject().put("version", version).put("instance", instance).put("maxWorkspaces", MAX_WORKSPACES)
-                .put("displayPolicy", DISPLAY_POLICY).put("workspaces", out).put("mainPackage", mainPackage());
+                .put("displayPolicy", DISPLAY_POLICY).put("lifecyclePolicy", LIFECYCLE_POLICY)
+                .put("idleTimeoutMs", IdleLease.TIMEOUT_MS).put("autoReleased", autoReleased.get())
+                .put("workspaces", out).put("mainPackage", mainPackage());
     }
     synchronized JSONObject close(String name) throws JSONException {
         Workspace w = workspaces.remove(name); if (w != null) w.close();
@@ -330,6 +359,7 @@ public final class WorkspaceServer {
             JSONArray all = tree(w, nodes); require(all.length() > 0, "NO_UI_NODES: use screenshot for observation; unsafe actions disabled");
             w.nodes = nodes; w.fingerprint = hash(all.toString()); w.snapshotId = UUID.randomUUID().toString();
             w.snapshotTime = System.currentTimeMillis();
+            w.lease.touch(SystemClock.elapsedRealtime());
             return w.identity().put("snapshot", w.snapshotId).put("capturedAt", w.snapshotTime).put("nodes", all);
         }
     }
@@ -411,6 +441,7 @@ public final class WorkspaceServer {
                     send(w.displayId, new KeyEvent(down, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, key, 0));
                 }
             }
+            w.lease.touch(SystemClock.elapsedRealtime());
             return w.identity().put("applied", op).put("elapsedMs", System.currentTimeMillis() - started).put("observeRequired", true);
         }
     }
@@ -426,6 +457,7 @@ public final class WorkspaceServer {
                 Bitmap cropped = Bitmap.createBitmap(padded, 0, 0, w.width, w.height);
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream(); cropped.compress(Bitmap.CompressFormat.PNG, 100, bytes);
                 if (cropped != padded) cropped.recycle(); padded.recycle();
+                w.lease.touch(SystemClock.elapsedRealtime());
                 return w.identity().put("capturedAt", System.currentTimeMillis()).put("png", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP));
             }
         }
@@ -452,7 +484,8 @@ public final class WorkspaceServer {
     JSONObject dispatch(JSONObject r) throws Exception {
         String op = r.getString("op");
         if (op.equals("ping")) return new JSONObject().put("version", version).put("instance", instance)
-                .put("pid", android.os.Process.myPid()).put("maxWorkspaces", MAX_WORKSPACES).put("displayPolicy", DISPLAY_POLICY);
+                .put("pid", android.os.Process.myPid()).put("maxWorkspaces", MAX_WORKSPACES).put("displayPolicy", DISPLAY_POLICY)
+                .put("lifecyclePolicy", LIFECYCLE_POLICY).put("idleTimeoutMs", IdleLease.TIMEOUT_MS);
         require(instance.equals(r.optString("instance")), "BROKER_IDENTITY_CHANGED: explicit reconnect required");
         if (op.equals("list")) return list();
         if (op.equals("main-ui")) return mainUi();
@@ -466,7 +499,7 @@ public final class WorkspaceServer {
                 workspaces.clear();
                 if (failure != null) throw failure;
             }
-            running = false; return new JSONObject().put("stopped", true);
+            running = false; idleReaper.shutdownNow(); return new JSONObject().put("stopped", true);
         }
         Workspace w = get(r.getString("workspace"));
         if (op.equals("snapshot")) return snapshot(w);
@@ -504,6 +537,12 @@ public final class WorkspaceServer {
     }
     void run() throws Exception {
         listener = new LocalServerSocket(SOCKET);
+        // Runs on the phone, independently of ADB connections or a host process.
+        // Frame updates, list/ping and main-screen reads deliberately do not renew.
+        idleReaper.scheduleWithFixedDelay(() -> {
+            try { releaseIdleWorkspaces(); }
+            catch (Throwable e) { log("idle-reaper=" + cause(e)); }
+        }, 1, 1, TimeUnit.SECONDS);
         int clientThreads = MAX_WORKSPACES + 2; // Ten independent callers plus ordinary UI/control traffic.
         ThreadPoolExecutor clients = new ThreadPoolExecutor(clientThreads, clientThreads, 0, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(clientThreads * 2));

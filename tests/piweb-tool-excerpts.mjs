@@ -44,6 +44,14 @@ test('JSON keys/quotes delimit complete values, including escaped quotes and new
   const message = '已检查 API 的 3 个分支，结果为“正常”。\n下一行保留 index.ts 和 502。';
   assert.deepEqual(extractChineseSource(JSON.stringify({ message, status: 'success', nested: { text: '继续核对 foo.ts：耗时 12 ms。' } })), [message, '继续核对 foo.ts：耗时 12 ms。']);
 });
+test('structured batch receipts use returned output and diagnostics, not echoed input', () => {
+  assert.deepEqual(extractChineseSource(JSON.stringify([
+    { query: '读取中文路径和参数', result: 'No changes.', success: true },
+    { query: '修改中文文件和目录', result: '配置检查已经通过。', success: true },
+    { query: '运行包含中文参数的命令', error: '文件无法打开。', success: false },
+  ])), ['配置检查已经通过。', '文件无法打开。']);
+  assert.deepEqual(extractChineseSource(JSON.stringify({query: '业务返回的检索关键词', total: 3})), ['业务返回的检索关键词']);
+});
 test('code string literals and browser accessibility quotes drop wrappers, never evaluate templates', () => {
   assert.deepEqual(extractChineseSource('console.log("已检查 index.ts，耗时 3 ms。");'), ['已检查 index.ts，耗时 3 ms。']);
   assert.deepEqual(extractChineseSource('  - button "当前项目：综合工作台（3）" [ref=f1e19] [cursor=pointer]:'), ['当前项目：综合工作台（3）']);
@@ -202,6 +210,34 @@ test('shipping timeline renders only calls with Chinese results, live and in his
     assert.doesNotMatch(details,/git status|nothing to commit|<h3>输入|<h3>输出/);
   }
 });
+test('shipping timeline has no empty tool stages or dialogs, and a pending call only appears after a Chinese result', { skip: !source }, async () => {
+  const require = createRequire(path.join(source, 'package.json'));
+  const React = require('react'), { renderToStaticMarkup } = require('react-dom/server');
+  const model = await import('../assets/piweb-overlay/craft-transcript/model.mjs');
+  const { PortableProcessTimeline, Details } = loadTs(fs.readFileSync(path.join(root, 'assets/piweb-overlay/craft-transcript/PortableProcessTimeline.tsx'), 'utf8')+'\nexport { Details };', {
+    './MessageView': {PortableTextBlock:({block})=>React.createElement('span',null,block.text)}, './ImagePreview': {}, './conversation/ErrorNotice': {},
+    '@/lib/craft-transcript-model.mjs': model, 'lucide-react': new Proxy({}, {get:()=>()=>null}),
+  }, 'PortableProcessTimeline.tsx');
+  const content = ['quiet','failed','pending','filtered'].map((id,i)=>({type:'toolCall',toolCallId:id,toolName:'run_commands',input:{_phase:`只有工具的阶段${i}`,_intent:'调用说明不能作为摘录'}}));
+  const entries = [{kind:'assistant',key:'a',entryId:'a',message:{content}}];
+  const hidden = new Map([
+    ['quiet',result('No changes.')], ['failed',{...result('exit status 1'),isError:true}],
+    ['filtered',result(JSON.stringify([{query:'带中文的命令参数',result:'OK',success:true},{query:'带中文的错误查询',error:'Exit code 1',success:false}]))],
+  ]);
+  const render = (toolResults,live) => renderToStaticMarkup(React.createElement(PortableProcessTimeline,{entries,toolResults,live}));
+  for (const live of [true,false]) {
+    const html = render(hidden,live);
+    assert.doesNotMatch(html,/craft-work-log|craft-phase-row|craft-activity-row|只有工具的阶段|运行命令/);
+    assert.equal(html.includes('正在处理'),live);
+    const noExcerpt = model.projectCraftTurn(entries,hidden,live).activities[0];
+    assert.equal(renderToStaticMarkup(React.createElement(Details,{activity:noExcerpt,onClose(){}})), '');
+    const withResult = render(new Map([...hidden,['pending',result('检查结果已经完成。')]]),live);
+    assert.equal([...withResult.matchAll(/data-call-excerpt="true">([^<]+)</gu)].map(m=>m[1]).join(),'检查结果已经完成');
+    assert.equal((withResult.match(/class="craft-phase-row /gu) ?? []).length,1);
+    assert.match(withResult,/只有工具的阶段2/);
+  }
+});
+
 test('overflow reacts to long single paragraphs, streaming replacements and viewport resize', { skip: !source }, () => {
   const values = []; let cursor = 0, dirty = false, effect, resized;
   const content = { scrollHeight: 60, clientHeight: 40 };
