@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localFetch } from './local-http.mjs';
 import { installDesktopLinks } from './links.mjs';
+import { goalFetch, isGoalUrl } from './goal-transport.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const smoke = process.argv.includes('--desktop-smoke');
@@ -76,8 +77,9 @@ else {
     const session = contents.session;
     session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     session.setPermissionCheckHandler(() => false);
-    session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !allowedUrl(details.url) && !/^(?:data|blob):/u.test(details.url) }));
+    session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !allowedUrl(details.url) && !isGoalUrl(details.url) && !/^(?:data|blob):/u.test(details.url) }));
     session.protocol.handle('https', async (request) => {
+      if (isGoalUrl(request.url)) return goalFetch(request);
       if (!allowedUrl(request.url)) return new Response(null, { status: 403 });
       try { return await localFetch(request, undefined, { socketPath: pipe }, { extraHeaders: { 'x-pi-desktop-key': secret } }); }
       catch { return new Response('本地 Pi 内核连接失败', { status: 502 }); }
@@ -123,6 +125,10 @@ else {
       if (result.sessionsStatus !== 200 || result.projectsStatus !== 200 || !result.json || !result.document || result.scripts < 2 || !menuRemoved || result.quotaStatus !== 200 || !result.quotaShape || !result.quotaUi) throw new Error('desktop smoke: page, local API, quota or native menu failed');
       const { smokeDesktopLinks } = await import('./links-smoke.mjs');
       audit(`links smoke ${JSON.stringify(await smokeDesktopLinks(contents, origin, linkCheck, previews))}`);
+      if (process.argv.includes('--desktop-goal-smoke')) {
+        const { smokeDesktopGoal } = await import('./goal-smoke.mjs');
+        audit(`goal smoke ${JSON.stringify(await smokeDesktopGoal(contents))}`);
+      }
       app.quit();
     }
   }).catch(error => {

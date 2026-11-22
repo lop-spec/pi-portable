@@ -2286,27 +2286,32 @@
   const slots = window.__piUiSlots;
   if (!slots?.register) return;
   const start = () => {
-  const base = () => `${location.protocol}//${location.hostname}:30170/`;
-  let overlay, frame, status, opener;
+  const base = () => location.origin === 'https://piweb.invalid' ? 'https://goal.piweb.invalid/' : `${location.protocol}//${location.hostname}:30170/`;
+  let overlay, frame, status, opener, retryTimer, loading = false, retryDelay = 1000;
   function close() {
     if (!overlay) return;
-    overlay.hidden = true; document.documentElement.style.overflow = "";
+    clearTimeout(retryTimer); overlay.hidden = true; document.documentElement.style.overflow = "";
     opener?.focus?.({ preventScroll: true });
   }
   async function load() {
+    if (loading) return;
+    clearTimeout(retryTimer); loading = true;
     status.hidden = false; status.textContent = "正在连接长目标看板…"; frame.hidden = true;
     try {
       const response = await fetch(base() + 'api/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok || !(await response.json()).ok) throw new Error(`HTTP ${response.status}`);
+      if (overlay.hidden) return;
       const rgb = getComputedStyle(document.body).backgroundColor.match(/[\d.]+/g) || [255, 255, 255];
       const dark = .299 * rgb[0] + .587 * rgb[1] + .114 * rgb[2] < 140;
-      frame.src = base() + '?embed=1&theme=' + (dark ? 'dark' : 'light'); frame.hidden = false; status.hidden = true;
+      frame.src = base() + '?embed=1&theme=' + (dark ? 'dark' : 'light'); frame.hidden = false; status.hidden = true; retryDelay = 1000;
     } catch (error) {
+      if (overlay.hidden) return;
       status.replaceChildren();
-      const text = document.createElement('p'); text.textContent = '长目标看板暂时不可达；本机服务由 Goal-Web 隐藏运行，远程入口需确认 30170 端口可达。';
+      const text = document.createElement('p'); text.textContent = '长目标看板暂时不可达，正在自动重连。';
       const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'pw-btn pw-btn--sm'; retry.textContent = '重试'; retry.addEventListener('click', load);
       status.append(text, retry); console.warn('[pi-web goal board] unavailable:', String(error?.message || error));
-    }
+      retryTimer = setTimeout(load, retryDelay); retryDelay = Math.min(30000, retryDelay * 2);
+    } finally { loading = false; }
   }
   function show(event) {
     opener = event.currentTarget;
@@ -2316,7 +2321,7 @@
       const bar = document.createElement('div'); bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 12px;border-bottom:1px solid var(--border);background:var(--bg-elevated)';
       const title = document.createElement('strong'); title.textContent = '长目标看板';
       const mode = document.createElement('span'); mode.style.cssText = 'flex:1;font-size:12px;color:var(--text-dim)';
-      const link = document.createElement('a'); link.textContent = '新标签页打开'; link.href = base(); link.target = '_blank'; link.rel = 'noopener'; link.className = 'pw-btn pw-btn--ghost pw-btn--sm';
+      const link = document.createElement('a'); link.textContent = '新标签页打开'; link.href = location.origin === 'https://piweb.invalid' ? 'http://127.0.0.1:30170/' : base(); link.target = '_blank'; link.rel = 'noopener'; link.className = 'pw-btn pw-btn--ghost pw-btn--sm';
       const exit = document.createElement('button'); exit.type = 'button'; exit.textContent = '关闭 (Esc)'; exit.className = 'pw-btn pw-btn--sm'; exit.addEventListener('click', close);
       bar.append(title, mode, link, exit);
       status = document.createElement('div'); status.style.cssText = 'padding:32px;font-size:14px';

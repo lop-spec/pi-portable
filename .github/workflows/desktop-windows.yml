@@ -16,12 +16,23 @@ jobs:
       - name: Verify desktop transport and existing HTTP mode
         shell: pwsh
         run: |
-          node --test --test-timeout=15000 tests/desktop-local-http.test.mjs tests/desktop-links.test.mjs tests/piweb-preview-links.mjs tests/piweb-ui-proxy.mjs tests/account-usage-contract.mjs tests/piweb-account-usage-contract.mjs
+          node --test --test-timeout=15000 tests/desktop-local-http.test.mjs tests/desktop-goal-transport.test.mjs tests/desktop-links.test.mjs tests/piweb-preview-links.mjs tests/piweb-ui-proxy.mjs tests/account-usage-contract.mjs tests/piweb-account-usage-contract.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Transport contracts failed' }
           foreach ($script in Get-ChildItem src/desktop/*.mjs) {
             node --check $script.FullName
             if ($LASTEXITCODE -ne 0) { throw 'Desktop source failed syntax validation' }
           }
+      - name: Verify isolated goal board in Electron
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/electron/electron/releases/download/v45.4.1/electron-v45.4.1-win32-x64.zip' -OutFile electron.zip
+          if ((Get-FileHash electron.zip -Algorithm SHA256).Hash.ToLower() -ne '2ba6223afa9121f42831fefe92c434334907540165294fc56697449d12e7cfe9') { throw 'Electron archive hash mismatch' }
+          Expand-Archive electron.zip -DestinationPath electron-test
+          $env:PI_GOAL_ELECTRON_LOG = Join-Path $env:RUNNER_TEMP 'pi-goal-electron.log'
+          $test = Start-Process -FilePath (Join-Path $pwd 'electron-test/electron.exe') -ArgumentList 'tests/desktop-goal-electron' -WorkingDirectory $pwd -PassThru
+          if (!$test.WaitForExit(90000)) { $test.Kill(); throw 'Electron board integration timed out' }
+          if (Test-Path $env:PI_GOAL_ELECTRON_LOG) { Get-Content $env:PI_GOAL_ELECTRON_LOG }
+          if ($test.ExitCode -ne 0) { throw "Electron board integration failed: $($test.ExitCode)" }
       - name: Package desktop runtime integration
         shell: pwsh
         run: |
