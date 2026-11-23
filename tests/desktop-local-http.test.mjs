@@ -2,7 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { localFetch, memoryConnection } from '../src/desktop/local-http.mjs';
+import { desktopFileMenuOrigin, localFetch, memoryConnection } from '../src/desktop/local-http.mjs';
+
+test('desktop restores missing file-menu Origin only from the same-origin protocol referrer', () => {
+  const origin = 'https://piweb.invalid';
+  const options = { method: 'POST', referrer: origin + '/session', mode: 'cors' };
+  const check = (init = {}, suffix = '/api/open-local-file') => desktopFileMenuOrigin(new Request(origin + suffix, { ...options, ...init }), origin);
+  assert.equal(check(), origin);
+  assert.equal(check({ mode: 'same-origin' }), origin);
+  assert.equal(check({ referrer: 'https://outside.invalid/' }), null);
+  assert.equal(check({ referrer: '' }), null);
+  assert.equal(check({ referrer: '', headers: { referer: origin } }), null);
+  assert.equal(check({ headers: { origin: 'null' } }), null);
+  assert.equal(check({ headers: { origin: 'https://outside.invalid' } }), null);
+  assert.equal(check({ headers: { origin } }), null);
+  assert.equal(check({ headers: { 'sec-fetch-site': 'cross-site' } }), null);
+  assert.equal(check({ method: 'GET' }), null);
+  assert.equal(check({ mode: 'no-cors' }), null);
+  assert.equal(check({}, '/api/sessions'), null);
+});
 
 test('portless request and streaming without a listener', async () => {
   let release;

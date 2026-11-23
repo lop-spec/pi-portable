@@ -21,6 +21,17 @@ export function memoryConnection(server) {
   };
 }
 
+// Electron's protocol handler can omit Chromium's Origin header. Restore it
+// only for a file-menu POST whose browser-owned referrer proves the same origin.
+export function desktopFileMenuOrigin(request, origin) {
+  if (request.method !== 'POST' || request.headers.has('origin') || request.headers.get('sec-fetch-site') === 'cross-site') return null;
+  if (request.mode !== 'cors' && request.mode !== 'same-origin') return null;
+  const target = new URL(request.url);
+  if (target.origin !== origin || target.pathname !== '/api/open-local-file') return null;
+  try { return new URL(request.referrer).origin === origin ? origin : null; }
+  catch { return null; }
+}
+
 const outside = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer']);
 export async function localFetch(source, init, endpoint, { extraHeaders = {}, host } = {}) {
   const request = new Request(source, init);

@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { localFetch } from './local-http.mjs';
+import { desktopFileMenuOrigin, localFetch } from './local-http.mjs';
 import { installDesktopLinks } from './links.mjs';
 import { goalFetch, isGoalUrl } from './goal-transport.mjs';
 
@@ -81,7 +81,10 @@ else {
     session.protocol.handle('https', async (request) => {
       if (isGoalUrl(request.url)) return goalFetch(request);
       if (!allowedUrl(request.url)) return new Response(null, { status: 403 });
-      try { return await localFetch(request, undefined, { socketPath: pipe }, { extraHeaders: { 'x-pi-desktop-key': secret } }); }
+      const extraHeaders = { 'x-pi-desktop-key': secret };
+      const fileOrigin = desktopFileMenuOrigin(request, origin);
+      if (fileOrigin) extraHeaders.origin = fileOrigin;
+      try { return await localFetch(request, undefined, { socketPath: pipe }, { extraHeaders }); }
       catch { return new Response('本地 Pi 内核连接失败', { status: 502 }); }
     });
     const reportLinkError = error => {
@@ -111,6 +114,29 @@ else {
     win.once('ready-to-show', () => { if (!smoke && !win.isDestroyed()) win.show(); });
     await win.loadURL(`${origin}/`);
     audit(`ready main=${process.pid} worker=${pid}${smoke ? ' smoke' : ''}`);
+    if (smoke && process.argv.includes('--desktop-file-menu-smoke')) {
+      // Invalid inputs cannot open a GUI or change the clipboard; the backend's
+      // validation status still tells us exactly which guard each request reached.
+      const result = await contents.executeJavaScript(`(async () => {
+        const post = async (body, referrerPolicy) => {
+          const r = await fetch('/api/open-local-file', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), referrerPolicy,
+          });
+          return r.status;
+        };
+        return {
+          ordinary: await post({}),
+          withoutReferrer: await post({}, 'no-referrer'),
+          actionValidation: await Promise.all(['file','path','copy_file'].map(action => post({action, path:'relative.md'}))),
+        };
+      })()`);
+      audit(`file menu smoke ${JSON.stringify(result)}`);
+      if (result.ordinary !== 400 || result.withoutReferrer !== 403 || result.actionValidation.some(status => status !== 400)) {
+        throw new Error('desktop file menu: same-origin or path guard failed');
+      }
+      app.quit();
+      return;
+    }
     if (smoke) {
       const result = await contents.executeJavaScript(`(async () => {
         const r = await fetch('/api/sessions');
