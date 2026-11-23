@@ -124,10 +124,33 @@ export function installSelectionCopy(): () => void {
     if (!selection || selection.isCollapsed || !selection.rangeCount) return;
     const range = selection.getRangeAt(0);
     const element = (node: Node) => node instanceof Element ? node : node.parentElement;
-    const root = element(range.startContainer)?.closest(".markdown-body,.pw-markdown,.pd-transcript,.file-source-view,.file-diff-view,.pw-file-preview-body,.craft-detail-body,.message-content");
-    if (!root?.contains(range.endContainer)) return;
+    const scope = ".markdown-body,.pw-markdown,.pd-transcript,.file-source-view,.file-diff-view,.pw-file-preview-body,.craft-detail-body,.message-content";
+    const first = element(range.startContainer);
+    const last = element(range.endContainer);
+    const root = element(range.commonAncestorContainer)?.closest(scope);
+    if (!root || !first?.closest(scope) || !last?.closest(scope)) return;
+    const ignored = "button,script,style,[aria-hidden='true'],.react-syntax-highlighter-line-number,.code-block-head,.code-block-header,.file-line-number";
+    if (element(range.commonAncestorContainer)?.closest(ignored)) return;
     const fragment = range.cloneContents();
-    fragment.querySelectorAll("button,script,style,[aria-hidden='true'],.react-syntax-highlighter-line-number,.code-block-head,.code-block-header,.file-line-number").forEach(node => node.remove());
+    const dropped = fragment.querySelectorAll(ignored);
+    dropped.forEach(node => node.remove());
+    const source = root.matches(".file-source-view,.file-diff-view");
+    // cloneContents omits the common ancestor and every parent. For a partial
+    // selection inside a link, heading, list item or cell those parents ARE
+    // the formatting. Restore only their structure, never their other text.
+    if (!source) {
+      for (let ancestor = element(range.commonAncestorContainer); ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+        if (!/^(P|H[1-6]|STRONG|B|EM|I|DEL|S|U|A|PRE|CODE|BLOCKQUOTE|UL|OL|LI|TABLE|THEAD|TBODY|TFOOT|TR|TH|TD)$/.test(ancestor.tagName)) continue;
+        const shell = ancestor.cloneNode(false) as Element;
+        if (ancestor instanceof HTMLOListElement) {
+          const items = [...ancestor.children].filter(item => item.tagName === "LI");
+          const first = items.findIndex(item => range.intersectsNode(item));
+          if (first > 0) shell.setAttribute("start", String(ancestor.start + first));
+        }
+        shell.append(fragment);
+        fragment.append(shell);
+      }
+    }
     const serialize = (node: Node): string => {
       if (node.nodeType === Node.TEXT_NODE) return escapeHtml(node.textContent ?? "");
       if (!(node instanceof Element)) return Array.from(node.childNodes).map(serialize).join("");
@@ -135,17 +158,27 @@ export function installSelectionCopy(): () => void {
       const tag = node.tagName.toLowerCase();
       if (tag === "img") return escapeHtml(`[${node.getAttribute("alt") || "图片"}]`);
       if (tag === "br") return "<br>";
-      if (!/^(p|div|span|h[1-6]|strong|b|em|i|del|s|u|pre|code|blockquote|table|thead|tbody|tr|th|td|ul|ol|li|a|hr)$/.test(tag)) return children;
+      if (!/^(p|div|span|h[1-6]|strong|b|em|i|del|s|u|pre|code|blockquote|table|thead|tbody|tfoot|tr|th|td|ul|ol|li|a|hr)$/.test(tag)) return children;
       const href = node.getAttribute("href") || "";
-      const attrs = tag === "a" && /^(https?:|mailto:|file:)/i.test(href) ? ` href="${escapeHtml(href)}"` : "";
+      let attrs = tag === "a" && /^(https?:|mailto:|file:)/i.test(href) ? ` href="${escapeHtml(href)}"` : "";
+      for (const attr of tag === "ol" ? ["start"] : tag === "li" ? ["value"] : tag === "td" || tag === "th" ? ["colspan", "rowspan"] : []) {
+        const value = node.getAttribute(attr) || "";
+        if (/^-?\d{1,9}$/.test(value)) attrs += ` ${attr}="${value}"`;
+      }
       const style = styles[tag] || "";
       return `<${tag}${attrs}${style ? ` style="${style}"` : ""}>${children}</${tag}>`;
     };
-    const source = root.matches(".file-source-view,.file-diff-view");
     const lines = [...fragment.querySelectorAll(".file-source-line,.file-diff-line")];
     lines.slice(0, -1).forEach(line => { if (!line.textContent?.endsWith("\n")) line.append("\n"); });
     const html = source ? `<pre style="${styles.pre}">${serialize(fragment)}</pre>` : serialize(fragment);
-    const text = source ? (fragment.textContent ?? "") : selection.toString();
+    const asText = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+      const value = Array.from(node.childNodes).map(asText).join("");
+      if (!(node instanceof Element)) return value;
+      if (node.matches("td,th")) return `${value}\t`;
+      return node.matches("br,p,h1,h2,h3,h4,h5,h6,li,tr,div,pre,blockquote") ? `${value}\n` : value;
+    };
+    const text = source ? (fragment.textContent ?? "") : dropped.length ? asText(fragment).trimEnd() : selection.toString();
     event.clipboardData.setData("text/plain", text);
     event.clipboardData.setData("text/html", wrap(html));
     event.preventDefault();

@@ -244,6 +244,19 @@ jobs:
           Move-Item $packed[0].filename pi-web-upstream.tgz
           (Get-FileHash pi-web-upstream.tgz -Algorithm SHA256).Hash | Set-Content pi-web-upstream.tgz.sha256
 
+      - name: Verify partial rich-text copy in Electron
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/electron/electron/releases/download/v45.4.1/electron-v45.4.1-win32-x64.zip' -OutFile electron-copy.zip
+          if ((Get-FileHash electron-copy.zip -Algorithm SHA256).Hash.ToLower() -ne '2ba6223afa9121f42831fefe92c434334907540165294fc56697449d12e7cfe9') { throw 'Electron archive hash mismatch' }
+          Expand-Archive electron-copy.zip -DestinationPath electron-copy
+          $env:PI_CLIPBOARD_ELECTRON_LOG = Join-Path $env:RUNNER_TEMP 'pi-clipboard-electron.log'
+          $env:PI_CLIPBOARD_SOURCE = Join-Path $pwd 'upstream/lib/clipboard.ts'
+          $test = Start-Process -FilePath (Join-Path $pwd 'electron-copy/electron.exe') -ArgumentList 'tests/desktop-clipboard-electron' -WorkingDirectory $pwd -PassThru
+          if (!$test.WaitForExit(30000)) { $test.Kill(); throw 'Electron clipboard regression timed out' }
+          if (Test-Path $env:PI_CLIPBOARD_ELECTRON_LOG) { Get-Content $env:PI_CLIPBOARD_ELECTRON_LOG }
+          if ($test.ExitCode -ne 0) { throw "Electron clipboard regression failed: $($test.ExitCode)" }
+
       - name: Stage app layer (verified source integration)
         shell: pwsh
         run: |
