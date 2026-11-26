@@ -85,6 +85,7 @@ web.on('request', (req, res) => void nextHandler(req, res).catch(error => {
 }));
 const { PiWebUiProxy } = await import('../piweb-ui-proxy.mjs');
 const proxy = new PiWebUiProxy({ dataRoot: data, logFile: path.join(cache, 'desktop-ui.log'), piWebPackageRoot: packageRoot,
+  accountAutoResetDesktopOrigin: 'https://piweb.invalid', // requests reach this instance only over authenticated IPC
   accountUsageReuseMs: 0, // the bridge owns quota freshness; no second snapshot cache on successful reads
   fetchImpl: fetchRoute, webRequest: (opts, cb) => http.request({ ...opts, ...upstream }, cb) });
 const expected = Buffer.from(secret);

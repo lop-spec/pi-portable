@@ -354,6 +354,7 @@ export class PiWebUiProxy {
     this.sessionListPersistPending = null;
     this.sessionListPersistRunning = null;
     this.sessionListPersistedRaw = null;
+    this.accountAutoResetDesktopOrigin = options.accountAutoResetDesktopOrigin;
     this.accountUsageTimeoutMs = Number.isFinite(options.accountUsageTimeoutMs) ? options.accountUsageTimeoutMs : ACCOUNT_USAGE_TIMEOUT_MS;
     this.accountUsageReuseMs = Number.isFinite(options.accountUsageReuseMs) ? options.accountUsageReuseMs : ACCOUNT_USAGE_REUSE_MS;
     this.accountUsage = { data: null, fetchedAt: 0, state: "", failures: 0, failingSince: 0, lastFailureLogAt: 0, lastSlowLogAt: 0, slowAnswers: 0, inflight: { force: null, normal: null } };
@@ -709,9 +710,11 @@ export class PiWebUiProxy {
   }
 
   async handleAccountAutoReset(request, response) {
-    if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/iu.test(String(request.headers.host || ""))
-      || !request.headers.origin || !this.mutationOriginAllowed(request)
-      || request.headers["sec-fetch-site"] === "cross-site") {
+    const desktopOrigin = this.accountAutoResetDesktopOrigin;
+    const localOrigin = desktopOrigin
+      ? request.headers.origin === desktopOrigin
+      : /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/iu.test(String(request.headers.host || "")) && Boolean(request.headers.origin);
+    if (!localOrigin || !this.mutationOriginAllowed(request) || request.headers["sec-fetch-site"] === "cross-site") {
       this.log("account-auto-reset-rejected", { reason: "non-local-or-cross-origin" });
       return this.jsonResponse(response, 403, { ok: false, error: "仅允许本机同源操作" });
     }

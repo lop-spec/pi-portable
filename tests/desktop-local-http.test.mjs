@@ -2,13 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { desktopFileMenuOrigin, localFetch, memoryConnection } from '../src/desktop/local-http.mjs';
+import { desktopMutationOrigin, localFetch, memoryConnection } from '../src/desktop/local-http.mjs';
 
-test('desktop restores missing file-menu Origin only from the same-origin protocol referrer', () => {
+test('desktop restores missing control Origin only from the same-origin protocol referrer', () => {
   const origin = 'https://piweb.invalid';
   const options = { method: 'POST', referrer: origin + '/session', mode: 'cors' };
-  const check = (init = {}, suffix = '/api/open-local-file') => desktopFileMenuOrigin(new Request(origin + suffix, { ...options, ...init }), origin);
+  const check = (init = {}, suffix = '/api/open-local-file') => desktopMutationOrigin(new Request(origin + suffix, { ...options, ...init }), origin);
   assert.equal(check(), origin);
+  assert.equal(check({}, '/__pi_account_auto_reset'), origin);
+  assert.equal(check({ referrer: '' }, '/__pi_account_auto_reset'), null);
+  assert.equal(check({ referrer: 'https://outside.invalid/' }, '/__pi_account_auto_reset'), null);
+  assert.equal(check({}, '/__pi_account_select'), null);
   assert.equal(check({ mode: 'same-origin' }), origin);
   assert.equal(check({ referrer: 'https://outside.invalid/' }), null);
   assert.equal(check({ referrer: '' }), null);

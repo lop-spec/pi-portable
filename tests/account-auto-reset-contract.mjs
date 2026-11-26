@@ -198,6 +198,30 @@ test("same-origin local configuration is forwarded without credentials; CSRF/non
   assert.equal(calls.length, 1);
 });
 
+test("desktop IPC accepts only its configured virtual origin for the auto-reset switch", async t => {
+  const f = fixture(t), origin = "https://piweb.invalid";
+  const calls = [];
+  const options = { dataRoot: f.dataDir, fetchImpl: async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return Response.json({ ok: true, autoReset: { enabled: false } });
+  } };
+  const desktop = new PiWebUiProxy({ ...options, accountAutoResetDesktopOrigin: origin });
+  const web = new PiWebUiProxy(options);
+  const run = async (proxy, headers = {}) => {
+    const req = Readable.from([Buffer.from('{"enabled":false}')]);
+    req.headers = { host: "piweb.invalid", origin, "content-type": "application/json", ...headers };
+    const res = { writeHead(status) { this.status = status; }, end() {} };
+    await proxy.handleAccountAutoReset(req, res);
+    return res.status;
+  };
+  assert.equal(await run(desktop), 200);
+  assert.equal(await run(web), 403);
+  for (const headers of [{ origin: undefined }, { origin: "http://piweb.invalid" }, { origin: "https://outside.invalid" },
+    { host: "piweb.invalid:8080" }, { "sec-fetch-site": "cross-site" }]) assert.equal(await run(desktop, headers), 403);
+  assert.equal(await run(desktop, { "content-type": "text/plain" }), 415);
+  assert.deepEqual(calls, [{ enabled: false }]);
+});
+
 test("real isolated bridge exposes configuration, rejects browser-origin writes, persists backup/readback", async t => {
   const f = fixture(t);
   const homes = path.join(f.dataDir, "empty-homes"); fs.mkdirSync(homes);

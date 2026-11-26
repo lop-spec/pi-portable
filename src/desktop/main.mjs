@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { desktopFileMenuOrigin, localFetch } from './local-http.mjs';
+import { desktopMutationOrigin, localFetch } from './local-http.mjs';
 import { installDesktopLinks } from './links.mjs';
 import { goalFetch, isGoalUrl } from './goal-transport.mjs';
 
@@ -82,8 +82,8 @@ else {
       if (isGoalUrl(request.url)) return goalFetch(request);
       if (!allowedUrl(request.url)) return new Response(null, { status: 403 });
       const extraHeaders = { 'x-pi-desktop-key': secret };
-      const fileOrigin = desktopFileMenuOrigin(request, origin);
-      if (fileOrigin) extraHeaders.origin = fileOrigin;
+      const mutationOrigin = desktopMutationOrigin(request, origin);
+      if (mutationOrigin) extraHeaders.origin = mutationOrigin;
       try { return await localFetch(request, undefined, { socketPath: pipe }, { extraHeaders }); }
       catch { return new Response('本地 Pi 内核连接失败', { status: 502 }); }
     });
@@ -134,6 +134,13 @@ else {
       if (result.ordinary !== 400 || result.withoutReferrer !== 403 || result.actionValidation.some(status => status !== 400)) {
         throw new Error('desktop file menu: same-origin or path guard failed');
       }
+      app.quit();
+      return;
+    }
+    if (smoke && process.argv.includes('--desktop-auto-reset-smoke')) {
+      if (!profileSwitch || accountHomes || egress !== 1) throw new Error('Use an isolated desktop smoke profile without account homes');
+      const { smokeDesktopAutoReset } = await import('./auto-reset-smoke.mjs');
+      audit(`auto-reset smoke ${JSON.stringify(await smokeDesktopAutoReset(contents, appHome))}`);
       app.quit();
       return;
     }
