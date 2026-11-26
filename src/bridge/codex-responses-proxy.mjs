@@ -1085,7 +1085,18 @@ const server = http.createServer(async (req, res) => {
 
 export { server as codexHttpServer };
 
-if (desktopBridge) accountUsageMonitor?.start();
+// Both transports own the account pool, including the desktop server that never listens on TCP.
+let keepFreshFirst;
+let keepFreshInterval;
+function startAccountMaintenance() {
+  if (!accountPool) return;
+  const keepFresh = () => accountPool.refreshExpiring().catch((e) => log(`凭据保鲜失败：${String(e?.message || e).slice(0, 80)}`));
+  keepFreshFirst = setTimeout(keepFresh, 30_000).unref();
+  keepFreshInterval = setInterval(keepFresh, 4 * 60 * 60_000).unref();
+  accountUsageMonitor.start();
+}
+
+if (desktopBridge) startAccountMaintenance();
 else server.listen(PORT, HOST, () => {
   log(`listening http://${HOST}:${PORT}`);
   log(`策略：${POLICY_VERSION}，explicit breakpoint=${EXPLICIT_BREAKPOINT ? "on" : "off（当前 ChatGPT 后端不支持）"}`);
@@ -1107,14 +1118,13 @@ else server.listen(PORT, HOST, () => {
     ? `账号池 ${ACCOUNT_HOMES}（${accountPool.members().map((m) => m.id).join(",") || "空"}；429/401 冷却→切号→重发）`
     : "Codex 官方登录透明传递";
   log(`身份：${poolLabel}；出口跟随 ${EGRESS_STATE_FILE}（当前 ${bootEgress.key}:${bootEgress.port}，缺省 ${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT}）`);
-  if (accountPool) {
-    // 凭据保鲜：长期闲置的备用账号在轮转需要它时一定可用（primary 归客户端自己管）。
-    const keepFresh = () => accountPool.refreshExpiring().catch((e) => log(`凭据保鲜失败：${String(e?.message || e).slice(0, 80)}`));
-    setTimeout(keepFresh, 30_000).unref();
-    setInterval(keepFresh, 4 * 60 * 60_000).unref();
-    accountUsageMonitor.start();
-  }
+  startAccountMaintenance();
   log(`流吞吐观测：SSE 尾部真实 usage → ${METRICS_FILE}`);
 });
 
-server.on("close", () => { accountUsageMonitor?.stop(); systemProxyFollower?.stop(); });
+server.on("close", () => {
+  clearTimeout(keepFreshFirst);
+  clearInterval(keepFreshInterval);
+  accountUsageMonitor?.stop();
+  systemProxyFollower?.stop();
+});

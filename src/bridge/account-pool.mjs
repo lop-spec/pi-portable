@@ -9,6 +9,12 @@
 //       401（刷新失败）时冷却当前账号并切下一个可用的；绝不按请求轮询。
 // 池不可用（homes 缺失/无账号/读取异常）时返回 null，代理原样透传下游身份，
 // 行为与无账号池版本完全一致。
+//
+// 外部槽位：homes/<id>/.pi-external-codex.json 只指向来源文件（如 AcBoter 金库），池实时只读。
+//       来源的所有者（AcBoter 自带的 token 保活）不运行时，access_token 约 10 天后过期且无人续期；
+//       标记里加 "refresh":"writeback" 的槽位才允许池临期续期，并按金库格式原子写回同一个来源文件
+//       （不另存副本；来源里的 refresh_token 变化＝所有者已重新登录，立即采用新的）。
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
@@ -22,6 +28,9 @@ const COOLDOWN_MAX_MS = 6 * 60 * 60_000;
 const COOLDOWN_401_MS = 15 * 60_000;
 const REFRESH_AHEAD_MS = 5 * 60_000;
 const REFRESH_RETRY_GAP_MS = 5 * 60_000;
+// 写回外部来源文件时 Windows 上的占用重试；已被拒绝的 refresh_token 只在换新前每小时提示一次。
+const VAULT_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800];
+const DEAD_TOKEN_LOG_GAP_MS = 60 * 60_000;
 // 端点与 client_id 与官方 codex CLI 同源（实测自 codex.exe 二进制字符串）。
 const OAUTH_HOST = "auth.openai.com";
 const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -75,7 +84,11 @@ export function createAccountPool(options) {
     now = Date.now,
   } = options;
 
-  const state = { active: "primary", cooldown: new Map(), lastRefreshTry: new Map(), loaded: false };
+  const state = {
+    active: "primary", cooldown: new Map(), lastRefreshTry: new Map(), loaded: false,
+    // writeback 槽位里已被上游拒绝的 refresh_token 指纹（仅进程内；来源换了新的就自动失效）。
+    deadRefresh: new Map(), deadLogged: new Map(),
+  };
   const refreshInFlight = new Map();
   const removedLogged = new Set();
 
@@ -133,9 +146,9 @@ export function createAccountPool(options) {
         const externalFile = path.join(slot, EXTERNAL_CODEX_FILE);
         if (fs.existsSync(externalFile)) {
           try {
-            const { version, sourcePath } = JSON.parse(fs.readFileSync(externalFile, "utf8"));
+            const { version, sourcePath, refresh: refreshMode } = JSON.parse(fs.readFileSync(externalFile, "utf8"));
             if (version !== 1 || !path.isAbsolute(sourcePath) || fs.existsSync(authPath)) throw new Error("invalid-external-slot");
-            found.push({ id: entry.name, authPath: sourcePath, writable: false, external: true });
+            found.push({ id: entry.name, authPath: sourcePath, writable: false, external: true, writeback: refreshMode === "writeback" });
           } catch { log(`账号 ${entry.name} 跳过：external-source-invalid`); }
         } else if (fs.existsSync(authPath)) {
           found.push({ id: entry.name, authPath, writable: entry.name !== "primary" });
@@ -188,7 +201,7 @@ export function createAccountPool(options) {
   // 同一账号的并发刷新单飞：并发 401 共享同一次刷新结果，避免后到者因节流拿到
   // false 而把刚刷新成功的账号误冷却。
   function refresh(member) {
-    if (!member.writable) return Promise.resolve(false);
+    if (!member.writable && !member.writeback) return Promise.resolve(false);
     const existing = refreshInFlight.get(member.id);
     if (existing) return existing;
     const last = state.lastRefreshTry.get(member.id) || 0;
@@ -203,6 +216,7 @@ export function createAccountPool(options) {
   }
 
   async function refreshOnce(member) {
+    if (member.writeback) return refreshVaultOnce(member);
     if (!member.writable) { log(`账号 ${member.id} 跳过刷新：external-or-primary-readonly`); return false; }
     let refreshToken;
     try { refreshToken = readAuthFile(member.authPath).refreshToken; }
@@ -234,6 +248,83 @@ export function createAccountPool(options) {
       log(`账号 ${member.id} 刷新失败：${String(error.message || error).slice(0, 80)}`);
       return false;
     }
+  }
+
+  // writeback 外部槽位的续期：来源文件的所有者没在保活时，池代为换新并原子写回同一个文件。
+  // 字段口径与 AcBoter 金库一致（tokens 三元组、token_generation+1、requires_reauth=false、last_used），
+  // 其余字段原样保留。永不打印 token；被上游拒绝的 refresh_token 不再重试，来源换了新的才恢复。
+  async function refreshVaultOnce(member) {
+    const logLimited = (text) => {
+      if (now() - (state.deadLogged.get(member.id) || 0) < DEAD_TOKEN_LOG_GAP_MS) return;
+      state.deadLogged.set(member.id, now());
+      log(text);
+    };
+    let before;
+    try { before = JSON.parse(fs.readFileSync(member.authPath, "utf8")); }
+    catch { log(`账号 ${member.id} 刷新失败：vault-read-failed`); return false; }
+    const refreshToken = before?.tokens?.refresh_token;
+    if (!refreshToken) { log(`账号 ${member.id} 刷新失败：missing-refresh-token`); return false; }
+    if (before.requires_reauth === true) {
+      logLimited(`账号 ${member.id} 跳过刷新：来源已标记需要重新登录（在 AcBoter 重新登录后自动恢复）`);
+      return false;
+    }
+    const fingerprint = crypto.createHash("sha256").update(refreshToken).digest("hex").slice(0, 16);
+    if (state.deadRefresh.get(member.id) === fingerprint) {
+      logLimited(`账号 ${member.id} 跳过刷新：refresh_token 已被上游拒绝（在 AcBoter 重新登录后自动恢复）`);
+      return false;
+    }
+    let tokens;
+    try { tokens = await (refreshTransport || defaultRefreshTransport)(refreshToken); }
+    catch (error) {
+      const message = String(error?.message || error).slice(0, 80);
+      if (/refresh HTTP (400|401|403)\b/.test(message)) state.deadRefresh.set(member.id, fingerprint);
+      log(`账号 ${member.id} 刷新失败：${message}`);
+      return false;
+    }
+    if (!tokens?.access_token) { log(`账号 ${member.id} 刷新失败：missing-access-token-in-response`); return false; }
+    // 响应里的 token 必须解析得出未来的过期时间，坏响应不能写进来源文件。
+    if (!(jwtExpiryMs(tokens.access_token) > now())) { log(`账号 ${member.id} 刷新失败：invalid-access-token-in-response`); return false; }
+    let current;
+    try { current = JSON.parse(fs.readFileSync(member.authPath, "utf8")); }
+    catch { log(`账号 ${member.id} 刷新结果丢弃：vault-read-failed-after-refresh`); return false; }
+    // 刷新期间所有者已重新登录或自己续期：以来源为准，不覆盖更新的身份。
+    if (current?.tokens?.refresh_token !== refreshToken) {
+      log(`账号 ${member.id} 刷新结果丢弃：credentials-changed-during-refresh`);
+      return true;
+    }
+    const updated = {
+      ...current,
+      tokens: {
+        ...current.tokens,
+        access_token: tokens.access_token,
+        id_token: tokens.id_token ?? current.tokens.id_token,
+        refresh_token: tokens.refresh_token ?? refreshToken,
+      },
+      token_generation: (Number(current.token_generation) || 0) + 1,
+      requires_reauth: false,
+      last_used: now(),
+    };
+    const temporary = `${member.authPath}.tmp.${process.pid}.${now()}`;
+    let written = false;
+    try {
+      fs.writeFileSync(temporary, JSON.stringify(updated, null, 2), "utf8");
+      written = true;
+      for (let attempt = 0; ; attempt += 1) {
+        try { fs.renameSync(temporary, member.authPath); break; }
+        catch (error) {
+          const delay = VAULT_RENAME_RETRY_DELAYS_MS[attempt];
+          if (!delay || !["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    } catch (error) {
+      // 换发后的新 refresh_token 只在临时文件里：保留它供人工找回，不静默丢弃。
+      log(`账号 ${member.id} 写回失败：${String(error?.code || error?.message || error).slice(0, 60)}${written ? `；新凭据保留在 ${path.basename(temporary)}` : ""}`);
+      if (!written) { try { fs.rmSync(temporary, { force: true }); } catch { /* 无临时文件。 */ } }
+      return false;
+    }
+    log(`账号 ${member.id} token 已刷新并写回来源文件 gen=${updated.token_generation}（不打印）`);
+    return true;
   }
 
   function cooldown(id, untilMs, reason) {
@@ -275,7 +366,13 @@ export function createAccountPool(options) {
       // 错误消息可能内嵌 auth.json 源文本片段，日志一律用固定文案。
       try { auth = readAuthFile(member.authPath); }
       catch { blockers.push(`${member.id}:auth.json 不可用`); continue; }
-      const expiry = jwtExpiryMs(auth.token);
+      let expiry = jwtExpiryMs(auth.token);
+      if (member.writeback && (!expiry || expiry - now() < REFRESH_AHEAD_MS)) {
+        // 来源的所有者没在保活：池代为续期，成功后以来源文件的新内容为准；失败且已过期则落入下面的外部过期跳过。
+        if (await refresh(member)) {
+          try { auth = readAuthFile(member.authPath); expiry = jwtExpiryMs(auth.token); } catch { /* 沿用旧 token。 */ }
+        }
+      }
       if (member.external && (!expiry || expiry <= now())) {
         blockers.push(`${member.id}:外部 token 已过期或不可验证`);
         log(`账号 ${member.id} 跳过：external-token-expired-or-invalid`);
@@ -312,7 +409,7 @@ export function createAccountPool(options) {
     }
     if (statusCode === 401) {
       if (account.useDownstream) return "give-up";
-      if (!account.member.external && await refresh(account.member)) return "retry";
+      if ((!account.member.external || account.member.writeback) && await refresh(account.member)) return "retry";
       cooldown(account.id, parseCooldownUntilMs(401, bodyText, headers, now()), "401 token 失效");
       return "switch";
     }
@@ -324,7 +421,7 @@ export function createAccountPool(options) {
   async function refreshExpiring(windowMs = 48 * 60 * 60_000) {
     const refreshed = [];
     for (const member of members()) {
-      if (!member.writable) continue;
+      if (!member.writable && !member.writeback) continue;
       let auth;
       try { auth = readAuthFile(member.authPath); } catch { continue; }
       const expiry = jwtExpiryMs(auth.token);
@@ -390,7 +487,7 @@ export function createAccountPool(options) {
         tokenExpDays,
         // primary 走下游请求自带的 Authorization(客户端自己刷新),文件里的 token 过期与否不影响它。
         identity: member.id === "primary" ? "downstream" : "pool",
-        refreshOwner: member.external ? "external" : member.id === "primary" ? "downstream" : "pool",
+        refreshOwner: member.writeback ? "external-writeback" : member.external ? "external" : member.id === "primary" ? "downstream" : "pool",
       };
     });
   }

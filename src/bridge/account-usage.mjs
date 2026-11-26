@@ -186,7 +186,7 @@ export function createAccountUsageMonitor(options) {
       const payload = await requestUsage(identity, member);
       return { identity, usage: parseAccountUsagePayload(payload) };
     } catch (error) {
-      if (Number(error?.statusCode) !== 401 || !member.writable) throw error;
+      if (Number(error?.statusCode) !== 401 || (!member.writable && !member.writeback)) throw error;
       const refreshed = await refreshMember(member);
       if (!refreshed) throw error;
       identity = resolveIdentity(member);

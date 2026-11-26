@@ -16,7 +16,7 @@ jobs:
       - name: Verify desktop transport and existing HTTP mode
         shell: pwsh
         run: |
-          node --test --test-timeout=15000 tests/desktop-local-http.test.mjs tests/desktop-goal-transport.test.mjs tests/desktop-links.test.mjs tests/piweb-preview-links.mjs tests/piweb-ui-proxy.mjs tests/account-usage-contract.mjs tests/piweb-account-usage-contract.mjs
+          node --test --test-timeout=15000 tests/desktop-local-http.test.mjs tests/desktop-goal-transport.test.mjs tests/desktop-links.test.mjs tests/piweb-preview-links.mjs tests/piweb-ui-proxy.mjs tests/desktop-account-maintenance.test.mjs tests/account-pool-contract.mjs tests/account-usage-contract.mjs tests/piweb-account-usage-contract.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Transport contracts failed' }
           foreach ($script in Get-ChildItem src/desktop/*.mjs) {
             node --check $script.FullName

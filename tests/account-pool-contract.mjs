@@ -209,3 +209,76 @@ test("AcBoter 外部槽位实时只读：更新可见、401 不刷新、过期�
   assert.equal((await later.pick(new Set())).id, "primary");
   assert.equal(fs.readFileSync(source, "utf8").includes("vault-owned"), true);
 });
+
+function makeWritebackVault(t, tokens) {
+  const root = makeHomes(['primary']);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const slot = path.join(root, 'acboter');
+  const source = path.join(root, 'vault.json');
+  fs.mkdirSync(slot);
+  fs.writeFileSync(path.join(slot, '.pi-external-codex.json'), JSON.stringify({ version: 1, sourcePath: source, refresh: 'writeback' }));
+  const save = tokenSet => fs.writeFileSync(source, JSON.stringify({
+    token_generation: 3, requires_reauth: false, unrelated: { kept: true }, tokens: { account_id: 'fixture-account', ...tokenSet },
+  }));
+  save(tokens);
+  return { root, slot, source, save };
+}
+
+test('临期 AcBoter 自动续期，原位写回且不创建池内副本', async (t) => {
+  const { root, slot, source } = makeWritebackVault(t, {
+    access_token: fakeJwt(NOW / 1000 + 7200), id_token: 'old-id', refresh_token: 'fixture-old',
+  });
+  let requests = 0;
+  const pool = makePool(root, { refreshTransport: async (token) => {
+    assert.equal(token, 'fixture-old');
+    requests++;
+    return { access_token: fakeJwt(FRESH_EXP_SEC), refresh_token: 'fixture-new' };
+  } });
+  assert.deepEqual(await pool.refreshExpiring(), ['acboter']);
+  assert.deepEqual(await pool.refreshExpiring(), []);
+  assert.equal(requests, 1);
+  const updated = JSON.parse(fs.readFileSync(source, 'utf8'));
+  assert.deepEqual(updated, {
+    token_generation: 4, requires_reauth: false, last_used: NOW, unrelated: { kept: true },
+    tokens: { account_id: 'fixture-account', access_token: fakeJwt(FRESH_EXP_SEC), id_token: 'old-id', refresh_token: 'fixture-new' },
+  });
+  assert.equal(fs.existsSync(path.join(slot, 'auth.json')), false);
+  assert.equal(pool.snapshot().find(m => m.id === 'acboter').refreshOwner, 'external-writeback');
+});
+
+test('过期 AcBoter 选号时自愈；并发 401 只续期一次', async (t) => {
+  const { root } = makeWritebackVault(t, { access_token: fakeJwt(NOW / 1000 - 1), refresh_token: 'fixture-old' });
+  let now = NOW;
+  let requests = 0;
+  const pool = makePool(root, { now: () => now, refreshTransport: async () => {
+    requests++;
+    return { access_token: fakeJwt(FRESH_EXP_SEC, `generation-${requests}`), refresh_token: `fixture-v${requests}` };
+  } });
+  const selected = await pool.pick(new Set());
+  assert.equal(selected.id, 'acboter');
+  assert.equal(requests, 1);
+  now += 6 * 60_000;
+  assert.deepEqual(await Promise.all([1, 2].map(() => pool.onUpstreamFailure(selected, 401, '', {}))), ['retry', 'retry']);
+  assert.equal(requests, 2);
+  assert.notEqual((await pool.pick(new Set())).token, selected.token);
+});
+
+test('AcBoter 上游拒绝后保留原件；重新登录的登录态实时可见', async (t) => {
+  const { root, source, save } = makeWritebackVault(t, {
+    access_token: fakeJwt(NOW / 1000 - 1), refresh_token: 'fixture-invalid',
+  });
+  const before = fs.readFileSync(source);
+  let now = NOW;
+  let requests = 0;
+  const pool = makePool(root, { now: () => now, refreshTransport: async () => {
+    requests++;
+    throw new Error('refresh HTTP 401 (invalid_grant)');
+  } });
+  assert.equal((await pool.pick(new Set())).id, 'primary');
+  now += 10 * 60_000;
+  assert.deepEqual(await pool.refreshExpiring(), []);
+  assert.equal(requests, 1);
+  assert.deepEqual(fs.readFileSync(source), before);
+  save({ access_token: fakeJwt(FRESH_EXP_SEC), refresh_token: 'fixture-relogin' });
+  assert.equal((await pool.pick(new Set())).id, 'acboter');
+});
