@@ -24,6 +24,10 @@ export type ClineTurnOptions = {
   homeDir: string;
   startTimeoutMs?: number;
   requestTimeoutMs?: number;
+  /** Delegated CLI using the same chat/tool wire format. */
+  worker?: (port: number, token: string) => { args: string[]; env: NodeJS.ProcessEnv };
+  label?: string;
+  systemMarker?: string;
 };
 
 type Settle<T> = { resolve: (value: T) => void; reject: (error: Error) => void };
@@ -97,7 +101,7 @@ async function route(turns: Map<string, ClineTurn>, req: IncomingMessage, res: S
   for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw) as ChatRequest;
   const turn = turns.get(String(body.model));
-  if (!turn) return reject(404, "unknown Cline turn");
+  if (!turn || (turn.systemMarker && req.headers.authorization !== `Bearer ${turn.token}`)) return reject(404, "unknown agent turn");
   turn.accept(body, res);
 }
 
@@ -160,6 +164,8 @@ export class ClineTurn {
   private exitTimer: ReturnType<typeof setTimeout> | null = null;
   private output: string[] = [];
   private requestTimeoutMs = 120_000;
+  private label = "Cline";
+  systemMarker?: string;
   private release: () => void = () => {};
 
   /**
@@ -170,6 +176,8 @@ export class ClineTurn {
   static create(options: ClineTurnOptions): ClineTurn {
     const turn = new ClineTurn();
     turn.requestTimeoutMs = options.requestTimeoutMs ?? turn.requestTimeoutMs;
+    turn.label = options.label ?? turn.label;
+    turn.systemMarker = options.systemMarker;
     void turn.launch(options);
     return turn;
   }
@@ -178,19 +186,22 @@ export class ClineTurn {
     try {
       const endpoint = await getEndpoint();
       if (this.ended !== null) return; // stopped before there was anything to stop
-      writeProviderSettings(options.homeDir, endpoint.port);
-      pruneSessions(options.homeDir);
+      if (!options.worker) {
+        writeProviderSettings(options.homeDir, endpoint.port);
+        pruneSessions(options.homeDir);
+      }
       endpoint.turns.set(this.token, this);
       this.release = () => endpoint.turns.delete(this.token);
       const noProxy = [process.env.NO_PROXY ?? process.env.no_proxy, "127.0.0.1", "localhost"].filter(Boolean).join(",");
+      const worker = options.worker?.(endpoint.port, this.token);
       const child = spawn(options.bin, [
         ...(options.binArgs ?? []),
-        "--json", "--auto-approve", "true", "--compaction", "off",
-        "--config", join(options.homeDir, "config"), "--data-dir", join(options.homeDir, "data"),
-        "-c", options.cwd, "-P", "openai-compatible", "-m", this.token, PROMPT,
+        ...(worker?.args ?? ["--json", "--auto-approve", "true", "--compaction", "off",
+          "--config", join(options.homeDir, "config"), "--data-dir", join(options.homeDir, "data"),
+          "-c", options.cwd, "-P", "openai-compatible", "-m", this.token, PROMPT]),
       ], {
         cwd: options.cwd,
-        env: { ...process.env, NO_PROXY: noProxy, no_proxy: noProxy, CLINE_NO_AUTO_UPDATE: "1", DO_NOT_TRACK: "1", DISABLE_TELEMETRY: "1" },
+        env: worker?.env ?? { ...process.env, NO_PROXY: noProxy, no_proxy: noProxy, CLINE_NO_AUTO_UPDATE: "1", DO_NOT_TRACK: "1", DISABLE_TELEMETRY: "1" },
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -201,13 +212,13 @@ export class ClineTurn {
       };
       child.stdout?.setEncoding("utf8").on("data", remember);
       child.stderr?.setEncoding("utf8").on("data", remember);
-      child.once("error", (error) => this.end(`Cline 启动失败：${error.message}`));
-      child.once("exit", (code) => this.end(`Cline 进程已退出（${code ?? "被终止"}）${this.output.length ? `：${this.output.slice(-3).join(" | ").slice(0, 600)}` : ""}`));
+      child.once("error", (error) => this.end(`${this.label} 启动失败：${error.message}`));
+      child.once("exit", (code) => this.end(`${this.label} 进程已退出（${code ?? "被终止"}）${this.output.length ? `：${this.output.slice(-3).join(" | ").slice(0, 600)}` : ""}`));
       const startMs = options.startTimeoutMs ?? 60_000;
-      this.startTimer = setTimeout(() => this.stop(`Cline 在 ${Math.round(startMs / 1000)} 秒内没有发起请求`), startMs);
+      this.startTimer = setTimeout(() => this.stop(`${this.label} 在 ${Math.round(startMs / 1000)} 秒内没有发起请求`), startMs);
       this.startTimer.unref();
     } catch (error) {
-      this.stop(`Cline 启动失败：${error instanceof Error ? error.message : String(error)}`);
+      this.stop(`${this.label} 启动失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -216,10 +227,18 @@ export class ClineTurn {
   }
 
   accept(body: ChatRequest, res: ServerResponse): void {
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    if (this.systemMarker) {
+      const system = messages.filter((message) => message.role === "system").map((message) => contentText(message.content));
+      if (system.length !== 1 || system[0] !== this.systemMarker) {
+        res.writeHead(422).end();
+        this.stop(`${this.label} 未启用精简提示词`);
+        return;
+      }
+    }
     this.seen = true;
     if (this.startTimer) clearTimeout(this.startTimer);
     this.startTimer = null;
-    const messages = Array.isArray(body.messages) ? body.messages : [];
     if (!this.system) {
       this.system = contentText(messages.find((message) => message.role === "system")?.content);
       this.tools = (body.tools ?? []).flatMap((tool) => tool.function?.name
@@ -299,7 +318,7 @@ export class ClineTurn {
       };
       const waiter = {
         resolve, reject,
-        timer: setTimeout(() => abandon(`Cline 在 ${Math.round(timeoutMs / 1000)} 秒内没有发起请求`), timeoutMs),
+        timer: setTimeout(() => abandon(`${this.label} 在 ${Math.round(timeoutMs / 1000)} 秒内没有发起请求`), timeoutMs),
       };
       signal?.addEventListener("abort", () => abandon("Operation aborted"), { once: true });
       this.openWaiters.push(waiter);
@@ -317,7 +336,7 @@ export class ClineTurn {
   }
 
   dispose(): void {
-    this.stop(CLINE_STOPPED);
+    this.stop(`${this.label} 已停止`);
   }
 
   private stop(reason: string): void {

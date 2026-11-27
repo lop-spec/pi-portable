@@ -9,6 +9,7 @@ import { getAgentDir, type ExtensionContext, type InlineExtension } from "@earen
 import { join } from "node:path";
 import { CLINE_STOPPED, ClineTurn, resolveClineBinary, type ClineToolSpec } from "./cline-bridge";
 import { promptCacheKey, readPrompt, writePrompt, type ClinePrompt } from "./cline-prompt-cache";
+import { launchOpenCode, OPENCODE_PREAMBLE, OPENCODE_TOOLS, resolveOpenCodeBinary } from "./opencode-launch";
 
 export const CLINE_AGENT_EXTENSION_NAME = "pi-web-cline-agent";
 
@@ -35,25 +36,44 @@ export function isClineAgentInstalled(): boolean {
   return resolveClineBinary(clineDir()) !== undefined;
 }
 
+function openCodeDir(): string {
+  return join(getAgentDir(), "opencode-agent");
+}
+
+export function isOpenCodeAgentInstalled(): boolean {
+  return resolveOpenCodeBinary(openCodeDir()) !== undefined;
+}
+
+type DelegatedAgent = "cline" | "opencode";
+
 export function createClineAgent(cwd: string): ClineAgent {
-  let agent: "pi" | "cline" = "pi";
+  let agent: "pi" | DelegatedAgent = "pi";
   let turn: ClineTurn | null = null;
-  let running = false;
+  let running: DelegatedAgent | null = null;
   let piLoadout: string[] | null = null;
   let savedLoadout = "";
   const proxies = new Map<string, string>();
 
-  const binary = (): string => {
-    const bin = resolveClineBinary(clineDir());
-    if (!bin) throw new Error("未安装 Cline CLI");
+  const binary = (mode: DelegatedAgent): string => {
+    const bin = mode === "opencode" ? resolveOpenCodeBinary(openCodeDir()) : resolveClineBinary(clineDir());
+    if (!bin) throw new Error(`未安装 ${mode === "opencode" ? "OpenCode" : "Cline"} CLI`);
     return bin;
   };
-  // Returns at once; the process comes up while the model is already working.
-  const launch = (): ClineTurn => {
+  // Returns at once; the process can start while the model is already working.
+  const launch = (mode: DelegatedAgent): ClineTurn => {
     turn?.dispose();
-    return (turn = ClineTurn.create({ bin: binary(), cwd, homeDir: join(clineDir(), "home"), startTimeoutMs: START_TIMEOUT_MS, requestTimeoutMs: REQUEST_TIMEOUT_MS }));
+    const opts = { bin: binary(mode), cwd, startTimeoutMs: START_TIMEOUT_MS, requestTimeoutMs: REQUEST_TIMEOUT_MS };
+    if (mode === "opencode") {
+      const homeDir = join(openCodeDir(), "home");
+      return (turn = ClineTurn.create({ ...opts, homeDir, label: "OpenCode", systemMarker: OPENCODE_PREAMBLE,
+        worker: (port, token) => launchOpenCode(homeDir, port, token) }));
+    }
+    return (turn = ClineTurn.create({ ...opts, homeDir: join(clineDir(), "home") }));
   };
-  const ensureTurn = (): ClineTurn => (turn?.alive ? turn : launch());
+  const ensureTurn = (): ClineTurn => {
+    if (!running) throw new Error("Agent turn inactive");
+    return turn?.alive ? turn : launch(running);
+  };
 
   // Cline's prompt and tools for this run, starting its process on the way. A saved copy
   // lets the model call begin at once; without one (first use in this directory, or a new
@@ -61,8 +81,8 @@ export function createClineAgent(cwd: string): ClineAgent {
   const promptForRun = async (ctx: ExtensionContext): Promise<ClinePrompt | undefined> => {
     const dir = join(clineDir(), "prompt-cache");
     try {
-      const key = promptCacheKey(binary(), cwd);
-      const started = launch();
+      const key = promptCacheKey(binary("cline"), cwd);
+      const started = launch("cline");
       const saved = readPrompt(dir, key);
       if (saved) {
         // What the process reports replaces the saved copy for the next run.
@@ -93,22 +113,26 @@ export function createClineAgent(cwd: string): ClineAgent {
 
   return {
     setAgent(value) {
-      agent = value === "cline" && isClineAgentInstalled() ? "cline" : "pi";
+      if (value === "opencode" && !isOpenCodeAgentInstalled()) throw new Error("未安装 OpenCode CLI，请切换 Agent 或安装后重试。");
+      agent = value === "opencode" ? "opencode" : value === "cline" && isClineAgentInstalled() ? "cline" : "pi";
     },
     extension: {
       name: CLINE_AGENT_EXTENSION_NAME,
       hidden: true,
       factory: (pi) => {
-        const registerProxies = (tools: ClineToolSpec[]) => {
+        const registerProxies = (mode: DelegatedAgent, tools: ClineToolSpec[]) => {
           const taken = new Set(pi.getAllTools().map((tool) => tool.name).filter((name) => !proxies.has(name)));
+          const active: string[] = [];
           for (const spec of tools) {
-            if (CLINE_TERMINAL_TOOLS.test(spec.name) || taken.has(spec.name)) continue;
+            const name = mode === "opencode" ? `oc_${spec.name}` : spec.name;
+            if (CLINE_TERMINAL_TOOLS.test(name) || taken.has(name)) continue;
+            active.push(name);
             const declaration = JSON.stringify(spec);
-            if (proxies.get(spec.name) === declaration) continue;
-            proxies.set(spec.name, declaration);
+            if (proxies.get(name) === declaration) continue;
+            proxies.set(name, declaration);
             pi.registerTool({
-              name: spec.name,
-              label: spec.name,
+              name,
+              label: name,
               description: ({
                 read_files: "Read absolute paths together; optional inclusive line ranges.",
                 search_codebase: "Search workspace by regex; batch independent queries.",
@@ -118,12 +142,13 @@ export function createClineAgent(cwd: string): ClineAgent {
               } as Record<string, string>)[spec.name] ?? spec.description,
               parameters: spec.parameters as never,
               async execute(toolCallId, params, signal) {
-                // Waits for the process if it is still loading.
+                if (running !== mode) throw new Error("Agent tool inactive");
                 const text = await ensureTurn().callTool(toolCallId, spec.name, params, signal);
                 return { content: [{ type: "text", text }], details: undefined };
               },
             });
           }
+          return active;
         };
 
         // A session restored after a Cline run comes back with the tools its transcript
@@ -138,34 +163,38 @@ export function createClineAgent(cwd: string): ClineAgent {
         });
 
         pi.on("before_agent_start", async (event, ctx) => {
-          if (agent !== "cline") {
+          const mode = agent;
+          if (mode === "pi") {
             const active = pi.getActiveTools();
-            const own = active.filter((name) => !proxies.has(name));
+            const own = active.filter((name) => !proxies.has(name) && !name.startsWith("oc_"));
             if (own.length !== active.length) pi.setActiveTools(own);
             return undefined;
           }
-          const prompt = await promptForRun(ctx);
-          if (!prompt) return undefined;
-          registerProxies(prompt.tools);
-          piLoadout = pi.getActiveTools().filter((name) => !proxies.has(name));
+          const tools = mode === "opencode" ? OPENCODE_TOOLS : (await promptForRun(ctx))?.tools;
+          if (!tools) return undefined;
+          const activeProxies = registerProxies(mode, tools);
+          piLoadout = pi.getActiveTools().filter((name) => !proxies.has(name) && !name.startsWith("oc_"));
           const loadout = JSON.stringify(piLoadout);
           if (loadout !== savedLoadout) {
             pi.appendEntry(LOADOUT_ENTRY, { piTools: piLoadout });
             savedLoadout = loadout;
           }
-          pi.setActiveTools([...piLoadout.filter((name) => !PI_CODING_TOOLS.has(name)), ...proxies.keys()]);
-          running = true;
+          pi.setActiveTools([...piLoadout.filter((name) => !PI_CODING_TOOLS.has(name)), ...activeProxies]);
+          if (mode === "opencode") {
+            turn?.dispose();
+            turn = null;
+          }
+          running = mode;
 
-          // Render with Pi's own builder: Cline's prompt takes the preamble, Pi's harness
-          // sections drop out, and context files, skills and extension sections follow.
-          // The options are put back so the transcript keeps recording Pi's prompt.
+          // Replace only the harness preamble; retain project rules, skills and extension sections.
           const options = event.systemPromptOptions;
           const { customPrompt, selectedTools, forceSystemPrompt } = options;
-          options.customPrompt = "Run independent tool calls in parallel.";
+          options.customPrompt = mode === "opencode" ? OPENCODE_PREAMBLE : "Run independent tool calls in parallel.";
           options.selectedTools = ["read"];
           options.forceSystemPrompt = undefined;
-          const systemPrompt = event.systemPrompt;
+          const rendered = event.systemPrompt;
           Object.assign(options, { customPrompt, selectedTools, forceSystemPrompt });
+          const systemPrompt = mode === "opencode" ? rendered.replace("Use the read tool to load a skill's file", "Use oc_read to load a skill's file") : rendered;
           return { systemPrompt };
         });
 
@@ -173,7 +202,7 @@ export function createClineAgent(cwd: string): ClineAgent {
         // answer. The transcript holds all state, so a new process carries on; it starts
         // here, behind the model call that is about to be made.
         pi.on("context", (_event, ctx) => {
-          if (!running || ctx.signal?.aborted) return undefined;
+          if (running !== "cline" || ctx.signal?.aborted) return undefined;
           try {
             ensureTurn();
           } catch (error) {
@@ -184,7 +213,7 @@ export function createClineAgent(cwd: string): ClineAgent {
         });
 
         pi.on("message_update", (event) => {
-          if (running && event.assistantMessageEvent.type === "text_delta") turn?.text(event.assistantMessageEvent.delta);
+          if (running === "cline" && event.assistantMessageEvent.type === "text_delta") turn?.text(event.assistantMessageEvent.delta);
         });
 
         pi.on("agent_end", () => {
@@ -193,7 +222,7 @@ export function createClineAgent(cwd: string): ClineAgent {
 
         pi.on("agent_settled", () => {
           if (!running) return;
-          running = false;
+          running = null;
           turn?.finish();
           if (piLoadout) pi.setActiveTools(piLoadout);
           piLoadout = null;

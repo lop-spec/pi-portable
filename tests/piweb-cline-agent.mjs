@@ -75,6 +75,9 @@ test('integration wires the agent into the session, the prompt and the composer'
   assert.equal(count(rpc, '...(clineAgent ? [clineAgent.extension] : []),'), 1);
   assert.ok(rpc.indexOf('this.clineAgent?.setAgent(command.agent)') < rpc.indexOf('prompt = this.inner.prompt(command.message as string'), 'the agent is chosen before the run starts');
   assert.match(rpc, /if \(typeof command\.agent === "string"\) this\.clineAgent\?\.setAgent/, 'a prompt that names no agent keeps the current one');
+  assert.ok(rpc.indexOf('const releaseAdmission = await this.acquirePromptAdmission()') < rpc.indexOf('this.clineAgent?.setAgent(command.agent)'));
+  assert.match(files.get('components/PortableAgentSwitch.tsx'), /id: "opencode", label: "OpenCode"/);
+  assert.ok(files.has('lib/opencode-launch.ts'));
   assert.equal(count(files.get('lib/agent-client.ts'), 'command.type === "prompt" ? { ...command, agent: agentForPrompt(sessionId) } : command'), 1);
   assert.equal(count(files.get('components/ChatInput.tsx'), '<PortableAgentSwitch sessionKey={providedDraftKey} />'), 1);
   assert.equal(count(files.get('components/PortableAgentSwitch.tsx'), 'role="menuitemradio"'), 1);

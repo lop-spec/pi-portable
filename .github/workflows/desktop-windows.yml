@@ -2,7 +2,7 @@ name: Pi Web Desktop Windows
 on:
   workflow_dispatch:
   push:
-    branches: [feat/piweb-portless-desktop]
+    branches: [feat/piweb-portless-desktop, feat/piweb-desktop-opencode]
 permissions:
   contents: read
 jobs:
@@ -33,6 +33,43 @@ jobs:
           if (!$test.WaitForExit(90000)) { $test.Kill(); throw 'Electron board integration timed out' }
           if (Test-Path $env:PI_GOAL_ELECTRON_LOG) { Get-Content $env:PI_GOAL_ELECTRON_LOG }
           if ($test.ExitCode -ne 0) { throw "Electron board integration failed: $($test.ExitCode)" }
+      - name: Verify the pinned OpenCode executable
+        if: github.ref_name == 'feat/piweb-desktop-opencode'
+        shell: pwsh
+        run: |
+          curl.exe -fSL --retry 2 -o opencode.zip 'https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-windows-x64.zip'
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash opencode.zip -Algorithm SHA256).Hash.ToLower() -ne 'fa31c9ec0bac7611ab12699ef8e2fc4c173fb95ac977b09b189b255b8f559bcc') { throw 'OpenCode archive hash mismatch' }
+          Expand-Archive opencode.zip -DestinationPath opencode-cli
+          $env:PI_WEB_OPENCODE_BIN = (Resolve-Path opencode-cli/opencode.exe).Path
+          node --experimental-strip-types --test tests/piweb-opencode-agent.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'OpenCode native tooling contract failed' }
+      - uses: actions/checkout@v4
+        if: github.ref_name == 'feat/piweb-desktop-opencode'
+        with:
+          repository: agegr/pi-web
+          ref: 0876cf4eecdc345da3a58f4418d5af96e45b33e7
+          path: upstream
+          persist-credentials: false
+      - name: Integrate and build the desktop Pi Web renderer
+        if: github.ref_name == 'feat/piweb-desktop-opencode'
+        shell: pwsh
+        run: |
+          node --experimental-strip-types --test tests/piweb-cline-agent.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Agent switching contract failed' }
+          node tools/patch-piweb-source.mjs --source upstream
+          if ($LASTEXITCODE -ne 0) { throw 'Source integration failed' }
+          Push-Location upstream
+          npm install --include=dev --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Pi Web dependency install failed' }
+          node node_modules/typescript/bin/tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { throw 'Pi Web typecheck failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Pi Web renderer build failed' }
+          $packed = npm pack --json --ignore-scripts --pack-destination .. | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Pi Web renderer pack failed' }
+          Pop-Location
+          Move-Item $packed[0].filename pi-web-upstream.tgz
+          (Get-FileHash pi-web-upstream.tgz -Algorithm SHA256).Hash | Set-Content pi-web-upstream.tgz.sha256
       - name: Package desktop runtime integration
         shell: pwsh
         run: |
@@ -53,3 +90,5 @@ jobs:
           path: |
             pi-web-desktop-win-x64.zip
             pi-web-desktop-win-x64.zip.sha256
+            pi-web-upstream.tgz
+            pi-web-upstream.tgz.sha256

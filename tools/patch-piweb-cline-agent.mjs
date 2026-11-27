@@ -4,6 +4,7 @@
 // docs/cline-agent.md.
 export function integrateClineAgent({ set, change, prepend, template }) {
   set('lib/cline-bridge.ts', template('cline-agent/cline-bridge.ts'));
+  set('lib/opencode-launch.ts', template('cline-agent/opencode-launch.ts'));
   set('lib/cline-prompt-cache.ts', template('cline-agent/cline-prompt-cache.ts'));
   set('lib/cline-agent.ts', template('cline-agent/cline-agent.ts'));
   set('lib/portable-agent-choice.ts', template('cline-agent/agent-choice.ts'));
@@ -16,7 +17,7 @@ export function integrateClineAgent({ set, change, prepend, template }) {
   change(rpc, '  suppressCompletionNotifications?: boolean;\n};', '  suppressCompletionNotifications?: boolean;\n  clineAgent?: ClineAgent;\n};');
   change(rpc, '  private readonly suppressCompletionNotifications: boolean;', '  private readonly suppressCompletionNotifications: boolean;\n  private readonly clineAgent?: ClineAgent;');
   change(rpc, '    this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;', '    this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;\n    this.clineAgent = options.clineAgent;');
-  change(rpc, '      case "prompt": {\n        // Serialize only admission.', '      case "prompt": {\n        if (typeof command.agent === "string") this.clineAgent?.setAgent(command.agent);\n        // Serialize only admission.');
+  change(rpc, '        const releaseAdmission = await this.acquirePromptAdmission();\n        try {', '        const releaseAdmission = await this.acquirePromptAdmission();\n        try {\n          if (typeof command.agent === "string") this.clineAgent?.setAgent(command.agent);');
   change(rpc, '    const usesExactSystemPrompt = chatOnly || subagentResources?.exactSystemPrompt !== undefined;', '    const usesExactSystemPrompt = chatOnly || subagentResources?.exactSystemPrompt !== undefined;\n    const clineAgent = chatOnly || subagentResources ? undefined : createClineAgent(sessionCwd);');
   change(rpc, '                isBuiltInSubagentsEnabled,\n              ),\n            ],', '                isBuiltInSubagentsEnabled,\n              ),\n              ...(clineAgent ? [clineAgent.extension] : []),\n            ],');
   change(rpc, '      suppressCompletionNotifications: Boolean(subagentResources),\n    });', '      suppressCompletionNotifications: Boolean(subagentResources),\n      ...(clineAgent ? { clineAgent } : {}),\n    });');

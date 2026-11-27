@@ -1,7 +1,7 @@
 // Which agent runs a session's next prompt. A session keeps the agent it last used; a
 // session that has not chosen yet (a new draft included) follows the last choice made
 // anywhere; with no choice at all it is Cline. Kept in the browser, like the other composer preferences.
-export type AgentChoice = "pi" | "cline";
+export type AgentChoice = "pi" | "cline" | "opencode";
 
 type Stored = { last?: AgentChoice; sessions?: Record<string, AgentChoice> };
 
@@ -23,7 +23,7 @@ function read(): Stored {
 export function getAgentChoice(sessionKey?: string): AgentChoice {
   const stored = read();
   const choice = (sessionKey ? stored.sessions?.[sessionKey] : undefined) ?? stored.last;
-  return choice === "pi" ? "pi" : "cline";
+  return choice === "pi" || choice === "opencode" ? choice : "cline";
 }
 
 export function setAgentChoice(sessionKey: string | undefined, choice: AgentChoice): void {
@@ -43,9 +43,15 @@ export function setAgentChoice(sessionKey: string | undefined, choice: AgentChoi
   window.dispatchEvent(new Event(CHANGED));
 }
 
+let supported: { installed?: boolean; opencode?: boolean } | undefined;
+export function setAgentAvailability(availability: typeof supported) {
+  supported = availability;
+}
+
 /** The agent for a prompt about to be sent; the session remembers it from here on. */
 export function agentForPrompt(sessionId: string): AgentChoice {
   const choice = getAgentChoice(sessionId);
+  if (supported && ((choice === "opencode" && !supported.opencode) || (choice === "cline" && !supported.installed))) return "pi";
   if (read().sessions?.[sessionId] !== choice) setAgentChoice(sessionId, choice);
   return choice;
 }
