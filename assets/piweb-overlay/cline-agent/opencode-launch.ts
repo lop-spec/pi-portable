@@ -56,7 +56,8 @@ export function launchOpenCode(home: string, port: number, token: string) {
 });\n`;
   writeFileSync(join(plugins, "piweb.js"), plugin);
   // Isolate OpenCode configuration; Pi alone owns the selected model and authentication.
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^OPENCODE_/i.test(key)));
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (/^OPENCODE_/i.test(key)) delete env[key];
   const provider = "pi-web";
   const config = {
     model: `${provider}/${token}`,
