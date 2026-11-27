@@ -78,7 +78,7 @@ export async function requestDesktopGoal(profile, route, body, { timeout = 25000
   if (x?.version !== 1 || !pipePattern.test(x.pipe) || !tokenPattern.test(x.token)) throw Object.assign(Error('Pi Web 桌面端执行接口信息无效'), { accepted: false });
   const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
   return new Promise((resolve, reject) => {
-    const req = request({ socketPath: x.pipe, path: route, method, signal: AbortSignal.timeout(timeout), headers: { [KEY]: x.token, ...(data ? { 'content-type': 'application/json', 'content-length': data.length } : {}) } }, res => {
+    const req = request({ agent: false, socketPath: x.pipe, path: route, method, signal: AbortSignal.timeout(timeout), headers: { [KEY]: x.token, ...(data ? { 'content-type': 'application/json', 'content-length': data.length } : {}) } }, res => {
       const chunks = []; let size = 0;
       res.on('data', chunk => { size += chunk.length; if (size > 16 * 1024 * 1024) req.destroy(Error('Desktop response too large')); else chunks.push(chunk); });
       res.on('error', reject);
