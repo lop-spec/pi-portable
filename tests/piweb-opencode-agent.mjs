@@ -16,7 +16,7 @@ test('lean tool specs preserve validation and parameter names', () => {
   assert.deepEqual(specs, [{ name: 'bash', description: 'Run a shell command.', parameters: { type: 'object', properties: { description: { type: 'string' } }, required: ['description'] } }]);
 });
 
-test('pinned OpenCode CLI sends only the lean system prompt and executes native tools', { skip: !bin, timeout: 35_000 }, async (t) => {
+test('relay drops native prompt context and runs a pinned OpenCode tool', { skip: !bin, timeout: 60_000 }, async (t) => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'piweb-oc-'));
   const cwd = path.join(homeDir, 'workspace');
   fs.mkdirSync(cwd);

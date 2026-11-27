@@ -230,7 +230,7 @@ export class ClineTurn {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     if (this.systemMarker) {
       const system = messages.filter((message) => message.role === "system").map((message) => contentText(message.content));
-      if (system.length !== 1 || system[0] !== this.systemMarker) {
+      if (system[0]?.split("\n", 1)[0] !== this.systemMarker) {
         res.writeHead(422).end();
         this.stop(`${this.label} 未启用精简提示词`);
         return;
@@ -240,7 +240,7 @@ export class ClineTurn {
     if (this.startTimer) clearTimeout(this.startTimer);
     this.startTimer = null;
     if (!this.system) {
-      this.system = contentText(messages.find((message) => message.role === "system")?.content);
+      this.system = this.systemMarker ?? contentText(messages.find((message) => message.role === "system")?.content);
       this.tools = (body.tools ?? []).flatMap((tool) => tool.function?.name
         ? [{ name: tool.function.name, description: tool.function.description ?? "", parameters: tool.function.parameters ?? { type: "object", properties: {} } }]
         : []);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { ClineToolSpec } from "./cline-bridge";
 
@@ -48,14 +48,7 @@ export function resolveOpenCodeBinary(root: string, env = process.env): string |
 }
 
 export function launchOpenCode(home: string, port: number, token: string) {
-  const plugins = join(home, "config", "opencode", "plugins");
-  mkdirSync(plugins, { recursive: true });
-  const plugin = `export const PiWeb = async () => ({
-  "experimental.chat.system.transform": async (_input, output) => { output.system.splice(0, output.system.length, ${JSON.stringify(OPENCODE_PREAMBLE)}); },
-  "tool.definition": async ({ toolID }, output) => { output.description = (${JSON.stringify(descriptions)})[toolID] ?? toolID; },
-});\n`;
-  writeFileSync(join(plugins, "piweb.js"), plugin);
-  // Isolate OpenCode configuration; Pi alone owns the selected model and authentication.
+  // OpenCode only receives a synthetic tool relay turn; Pi owns the selected model and its prompt.
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^OPENCODE_/i.test(key)) delete env[key];
   const provider = "pi-web";
@@ -69,7 +62,7 @@ export function launchOpenCode(home: string, port: number, token: string) {
     autoupdate: false, share: "disabled", snapshot: false, formatter: false, lsp: false,
   };
   return {
-    args: ["run", "--agent", "pi-web", "--title", "Pi Web tool relay", "--format", "json", "Continue the Pi Web conversation."],
+    args: ["run", "--pure", "--agent", "pi-web", "--title", "Pi Web tool relay", "--format", "json", "Continue the Pi Web conversation."],
     env: {
       ...env, NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost",
       XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"),
