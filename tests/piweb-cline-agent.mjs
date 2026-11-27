@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { integrate } from '../tools/patch-piweb-source.mjs';
 import { ClineTurn, resolveClineBinary } from '../assets/piweb-overlay/cline-agent/cline-bridge.ts';
 import { promptCacheKey, promptForDay, readPrompt, writePrompt } from '../assets/piweb-overlay/cline-agent/cline-prompt-cache.ts';
-import { getAgentChoice, setAgentChoice } from '../assets/piweb-overlay/cline-agent/agent-choice.ts';
+import { agentForPrompt, getAgentChoice, getDefaultAgent, moveAgentChoice, setAgentChoice, setDefaultAgent, subscribeAgentChoice } from '../assets/piweb-overlay/cline-agent/agent-choice.ts';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const source = process.env.PIWEB_SOURCE ?? path.join(repo, 'upstream');
@@ -78,23 +78,43 @@ test('integration wires the agent into the session, the prompt and the composer'
   assert.ok(rpc.indexOf('const releaseAdmission = await this.acquirePromptAdmission()') < rpc.indexOf('this.clineAgent?.setAgent(command.agent)'));
   assert.match(files.get('components/PortableAgentSwitch.tsx'), /id: "opencode", label: "OpenCode"/);
   assert.ok(files.has('lib/opencode-launch.ts'));
-  assert.equal(count(files.get('lib/agent-client.ts'), 'command.type === "prompt" ? { ...command, agent: agentForPrompt(sessionId) } : command'), 1);
+  assert.equal(count(files.get('lib/agent-client.ts'), 'command.type === "prompt" ? { ...command, agent: await agentForPrompt(sessionId) } : command'), 1);
+  assert.match(files.get('components/DefaultSessionSettings.tsx'), /<DefaultAgentSetting \/>/);
+  assert.match(files.get('hooks/useAgentSession.ts'), /moveAgentChoice\(newSessionDraftKey, realId\);/);
   assert.equal(count(files.get('components/ChatInput.tsx'), '<PortableAgentSwitch sessionKey={providedDraftKey} />'), 1);
-  assert.equal(count(files.get('components/PortableAgentSwitch.tsx'), 'role="menuitemradio"'), 1);
+  assert.equal(count(files.get('components/PortableAgentSwitch.tsx'), 'role="menuitemradio"'), 2);
   assert.match(files.get('components/PortableAgentSwitch.tsx'), /aria-haspopup="menu"/, 'the agent is chosen from a dropdown');
 });
 
-test('the agent is Cline until a choice is made, and a Pi choice is kept', () => {
-  const store = new Map();
-  globalThis.window = { dispatchEvent() {} };
-  globalThis.localStorage = { getItem: key => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value); } };
+test('defaults apply live without pinning prompts; explicit draft and session choices are independent', async () => {
+  const store = new Map([['pi-web:agent-v2', JSON.stringify({last:'cline', sessions:{old:'cline'}})]]);
+  globalThis.window = new EventTarget();
+  globalThis.localStorage = {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value)};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({installed:false, opencode:true});
+  let updates = 0;
+  const unsubscribe = subscribeAgentChoice(() => updates++);
   try {
-    assert.equal(getAgentChoice(), 'cline');
-    assert.equal(getAgentChoice('s1'), 'cline');
-    setAgentChoice('s1', 'pi');
-    assert.equal(getAgentChoice('s1'), 'pi');
-    assert.equal(getAgentChoice('s2'), 'pi', 'a session without a choice follows the last one');
+    assert.equal(getDefaultAgent(), 'opencode');
+    assert.equal(getAgentChoice('old'), 'opencode', 'old implicit Cline pins do not survive');
+    assert.equal(await agentForPrompt('old'), 'opencode');
+    assert.equal(updates, 0, 'sending does not create an override');
+    assert.equal(setDefaultAgent('pi'), true);
+    assert.equal(updates, 1, 'the settings write notifies the open composer immediately');
+    assert.equal(await agentForPrompt('old'), 'pi');
+    setAgentChoice('draft', 'pi');
+    moveAgentChoice('draft', 's1');
+    setDefaultAgent('opencode');
+    assert.equal(getAgentChoice('draft'), 'opencode');
+    assert.equal(await agentForPrompt('s1'), 'pi');
+    assert.equal(await agentForPrompt('s2'), 'opencode');
+    setAgentChoice('s1', undefined);
+    assert.equal(await agentForPrompt('s1'), 'opencode');
+    setDefaultAgent('cline');
+    assert.equal(await agentForPrompt('s1'), 'pi', 'missing CLI falls back to Pi');
   } finally {
+    unsubscribe();
+    globalThis.fetch = realFetch;
     delete globalThis.window;
     delete globalThis.localStorage;
   }
