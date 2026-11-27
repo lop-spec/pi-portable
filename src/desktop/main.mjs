@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { desktopMutationOrigin, localFetch } from './local-http.mjs';
 import { installDesktopLinks } from './links.mjs';
 import { goalFetch, isGoalUrl } from './goal-transport.mjs';
+import { publishGoalEndpoint } from './goal-execution.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const smoke = process.argv.includes('--desktop-smoke');
@@ -29,7 +30,9 @@ const origin = 'https://piweb.invalid';
 const allowedUrl = value => { try { return new URL(value).origin === origin; } catch { return false; } };
 const pipe = `\\\\.\\pipe\\piweb-desktop-${randomBytes(24).toString('hex')}`;
 const secret = randomBytes(32).toString('hex');
-let worker, win, closing = false;
+const goalKey = randomBytes(32).toString('hex');
+const background = process.argv.includes('--desktop-background');
+let worker, win, unregisterGoalEndpoint, closing = false, quitting = false;
 const audit = (entry) => fs.appendFileSync(path.join(appHome, 'desktop.log'), `${new Date().toISOString()} ${entry}\n`);
 async function startWorker() {
   const fd = fs.openSync(path.join(appHome, 'backend.log'), 'a');
@@ -46,7 +49,7 @@ async function startWorker() {
       if (closing) return;
       audit(`worker exit code=${code}`);
       fail(new Error(`Pi 内核退出（${code}）`));
-      if (win) { if (!smoke) dialog.showErrorBox('Pi Web', 'Pi 内核已退出，请重新打开。'); app.exit(1); }
+      if (win) { if (win.isVisible() && !smoke) dialog.showErrorBox('Pi Web', 'Pi 内核已退出，请重新打开。'); shutdown(); app.exit(1); }
     });
     worker.once('message', event => {
       clearTimeout(timer);
@@ -55,21 +58,32 @@ async function startWorker() {
     });
     timer = setTimeout(() => reject(new Error('本地 Pi 内核启动超时')), 25000);
   });
-  worker.send({ data, packageRoot, pipe, secret, accountHomes, egress, appHome });
+  worker.send({ data, packageRoot, pipe, secret, goalKey, accountHomes, egress, appHome });
   return ready;
 }
 function shutdown() {
   if (closing) return;
   closing = true;
+  unregisterGoalEndpoint?.();
   if (worker?.connected) worker.disconnect();
 }
+app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', shutdown);
 app.on('window-all-closed', () => app.quit());
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  let showRequested = !background;
+  app.on('second-instance', (_event, argv) => {
+    if (argv.includes('--desktop-background')) return;
+    showRequested = true;
+    if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  });
   void app.whenReady().then(async () => {
     const pid = await startWorker();
+    if (!smoke) {
+      try { unregisterGoalEndpoint = publishGoalEndpoint(appHome, pipe, goalKey); }
+      catch (error) { audit(`goal execution endpoint failed: ${error.code || error.name}`); }
+    }
     Menu.setApplicationMenu(null); // remove the native File/Edit/View row, not the window title bar
     win = new BrowserWindow({ title: 'Pi Web', width: 1160, height: 800, show: false,
       webPreferences: { partition: 'persist:piweb', sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false, ...(smoke ? { offscreen: true } : {}) } });
@@ -111,7 +125,10 @@ else {
       }
     };
     installDesktopLinks(contents, { origin, openExternal, openLocal, onError: reportLinkError });
-    win.once('ready-to-show', () => { if (!smoke && !win.isDestroyed()) win.show(); });
+    win.on('close', event => {
+      if (background && !quitting) { event.preventDefault(); win.hide(); }
+    });
+    win.once('ready-to-show', () => { if (!smoke && showRequested && !win.isDestroyed()) win.show(); });
     await win.loadURL(`${origin}/`);
     audit(`ready main=${process.pid} worker=${pid}${smoke ? ' smoke' : ''}`);
     if (smoke && process.argv.includes('--desktop-file-menu-smoke')) {

@@ -6,7 +6,9 @@ import { createRequire, registerHooks } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { localFetch, memoryConnection } from './local-http.mjs';
 
-const { data, packageRoot, pipe, secret, accountHomes, egress, appHome } = await new Promise((resolve, reject) => {
+import { forwardGoalRequest, GOAL_KEY_HEADER, goalKeyMatches } from './goal-execution.mjs';
+
+const { data, packageRoot, pipe, secret, goalKey, accountHomes, egress, appHome } = await new Promise((resolve, reject) => {
   process.once('message', resolve);
   process.once('disconnect', reject);
 });
@@ -90,6 +92,14 @@ const proxy = new PiWebUiProxy({ dataRoot: data, logFile: path.join(cache, 'desk
   fetchImpl: fetchRoute, webRequest: (opts, cb) => http.request({ ...opts, ...upstream }, cb) });
 const expected = Buffer.from(secret);
 const server = http.createServer({ requestTimeout: 0 }, (req, res) => {
+  if (req.headers[GOAL_KEY_HEADER] !== undefined) {
+    if (!goalKeyMatches(req.headers[GOAL_KEY_HEADER], goalKey)) { res.writeHead(403); res.end(); return; }
+    void forwardGoalRequest(req, res, fetchRoute).catch(() => {
+      if (!res.headersSent) res.writeHead(502);
+      if (!res.writableEnded) res.end();
+    });
+    return;
+  }
   const supplied = Buffer.from(String(req.headers['x-pi-desktop-key'] || ''));
   if (supplied.length !== expected.length || !timingSafeEqual(expected, supplied)) { res.writeHead(403); res.end(); return; }
   delete req.headers['x-pi-desktop-key'];
