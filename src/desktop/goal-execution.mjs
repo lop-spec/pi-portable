@@ -22,7 +22,7 @@ export function publishGoalEndpoint(profile, pipe, token) {
   if (!sid) throw Error('Windows user SID missing');
   // Rebuild the DACL rather than retaining existing explicit entries.
   const powershell = path.join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const acl = `$ErrorActionPreference='Stop'; $d=$env:PI_GOAL_ENDPOINT_DIR; $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false); $sid=[Security.Principal.SecurityIdentifier]$env:PI_GOAL_ENDPOINT_SID; $flags=[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'; $acl.SetOwner($sid); $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl',$flags,'None','Allow')); Set-Acl -LiteralPath $d -AclObject $acl`;
+  const acl = `$ErrorActionPreference='Stop'; $d=$env:PI_GOAL_ENDPOINT_DIR; $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false); $sid=[Security.Principal.SecurityIdentifier]$env:PI_GOAL_ENDPOINT_SID; $flags=[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'; $acl.SetOwner($sid); $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl',$flags,'None','Allow')); [IO.Directory]::SetAccessControl($d,$acl)`;
   execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(acl, 'utf16le').toString('base64')], { ...opts, env: { ...process.env, PI_GOAL_ENDPOINT_DIR: dir, PI_GOAL_ENDPOINT_SID: sid } });
   const tmp = `${file}.${randomBytes(8).toString('hex')}.new`;
   try { fs.writeFileSync(tmp, JSON.stringify({ version: 1, pipe, token }), { flag: 'wx', mode: 0o600 }); fs.renameSync(tmp, file); }
