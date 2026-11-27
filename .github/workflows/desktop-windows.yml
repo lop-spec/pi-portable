@@ -37,8 +37,8 @@ jobs:
         if: github.ref_name == 'feat/piweb-desktop-opencode'
         shell: pwsh
         run: |
-          curl.exe -fSL --retry 2 -o opencode.zip 'https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-windows-x64.zip'
-          if ($LASTEXITCODE -ne 0 -or (Get-FileHash opencode.zip -Algorithm SHA256).Hash.ToLower() -ne 'fa31c9ec0bac7611ab12699ef8e2fc4c173fb95ac977b09b189b255b8f559bcc') { throw 'OpenCode archive hash mismatch' }
+          curl.exe -fSL --retry 2 -o opencode.zip 'https://github.com/anomalyco/opencode/releases/download/v2.4.2/opencode-windows-x64.zip'
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash opencode.zip -Algorithm SHA256).Hash.ToLower() -ne 'a8ab3034ca5b3ec8476e9ee73b1dc334b6d8e93edaaf224b3d2a5205e2cbfb99') { throw 'OpenCode archive hash mismatch' }
           Expand-Archive opencode.zip -DestinationPath opencode-cli
           $env:PI_WEB_OPENCODE_BIN = (Resolve-Path opencode-cli/opencode.exe).Path
           node --experimental-strip-types --test tests/piweb-opencode-agent.mjs

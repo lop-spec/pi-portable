@@ -8,7 +8,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v6";
+export const LOP_PRETOOL_RUNTIME_VERSION = "pretool-only-v7";
 const AGENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RULE_DATA = path.join(AGENT_DIR, "data");
 const PRETOOL_MJS = process.env.PI_PRETOOL_MJS || path.join(RULE_DATA, "rules-pretool.mjs");
@@ -44,11 +44,11 @@ function ruleCalls(toolName: string, input: any): Array<{ tool_name: string; too
     const replaces = typeof input.old_text === "string";
     return [{ tool_name: replaces ? "edit" : "write", tool_input: { path: input.path, old_string: input.old_text, new_string: text, content: text } }];
   }
-  if (toolName === "oc_bash") return [{ tool_name: "bash", tool_input: input }];
+  if (toolName === "oc_shell" || toolName === "oc_bash") return [{ tool_name: "bash", tool_input: input }];
   if (toolName === "oc_edit" || toolName === "oc_write") {
     const edit = toolName === "oc_edit";
     const text = edit ? input.newString : input.content;
-    return [{ tool_name: edit ? "edit" : "write", tool_input: { path: input.filePath, old_string: input.oldString, new_string: text, content: text } }];
+    return [{ tool_name: edit ? "edit" : "write", tool_input: { path: input.path ?? input.filePath, old_string: input.oldString, new_string: text, content: text } }];
   }
   return [{ tool_name: toolName, tool_input: input }];
 }

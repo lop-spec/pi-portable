@@ -8,7 +8,7 @@ const descriptions = {
   read: "Read a file or directory by absolute path.",
   glob: "Find paths by glob.",
   grep: "Search text by regex.",
-  bash: "Run a shell command.",
+  shell: "Run a shell command.",
   edit: "Replace text in a file.",
   write: "Write a file.",
   webfetch: "Fetch a web page.",
@@ -21,16 +21,20 @@ export const openCodeTools = (specs: ClineToolSpec[]): ClineToolSpec[] => specs.
 // These are the wire schemas emitted by the pinned Windows CLI. The protocol test
 // checks them against the actual executable so a text-only turn never needs a worker.
 const string = { type: "string" };
-const integer = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
-const schema = (properties: Record<string, unknown>, ...required: string[]) => ({ type: "object", properties, required });
+const boolean = { type: "boolean" };
+const int = { type: "integer" };
+const nonNegative = { ...int, minimum: 0 };
+const positive = { ...int, exclusiveMinimum: 0 };
+const schema = (properties: Record<string, unknown>, ...required: string[]) => ({ type: "object", properties, required, additionalProperties: false });
+export const OPENCODE_VERSION = "2.4.2";
 export const OPENCODE_TOOLS = openCodeTools([
-  { name: "bash", parameters: schema({ command: string, timeout: { minimum: Number.MIN_SAFE_INTEGER, exclusiveMinimum: 0, type: "integer", maximum: Number.MAX_SAFE_INTEGER }, workdir: string }, "command") },
-  { name: "edit", parameters: schema({ filePath: string, oldString: string, newString: string, replaceAll: { type: "boolean" } }, "filePath", "oldString", "newString") },
-  { name: "glob", parameters: schema({ pattern: string, path: string }, "pattern") },
-  { name: "grep", parameters: schema({ pattern: string, path: string, include: string }, "pattern") },
-  { name: "read", parameters: schema({ filePath: string, offset: integer, limit: integer }, "filePath") },
-  { name: "webfetch", parameters: schema({ url: string, format: { type: "string", enum: ["text", "markdown", "html"], default: "markdown" }, timeout: { type: "number" } }, "url") },
-  { name: "write", parameters: schema({ content: string, filePath: string }, "content", "filePath") },
+  { name: "edit", parameters: schema({ path: string, oldString: string, newString: string, replaceAll: boolean }, "path", "oldString", "newString") },
+  { name: "glob", parameters: schema({ pattern: string, path: string, hidden: boolean, limit: positive }, "pattern") },
+  { name: "grep", parameters: schema({ pattern: { ...string, minLength: 1 }, path: string, include: string, literal: boolean, caseSensitive: boolean, limit: positive }, "pattern") },
+  { name: "read", parameters: schema({ path: string, offset: int, limit: nonNegative }, "path") },
+  { name: "shell", parameters: schema({ command: string, workdir: string, timeout: nonNegative }, "command") },
+  { name: "webfetch", parameters: schema({ url: string, format: { type: "string", enum: ["text", "markdown", "html"] }, timeout: { type: "number", exclusiveMinimum: 0, maximum: 120 } }, "url") },
+  { name: "write", parameters: schema({ path: string, content: string }, "path", "content") },
 ].map((spec) => ({ ...spec, description: "" })));
 
 function minimalSchema(value: unknown): unknown {
@@ -43,7 +47,7 @@ function minimalSchema(value: unknown): unknown {
 
 export function resolveOpenCodeBinary(root: string, env = process.env): string | undefined {
   const override = env.PI_WEB_OPENCODE_BIN?.trim();
-  const bin = override || join(root, "cli", process.platform === "win32" ? "opencode.exe" : "opencode");
+  const bin = override || join(root, `cli-${OPENCODE_VERSION}`, process.platform === "win32" ? "opencode.exe" : "opencode");
   return isAbsolute(bin) && existsSync(bin) ? bin : undefined;
 }
 
@@ -54,21 +58,21 @@ export function launchOpenCode(home: string, port: number, token: string) {
   const provider = "pi-web";
   const config = {
     model: `${provider}/${token}`,
-    enabled_providers: [provider],
-    provider: { [provider]: { npm: "@ai-sdk/openai-compatible", name: "Pi Web", options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: token }, models: { [token]: { name: "Pi Web", tool_call: true, limit: { context: 100_000, output: 10_000 } } } } },
+    plugins: ["-opencode.provider.*"],
+    providers: { [provider]: { package: "@opencode/ai/providers/openai-compatible", name: "Pi Web", env: ["PI_WEB_OC_RELAY_KEY"], settings: { baseURL: `http://127.0.0.1:${port}/v1` }, models: { [token]: { name: "Pi Web", limit: { context: 100_000, output: 10_000 } } } } },
     default_agent: "pi-web",
-    agent: { "pi-web": { mode: "primary", prompt: OPENCODE_PREAMBLE } },
-    permission: { external_directory: "allow" },
-    autoupdate: false, share: "disabled", snapshot: false, formatter: false, lsp: false,
+    agents: { "pi-web": { mode: "primary", system: OPENCODE_PREAMBLE } },
+    permissions: [{ action: "external_directory", resource: "*", effect: "allow" }],
+    autoupdate: false, share: "disabled", snapshot: false, formatter: false, lsp: false, warming: false,
   };
   return {
-    args: ["run", "--pure", "--agent", "pi-web", "--title", "Pi Web tool relay", "--format", "json", "Continue the Pi Web conversation."],
+    args: ["run", "--standalone", "--agent", "pi-web", "--title", "Pi Web tool relay", "--format", "json", "Continue the Pi Web conversation."],
     env: {
       ...env, NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost",
       XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"),
-      OPENCODE_TEST_HOME: home, OPENCODE_DB: ":memory:", OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-      OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1", OPENCODE_DISABLE_AUTOCOMPACT: "1",
-      OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_LSP_DOWNLOAD: "1", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), DO_NOT_TRACK: "1",
+      OPENCODE_TEST_HOME: home, OPENCODE_DB: ":memory:", OPENCODE_CONFIG_PROJECT_DISABLE: "1", OPENCODE_FILEWATCHER_DISABLE: "1",
+      OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1", OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+      PI_WEB_OC_RELAY_KEY: token, DO_NOT_TRACK: "1",
     },
   };
 }
